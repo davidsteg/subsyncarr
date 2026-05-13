@@ -107,7 +107,10 @@ docker run -d \
 | `MAX_CONCURRENT_SYNC_TASKS` | `1`                           | Number of subtitle files to process in parallel (higher = faster but more CPU)   |
 | `INCLUDE_ENGINES`           | `ffsubsync,autosubsync,alass` | Which sync engines to use (comma-separated)                                      |
 | `SYNC_TIMEOUT`              | _(none)_                      | Timeout in seconds per sync operation (overrides SYNC_ENGINE_TIMEOUT_MS)         |
-| `SYNC_ENGINE_TIMEOUT_MS`    | `1800000`                     | Timeout for each sync engine in milliseconds (30 min default)                    |
+| `SYNC_ENGINE_TIMEOUT_MS`    | `300000`                      | Timeout for each sync engine in milliseconds (5 min default)                     |
+| `ALASS_TIMEOUT_MS`          | _(none)_                      | Override timeout for alass only (takes precedence over SYNC_ENGINE_TIMEOUT_MS)   |
+| `FFSUBSYNC_TIMEOUT_MS`      | _(none)_                      | Override timeout for ffsubsync only (takes precedence over SYNC_ENGINE_TIMEOUT_MS)|
+| `AUTOSUBSYNC_TIMEOUT_MS`    | _(none)_                      | Override timeout for autosubsync only (takes precedence over SYNC_ENGINE_TIMEOUT_MS)|
 | `NODE_OPTIONS`             | `--max-old-space-size=512`    | Node.js options, used here to set memory limit (in MB)                           |
 | `WEB_PORT`                 | `3000`                        | Port for the web UI                                                              |
 | `WEB_HOST`                 | `127.0.0.1`                   | Host to bind the web UI to (`0.0.0.0` to expose externally)                     |
@@ -128,13 +131,23 @@ docker run -d \
 
 ### Timeout Configuration
 
-The `SYNC_ENGINE_TIMEOUT_MS` environment variable controls how long each sync engine can run before being terminated. This prevents hung processes from blocking the queue.
+The `SYNC_ENGINE_TIMEOUT_MS` environment variable controls how long each sync engine can run before being terminated. This prevents hung processes from blocking the queue. The default is 5 minutes (300000ms).
+
+You can also set per-engine timeouts that take precedence over the general timeout:
+
+| Variable               | Description                                      |
+| ---------------------- | ------------------------------------------------ |
+| `ALASS_TIMEOUT_MS`     | Timeout for alass only (in milliseconds)          |
+| `FFSUBSYNC_TIMEOUT_MS` | Timeout for ffsubsync only (in milliseconds)      |
+| `AUTOSUBSYNC_TIMEOUT_MS` | Timeout for autosubsync only (in milliseconds)  |
 
 Example configuration:
 
 ```yaml
 environment:
-  - SYNC_ENGINE_TIMEOUT_MS=3600000 # 60 minutes for large files
+  - SYNC_ENGINE_TIMEOUT_MS=600000   # 10 minutes default for all engines
+  - ALASS_TIMEOUT_MS=300000         # 5 minutes for alass (overrides default)
+  - FFSUBSYNC_TIMEOUT_MS=1800000    # 30 minutes for ffsubsync (overrides default)
 ```
 
 
@@ -268,7 +281,7 @@ If the container is being killed due to OOM (Out Of Memory):
 2. Increase memory limit in `NODE_OPTIONS` (e.g., `--max-old-space-size=1024`)
 3. Increase memory limit in docker-compose.yaml
 4. Reduce `SYNC_ENGINE_TIMEOUT_MS` for faster timeouts
-4. Exclude large files or problematic directories with `EXCLUDE_PATHS`
+5. Exclude large files or problematic directories with `EXCLUDE_PATHS`
 
 ### Files Not Being Processed
 

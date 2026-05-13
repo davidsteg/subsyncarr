@@ -37,12 +37,20 @@ class SubsyncarrPlusClient {
   handleMessage(msg) {
     switch (msg.type) {
       case 'state':
-        this.state = msg.data;
-        this.render();
+        // Merge state instead of replacing to preserve files array
+        this.state.currentRun = msg.data.currentRun || this.state.currentRun;
+        this.state.isRunning = msg.data.isRunning !== undefined ? msg.data.isRunning : this.state.isRunning;
+        // If we don't have files yet, fetch them from the API
+        if (!this.state.files || this.state.files.length === 0) {
+          this.fetchInitialState();
+        } else {
+          this.render();
+        }
         break;
       case 'run:started':
         this.state.currentRun = msg.data;
         this.state.isRunning = true;
+        this.state.files = [];
         this.render();
         break;
       case 'run:completed':
@@ -688,6 +696,5 @@ if (document.readyState === 'loading') {
     client = new SubsyncarrPlusClient();
   });
 } else {
-  // eslint-disable-next-line @typescript-eslint/no-unused-vars
-  client = new SubsyncarrClient();
-}
+    client = new SubsyncarrPlusClient();
+  }

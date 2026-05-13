@@ -36,9 +36,13 @@ services:
       # Memory configuration (optional):
       # - NODE_OPTIONS=--max-old-space-size=1024 # Increase if you experience OOM errors (default: 512)
       # Timeout configuration (optional - uncomment and adjust if needed):
-      # - SYNC_ENGINE_TIMEOUT_MS=1800000  # 30 minutes (default)
-      # - SYNC_ENGINE_TIMEOUT_MS=3600000  # 60 minutes for very large files
-      # - SYNC_ENGINE_TIMEOUT_MS=600000   # 10 minutes for smaller files
+      # - SYNC_ENGINE_TIMEOUT_MS=300000   # 5 minutes (default)
+      # - SYNC_ENGINE_TIMEOUT_MS=600000   # 10 minutes for larger files
+      # - SYNC_ENGINE_TIMEOUT_MS=1800000  # 30 minutes for very large files
+      # Per-engine timeouts (optional):
+      # - ALASS_TIMEOUT_MS=300000         # Override timeout for alass only
+      # - FFSUBSYNC_TIMEOUT_MS=300000     # Override timeout for ffsubsync only
+      # - AUTOSUBSYNC_TIMEOUT_MS=300000   # Override timeout for autosubsync only
       # Web UI configuration (optional):
       # - WEB_PORT=3000                   # Port for web UI (default: 3000)
       # - WEB_HOST=127.0.0.1              # Host to bind to (default: 127.0.0.1, use 0.0.0.0 for all interfaces)

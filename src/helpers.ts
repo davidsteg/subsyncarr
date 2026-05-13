@@ -60,13 +60,36 @@ function getTimeoutMs(): number {
     const val = parseInt(ms, 10);
     if (!isNaN(val) && val > 0) return val;
   }
-  return 1800000; // 30 minutes default
+  return 300000; // 5 minutes default (was 30 min — too long for hanging processes)
 }
 
-export function execPromise(command: string, timeoutMs?: number): Promise<{ stdout: string; stderr: string }> {
+/**
+ * Get timeout for a specific sync engine.
+ * Per-engine env vars take precedence: ALASS_TIMEOUT_MS, FFSUBSYNC_TIMEOUT_MS, AUTOSUBSYNC_TIMEOUT_MS
+ * Falls back to the general SYNC_ENGINE_TIMEOUT_MS / SYNC_TIMEOUT / default.
+ */
+export function getEngineTimeoutMs(engine: string): number {
+  const engineEnvMap: Record<string, string> = {
+    alass: 'ALASS_TIMEOUT_MS',
+    ffsubsync: 'FFSUBSYNC_TIMEOUT_MS',
+    autosubsync: 'AUTOSUBSYNC_TIMEOUT_MS',
+  };
+  const envVar = engineEnvMap[engine];
+  if (envVar && process.env[envVar]) {
+    const val = parseInt(process.env[envVar]!, 10);
+    if (!isNaN(val) && val > 0) return val;
+  }
+  return getTimeoutMs();
+}
+
+export function execPromise(command: string, timeoutMs?: number, signal?: AbortSignal): Promise<{ stdout: string; stderr: string }> {
   const timeout = timeoutMs ?? getTimeoutMs();
   return new Promise((resolve, reject) => {
-    exec(command, { timeout, maxBuffer: 1024 * 1024 * 10 }, (error, stdout, stderr) => {
+    const child = exec(command, { timeout, maxBuffer: 1024 * 1024 * 10 }, (error, stdout, stderr) => {
+      if (signal?.aborted) {
+        reject(new Error(`Aborted: ${command}`));
+        return;
+      }
       if (error) {
         if (error.killed) {
           reject(new Error(`Timed out after ${timeout / 1000}s: ${command}`));
@@ -77,5 +100,17 @@ export function execPromise(command: string, timeoutMs?: number): Promise<{ stdo
         resolve({ stdout, stderr });
       }
     });
+
+    // Kill the child process if abort signal fires (e.g. user clicked Skip)
+    if (signal) {
+      if (signal.aborted) {
+        child.kill('SIGTERM');
+      } else {
+        const onAbort = () => {
+          child.kill('SIGTERM');
+        };
+        signal.addEventListener('abort', onAbort, { once: true });
+      }
+    }
   });
 }

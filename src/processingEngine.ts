@@ -13,6 +13,7 @@ import { basename, dirname, join } from 'path';
 
 export class ProcessingEngine extends EventEmitter {
   private cancelledFiles: Set<string> = new Set();
+  private abortControllers: Map<string, AbortController> = new Map();
   private maxConcurrent: number;
   private enabledEngines: string[];
   private logBuffer: string[] = [];
@@ -59,7 +60,8 @@ export class ProcessingEngine extends EventEmitter {
     this.log(`[${new Date().toISOString()}] Found ${srtFiles.length} subtitle files`);
     this.emit('run:files_found', srtFiles);
 
-    // Process in batches
+    // Process with concurrency pool — starts next file as soon as one finishes,
+    // so a single hanging process doesn't block other slots
     this.log(`[${new Date().toISOString()}] Processing with concurrency: ${this.maxConcurrent}`);
     this.log(`[${new Date().toISOString()}] Enabled engines: ${this.enabledEngines.join(', ')}`);
 
@@ -68,18 +70,43 @@ export class ProcessingEngine extends EventEmitter {
       `[${new Date().toISOString()}] Sync retry: threshold=${retryConfig.thresholdMs}ms, maxRetries=${retryConfig.maxRetries}`,
     );
 
-    for (let i = 0; i < srtFiles.length; i += this.maxConcurrent) {
-      const batch = srtFiles.slice(i, i + this.maxConcurrent);
-      this.log(
-        `[${new Date().toISOString()}] Processing batch ${Math.floor(i / this.maxConcurrent) + 1}/${Math.ceil(srtFiles.length / this.maxConcurrent)} (${batch.length} files)`,
-      );
-      await Promise.all(batch.map((file) => this.processFile(file)));
-    }
+    await this.processWithConcurrency(srtFiles);
 
     this.log(`[${new Date().toISOString()}] All files processed`);
   }
 
-  private async runEngine(engine: string, srtPath: string, videoPath: string): Promise<{
+  /**
+   * Process files with a concurrency pool. Unlike batch processing (Promise.all per batch),
+   * this starts the next file as soon as one slot frees up, so a single hanging process
+   * only blocks its own slot — not the entire batch.
+   */
+  private async processWithConcurrency(files: string[]): Promise<void> {
+    let nextIndex = 0;
+    let completedCount = 0;
+    const total = files.length;
+
+    const processNext = async (): Promise<void> => {
+      while (nextIndex < files.length) {
+        const fileIndex = nextIndex++;
+        const file = files[fileIndex];
+        completedCount++;
+        this.log(
+          `[${new Date().toISOString()}] Starting file ${completedCount}/${total}: ${file.split('/').pop()!}`,
+        );
+        await this.processFile(file);
+      }
+    };
+
+    // Start up to maxConcurrent workers
+    const workers = [];
+    for (let i = 0; i < Math.min(this.maxConcurrent, files.length); i++) {
+      workers.push(processNext());
+    }
+
+    await Promise.all(workers);
+  }
+
+  private async runEngine(engine: string, srtPath: string, videoPath: string, signal?: AbortSignal): Promise<{
     success: boolean;
     message: string;
     stdout?: string;
@@ -92,13 +119,13 @@ export class ProcessingEngine extends EventEmitter {
       let result;
       switch (engine) {
         case 'ffsubsync':
-          result = await generateFfsubsyncSubtitles(srtPath, videoPath);
+          result = await generateFfsubsyncSubtitles(srtPath, videoPath, signal);
           break;
         case 'autosubsync':
-          result = await generateAutosubsyncSubtitles(srtPath, videoPath);
+          result = await generateAutosubsyncSubtitles(srtPath, videoPath, signal);
           break;
         case 'alass':
-          result = await generateAlassSubtitles(srtPath, videoPath);
+          result = await generateAlassSubtitles(srtPath, videoPath, signal);
           break;
         default:
           return { success: false, message: `Unknown engine: ${engine}`, duration: 0 };
@@ -173,6 +200,18 @@ export class ProcessingEngine extends EventEmitter {
       return;
     }
 
+    // Create an AbortController for this file so skip can kill running processes
+    const abortController = new AbortController();
+    this.abortControllers.set(srtPath, abortController);
+
+    try {
+      await this.processFileInner(srtPath, fileName, abortController.signal);
+    } finally {
+      this.abortControllers.delete(srtPath);
+    }
+  }
+
+  private async processFileInner(srtPath: string, fileName: string, signal: AbortSignal): Promise<void> {
     const videoPath = findMatchingVideoFile(srtPath);
 
     this.emit('file:started', { srtPath, videoPath });
@@ -225,7 +264,14 @@ export class ProcessingEngine extends EventEmitter {
       this.log(`[${new Date().toISOString()}] Starting ${engine} for: ${fileName}`);
       this.emit('file:engine_started', { srtPath, engine });
 
-      const result = await this.runEngine(engine, srtPath, videoPath);
+      const result = await this.runEngine(engine, srtPath, videoPath, signal);
+
+      // If the file was skipped/cancelled while the engine was running, stop processing
+      if (signal.aborted) {
+        this.log(`[${new Date().toISOString()}] Skipped (cancelled during ${engine}): ${fileName}`);
+        this.emit('file:skipped', { srtPath, reason: 'cancelled' });
+        return;
+      }
 
       // If this engine was skipped (already processed), log and continue
       if (result.skipped) {
@@ -281,7 +327,7 @@ export class ProcessingEngine extends EventEmitter {
               const tempSrtPath = this.createTempSrtFile(srtPath, syncedContent);
               if (tempSrtPath) {
                 try {
-                  const retryResult = await this.runEngine(engine, tempSrtPath, videoPath);
+                  const retryResult = await this.runEngine(engine, tempSrtPath, videoPath, signal);
 
                   if (retryResult.success) {
                     const retryOutputPath = getOutputPath(tempSrtPath, engine);
@@ -436,16 +482,29 @@ export class ProcessingEngine extends EventEmitter {
 
   skipFile(filePath: string): void {
     this.cancelledFiles.add(filePath);
+    // Kill any running process for this file immediately
+    const controller = this.abortControllers.get(filePath);
+    if (controller) {
+      this.log(`[${new Date().toISOString()}] Aborting running process for: ${filePath.split('/').pop()!}`);
+      controller.abort();
+    }
     this.emit('file:skip_requested', { filePath });
   }
 
   stopAllProcessing(allFiles: string[]): void {
     this.log(`[${new Date().toISOString()}] Stop requested - cancelling all remaining files`);
-    allFiles.forEach((file) => this.cancelledFiles.add(file));
+    allFiles.forEach((file) => {
+      this.cancelledFiles.add(file);
+      const controller = this.abortControllers.get(file);
+      if (controller) {
+        controller.abort();
+      }
+    });
   }
 
   reset(): void {
     this.cancelledFiles.clear();
+    this.abortControllers.clear();
     this.clearLogs();
   }
 }
