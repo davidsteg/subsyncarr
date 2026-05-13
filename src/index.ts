@@ -6,7 +6,7 @@ async function main(): Promise<void> {
   try {
     // Find all .srt files
     const scanConfig = getScanConfig();
-    const srtFiles = await findAllSrtFiles(scanConfig);
+    const { files: srtFiles } = await findAllSrtFiles(scanConfig);
     console.log(`${new Date().toLocaleString()} Found ${srtFiles.length} SRT files`);
 
     const maxConcurrentSyncTasks = process.env.MAX_CONCURRENT_SYNC_TASKS
@@ -15,7 +15,7 @@ async function main(): Promise<void> {
 
     for (let i = 0; i < srtFiles.length; i += maxConcurrentSyncTasks) {
       const chunk = srtFiles.slice(i, i + maxConcurrentSyncTasks);
-      await Promise.all(chunk.map((srtFile) => processSrtFile(srtFile)));
+      await Promise.all(chunk.map((srtFile: string) => processSrtFile(srtFile)));
     }
   } catch (error) {
     const errorMessage = error instanceof Error ? error.message : 'Unknown error';
