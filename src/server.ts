@@ -82,8 +82,24 @@ export class SubsyncarrPlusServer {
     // Get run history
     this.app.get('/api/history', (req, res) => {
       const limit = parseInt(req.query.limit as string, 10) || 50;
-      console.log(`[${new Date().toISOString()}] GET /api/history (limit: ${limit})`);
-      res.json(this.stateManager.getRunHistory(limit));
+      const includeFiles = req.query.include_files === 'true';
+      console.log(`[${new Date().toISOString()}] GET /api/history (limit: ${limit}, include_files: ${includeFiles})`);
+
+      const runs = this.stateManager.getRunHistory(limit);
+
+      if (includeFiles) {
+        // Include file results for each run to avoid N+1 queries from the frontend
+        const runsWithFiles = runs.map((run) => {
+          const currentRun = this.stateManager.getCurrentRun();
+          const isCurrentRun = currentRun && currentRun.id === run.id;
+          const fileLimit = 500;
+          const result = this.stateManager.getFileResultsPaginated(run.id, fileLimit, 0);
+          return { ...run, files: result.files };
+        });
+        res.json(runsWithFiles);
+      } else {
+        res.json(runs);
+      }
     });
 
     // Get specific run details (latest files only — use paginated endpoint for full list)
@@ -266,6 +282,19 @@ export class SubsyncarrPlusServer {
   }
 
   private setupWebSocket() {
+    // Ping clients every 30s to keep connections alive through proxies/load balancers
+    const pingInterval = setInterval(() => {
+      this.wss.clients.forEach((ws) => {
+        if (ws.readyState === WebSocket.OPEN) {
+          ws.ping();
+        }
+      });
+    }, 30000);
+
+    this.wss.on('close', () => {
+      clearInterval(pingInterval);
+    });
+
     this.wss.on('connection', (ws) => {
       console.log(`[${new Date().toISOString()}] WebSocket client connected (total: ${this.clients.size + 1})`);
       this.clients.add(ws);

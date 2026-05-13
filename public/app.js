@@ -3,7 +3,9 @@ class SubsyncarrPlusClient {
     this.ws = null;
     this.state = { currentRun: null, files: [], isRunning: false };
     this.reconnectInterval = 3000;
+    this.reconnectTimer = null;
     this.historyCache = {}; // Cache run data for file lookups
+    this.initialized = false; // Track whether initial data has been loaded
 
     this.initWebSocket();
     this.setupEventHandlers();
@@ -26,7 +28,14 @@ class SubsyncarrPlusClient {
 
     this.ws.onclose = () => {
       console.log('WebSocket disconnected, reconnecting...');
-      setTimeout(() => this.initWebSocket(), this.reconnectInterval);
+      // Debounce reconnection to avoid reconnect storms
+      if (this.reconnectTimer) {
+        clearTimeout(this.reconnectTimer);
+      }
+      this.reconnectTimer = setTimeout(() => {
+        this.reconnectTimer = null;
+        this.initWebSocket();
+      }, this.reconnectInterval);
     };
 
     this.ws.onerror = (error) => {
@@ -40,8 +49,8 @@ class SubsyncarrPlusClient {
         // Merge state instead of replacing to preserve files array
         this.state.currentRun = msg.data.currentRun || this.state.currentRun;
         this.state.isRunning = msg.data.isRunning !== undefined ? msg.data.isRunning : this.state.isRunning;
-        // If we don't have files yet, fetch them from the API
-        if (!this.state.files || this.state.files.length === 0) {
+        // Only fetch initial state if we haven't loaded data yet
+        if (!this.initialized) {
           this.fetchInitialState();
         } else {
           this.render();
@@ -93,30 +102,19 @@ class SubsyncarrPlusClient {
     const response = await fetch('/api/status');
     const data = await response.json();
     this.state = data;
+    this.initialized = true;
     this.render();
     this.fetchHistory();
   }
 
   async fetchHistory() {
-    const response = await fetch('/api/history');
-    const history = await response.json();
+    const response = await fetch('/api/history?include_files=true');
+    const historyWithStats = await response.json();
 
-    // Fetch file results for each run to calculate engine stats
-    const historyWithStats = await Promise.all(
-      history.map(async (run) => {
-        try {
-          const filesResponse = await fetch(`/api/runs/${run.id}`);
-          const data = await filesResponse.json();
-          const runWithFiles = { ...run, files: data.files || [] };
-          // Cache for file list lookups
-          this.historyCache[run.id] = runWithFiles;
-          return runWithFiles;
-        } catch (error) {
-          console.error(`Failed to fetch files for run ${run.id}:`, error);
-          return { ...run, files: [] };
-        }
-      }),
-    );
+    // Cache for file list lookups
+    historyWithStats.forEach((run) => {
+      this.historyCache[run.id] = run;
+    });
 
     this.renderHistory(historyWithStats);
   }
