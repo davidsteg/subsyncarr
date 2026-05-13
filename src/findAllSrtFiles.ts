@@ -2,15 +2,14 @@ import { readdir } from 'fs/promises';
 import { extname, join } from 'path';
 import { existsSync } from 'fs';
 import { ScanConfig } from './config';
-import { getOutputPath, getSubtitleFormat, isSyncedSrtSync } from './helpers';
+import { getOutputPath, getSubtitleFormat, isSyncedSrt } from './helpers';
 import { DirectoryCache, initDirectoryCache } from './findMatchingVideoFile';
 
-function isAlreadySynced(srtPath: string, engines: string[]): boolean {
+async function isAlreadySynced(srtPath: string, engines: string[]): Promise<boolean> {
   const format = getSubtitleFormat();
   if (format === 'overwrite') {
-    // In overwrite mode, check the sync marker header directly
-    // This is much faster than deferring to processFile for 197K+ files
-    return isSyncedSrtSync(srtPath);
+    // Use async header check — avoids blocking the event loop for 197K+ files
+    return await isSyncedSrt(srtPath);
   }
 
   return engines.every((engine) => {
@@ -25,12 +24,16 @@ function isEngineOutput(filename: string): boolean {
   return ALL_KNOWN_ENGINES.some((engine) => filename.includes(`.${engine}.`));
 }
 
+/** Yield to the event loop so WebSocket, logs, and status updates can process */
+const yieldToEventLoop = () => new Promise<void>((resolve) => setImmediate(resolve));
+
 export async function findAllSrtFiles(config: ScanConfig): Promise<{ files: string[]; directoryCache: DirectoryCache }> {
   const engines = process.env.INCLUDE_ENGINES?.split(',') || ['ffsubsync', 'autosubsync', 'alass'];
   const files: string[] = [];
   let skippedCount = 0;
+  let totalScanned = 0;
 
-  // Initialize directory cache for video file matching
+  // Initialize directory cache for video file matching (built lazily during processing)
   const directoryCache = initDirectoryCache();
 
   async function scan(directory: string): Promise<void> {
@@ -39,10 +42,13 @@ export async function findAllSrtFiles(config: ScanConfig): Promise<{ files: stri
       return;
     }
 
-    const entries = await readdir(directory, { withFileTypes: true });
-
-    // Pre-populate directory cache for video file matching
-    directoryCache.prePopulate(directory);
+    let entries;
+    try {
+      entries = await readdir(directory, { withFileTypes: true });
+    } catch {
+      // Skip directories we can't read (permission errors, etc.)
+      return;
+    }
 
     for (const entry of entries) {
       const fullPath = join(directory, entry.name);
@@ -54,7 +60,21 @@ export async function findAllSrtFiles(config: ScanConfig): Promise<{ files: stri
         extname(entry.name).toLowerCase() === '.srt' &&
         !isEngineOutput(entry.name)
       ) {
-        if (isAlreadySynced(fullPath, engines)) {
+        totalScanned++;
+
+        // Yield to event loop every 500 files to prevent blocking
+        if (totalScanned % 500 === 0) {
+          await yieldToEventLoop();
+        }
+
+        // Log progress every 10K files
+        if (totalScanned % 10000 === 0) {
+          console.log(
+            `${new Date().toLocaleString()} Scan progress: ${totalScanned} SRT files checked, ${files.length} need sync, ${skippedCount} already synced`,
+          );
+        }
+
+        if (await isAlreadySynced(fullPath, engines)) {
           skippedCount++;
         } else {
           files.push(fullPath);
@@ -68,9 +88,9 @@ export async function findAllSrtFiles(config: ScanConfig): Promise<{ files: stri
     await scan(includePath);
   }
 
-  if (skippedCount > 0) {
-    console.log(`${new Date().toLocaleString()} Skipped ${skippedCount} already-synced SRT files`);
-  }
+  console.log(
+    `${new Date().toLocaleString()} Scan complete: ${totalScanned} SRT files found, ${files.length} need sync, ${skippedCount} already synced`,
+  );
 
   return { files, directoryCache };
 }

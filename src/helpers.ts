@@ -1,6 +1,6 @@
 import { exec } from 'child_process';
 import { basename, dirname, join } from 'path';
-import { writeFileSync, openSync, readSync, closeSync } from 'fs';
+import { writeFileSync } from 'fs';
 import { open } from 'fs/promises';
 
 export type SubtitleFormat = 'standard' | 'overwrite';
@@ -18,24 +18,6 @@ export function getOutputPath(srtPath: string, engine: string): string {
 }
 
 const SYNC_MARKER = '# synced:';
-const SYNC_MARKER_BUF = Buffer.from(SYNC_MARKER);
-
-/**
- * Synchronous version of isSyncedSrt — much faster for bulk scanning.
- * Reads only the first 100 bytes to check for the sync marker header.
- */
-export function isSyncedSrtSync(srtPath: string): boolean {
-  try {
-    const fd = openSync(srtPath, 'r');
-    const buf = Buffer.alloc(100);
-    const bytesRead = readSync(fd, buf, 0, 100, 0);
-    closeSync(fd);
-    if (bytesRead < SYNC_MARKER_BUF.length) return false;
-    return buf.toString('utf8', 0, bytesRead).startsWith(SYNC_MARKER);
-  } catch {
-    return false;
-  }
-}
 
 export async function isSyncedSrt(srtPath: string): Promise<boolean> {
   try {
