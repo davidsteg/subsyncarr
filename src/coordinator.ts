@@ -32,10 +32,8 @@ export class ProcessingCoordinator {
     this.engine.on('run:files_found', (files: string[]) => {
       this.currentRunId = this.stateManager.startRun(files.length, this.enabledEngines);
 
-      // Add all files to database as pending (video matching happens during processing)
-      for (const filePath of files) {
-        this.stateManager.addFile(this.currentRunId!, filePath, null);
-      }
+      // Batch insert all files in a single transaction — orders of magnitude faster
+      this.stateManager.batchAddFiles(this.currentRunId!, files);
     });
 
     this.engine.on('file:started', ({ srtPath, videoPath }: { srtPath: string; videoPath: string | null }) => {

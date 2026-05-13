@@ -1,7 +1,7 @@
 import EventEmitter from 'events';
 import { ScanConfig, getScanConfig, getSyncRetryConfig } from './config';
 import { findAllSrtFiles } from './findAllSrtFiles';
-import { findMatchingVideoFile } from './findMatchingVideoFile';
+import { findMatchingVideoFile, DirectoryCache, clearDirectoryCache } from './findMatchingVideoFile';
 import { generateFfsubsyncSubtitles } from './generateFfsubsyncSubtitles';
 import { generateAutosubsyncSubtitles } from './generateAutosubsyncSubtitles';
 import { generateAlassSubtitles } from './generateAlassSubtitles';
@@ -18,6 +18,7 @@ export class ProcessingEngine extends EventEmitter {
   private enabledEngines: string[];
   private logBuffer: string[] = [];
   private maxLogBufferSize: number;
+  private directoryCache: DirectoryCache | null = null;
   public stateManager?: StateManager;
 
   constructor() {
@@ -56,7 +57,8 @@ export class ProcessingEngine extends EventEmitter {
     this.log(`[${new Date().toISOString()}] Scanning for subtitle files...`);
     this.log(`[${new Date().toISOString()}] Scan paths: ${JSON.stringify(scanConfig.includePaths)}`);
 
-    const srtFiles = await findAllSrtFiles(scanConfig);
+    const { files: srtFiles, directoryCache } = await findAllSrtFiles(scanConfig);
+    this.directoryCache = directoryCache;
     this.log(`[${new Date().toISOString()}] Found ${srtFiles.length} subtitle files`);
     this.emit('run:files_found', srtFiles);
 
@@ -71,6 +73,10 @@ export class ProcessingEngine extends EventEmitter {
     );
 
     await this.processWithConcurrency(srtFiles);
+
+    // Clean up directory cache after processing
+    this.directoryCache = null;
+    clearDirectoryCache();
 
     this.log(`[${new Date().toISOString()}] All files processed`);
   }
@@ -212,7 +218,7 @@ export class ProcessingEngine extends EventEmitter {
   }
 
   private async processFileInner(srtPath: string, fileName: string, signal: AbortSignal): Promise<void> {
-    const videoPath = findMatchingVideoFile(srtPath);
+    const videoPath = findMatchingVideoFile(srtPath, this.directoryCache);
 
     this.emit('file:started', { srtPath, videoPath });
 
@@ -506,5 +512,7 @@ export class ProcessingEngine extends EventEmitter {
     this.cancelledFiles.clear();
     this.abortControllers.clear();
     this.clearLogs();
+    this.directoryCache = null;
+    clearDirectoryCache();
   }
 }

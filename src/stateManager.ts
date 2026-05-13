@@ -107,6 +107,13 @@ export class StateManager extends EventEmitter {
     this.db.createFileResult(runId, filePath, videoPath);
   }
 
+  /**
+   * Batch add files in a single transaction — much faster than individual inserts.
+   */
+  batchAddFiles(runId: string, files: string[]): void {
+    this.db.batchCreateFileResults(runId, files);
+  }
+
   updateFileStatus(runId: string, filePath: string, status: FileResult['status'], currentEngine?: string | null, videoPath?: string | null): void {
     const updates: Partial<FileResult> = { status };
     if (currentEngine !== undefined) {
@@ -160,11 +167,11 @@ export class StateManager extends EventEmitter {
   }
 
   private emitFileUpdate(runId: string, filePath: string): void {
-    const file = this.db.getFileResult(runId, filePath);
-    if (file) {
-      const run = this.db.getRun(runId);
-      this.emit('file:updated', { file, run });
-    }
+    // Skip the DB read — the data was just written and the coordinator
+    // already has the context. Only emit with runId and filePath for
+    // lightweight WebSocket updates; clients can fetch details if needed.
+    const run = this.db.getRun(runId);
+    this.emit('file:updated', { runId, filePath, run });
   }
 
   clearCompletedFiles(): void {

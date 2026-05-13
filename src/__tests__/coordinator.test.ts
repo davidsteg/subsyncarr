@@ -17,6 +17,7 @@ class MockStateManager extends EventEmitter {
   getCurrentRun = jest.fn();
   appendLog = jest.fn();
   addFile = jest.fn();
+  batchAddFiles = jest.fn();
   updateFileStatus = jest.fn();
   updateFileEngine = jest.fn();
   incrementCompletedEngines = jest.fn();

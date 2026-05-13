@@ -15,6 +15,11 @@ export class SubsyncarrPlusServer {
   private wss = new WebSocketServer({ server: this.httpServer, path: '/ws' });
   private clients: Set<WebSocket> = new Set();
 
+  // Batched broadcast: collect updates and send in batches every 100ms
+  private broadcastQueue: unknown[] = [];
+  private broadcastTimer: ReturnType<typeof setTimeout> | null = null;
+  private static readonly BROADCAST_INTERVAL_MS = 100;
+
   constructor(
     private coordinator: ProcessingCoordinator,
     private stateManager: StateManager,
@@ -333,13 +338,32 @@ export class SubsyncarrPlusServer {
       this.broadcast({ type: 'run:cancelled', data: run });
     });
 
-    this.stateManager.on('file:updated', ({ file, run }) => {
-      this.broadcast({ type: 'file:updated', data: { file, run } });
+    this.stateManager.on('file:updated', ({ runId, filePath, run }) => {
+      this.broadcast({ type: 'file:updated', data: { runId, filePath, run } });
     });
   }
 
   private broadcast(message: unknown) {
-    const data = JSON.stringify(message);
+    this.broadcastQueue.push(message);
+
+    // If no timer is running, start one to flush the batch
+    if (!this.broadcastTimer) {
+      this.broadcastTimer = setTimeout(() => {
+        this.flushBroadcastQueue();
+      }, SubsyncarrPlusServer.BROADCAST_INTERVAL_MS);
+    }
+  }
+
+  private flushBroadcastQueue() {
+    this.broadcastTimer = null;
+
+    if (this.broadcastQueue.length === 0) return;
+
+    // Batch all queued messages into a single WebSocket message
+    const batch = this.broadcastQueue;
+    this.broadcastQueue = [];
+
+    const data = JSON.stringify({ type: 'batch', messages: batch });
     this.clients.forEach((client) => {
       if (client.readyState === WebSocket.OPEN) {
         client.send(data);
@@ -354,6 +378,13 @@ export class SubsyncarrPlusServer {
   }
 
   close() {
+    // Flush any remaining broadcast messages before closing
+    if (this.broadcastTimer) {
+      clearTimeout(this.broadcastTimer);
+      this.broadcastTimer = null;
+    }
+    this.flushBroadcastQueue();
+
     this.httpServer.close();
     this.wss.close();
   }

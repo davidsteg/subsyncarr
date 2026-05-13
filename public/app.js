@@ -23,7 +23,16 @@ class SubsyncarrPlusClient {
 
     this.ws.onmessage = (event) => {
       const msg = JSON.parse(event.data);
-      this.handleMessage(msg);
+      // Handle batched messages from the server
+      if (msg.type === 'batch' && Array.isArray(msg.messages)) {
+        for (const innerMsg of msg.messages) {
+          this.handleMessage(innerMsg);
+        }
+        // Render once after processing the entire batch
+        this.render();
+      } else {
+        this.handleMessage(msg);
+      }
     };
 
     this.ws.onclose = () => {
@@ -75,11 +84,11 @@ class SubsyncarrPlusClient {
         this.fetchHistory();
         break;
       case 'file:updated':
-        this.updateFile(msg.data.file);
+        // Lightweight update — just update run counters, don't fetch full file data
         if (msg.data.run) {
           this.state.currentRun = msg.data.run;
         }
-        this.render();
+        // Don't render here — batch handler or other message types will trigger render
         break;
       case 'files:cleared':
         this.state.currentRun = msg.data.currentRun;

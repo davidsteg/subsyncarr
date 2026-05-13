@@ -66,10 +66,11 @@ export class SubsyncarrPlusDatabase {
   }
 
   private initSchema() {
-    // Optimize SQLite for low memory usage
-    this.db.pragma('cache_size = -1000'); // 1MB cache (negative means KB)
-    this.db.pragma('mmap_size = 0'); // Disable memory-mapping
+    // Optimize SQLite for throughput during bulk operations
+    this.db.pragma('cache_size = -64000'); // 64MB cache for bulk workloads
+    this.db.pragma('mmap_size = 268435456'); // 256MB mmap — OS page-cache reads
     this.db.pragma('journal_mode = WAL'); // Better concurrency
+    this.db.pragma('synchronous = NORMAL'); // Safe with WAL, much faster writes
     this.db.pragma('temp_store = MEMORY'); // Keep temp data in memory
     this.db.pragma('auto_vacuum = INCREMENTAL'); // Reclaim space gradually
 
@@ -257,6 +258,25 @@ export class SubsyncarrPlusDatabase {
     `);
     const now = Date.now();
     stmt.run(runId, filePath, videoPath, now, now);
+  }
+
+  /**
+   * Batch insert file results in a single transaction.
+   * Orders of magnitude faster than individual inserts for large file counts.
+   */
+  batchCreateFileResults(runId: string, files: string[]): void {
+    const stmt = this.db.prepare(`
+      INSERT INTO file_results
+        (run_id, file_path, video_path, status, created_at, updated_at)
+      VALUES (?, ?, NULL, 'pending', ?, ?)
+    `);
+    const now = Date.now();
+    const insertMany = this.db.transaction(() => {
+      for (const filePath of files) {
+        stmt.run(runId, filePath, null, now, now);
+      }
+    });
+    insertMany();
   }
 
   updateFileResult(runId: string, filePath: string, updates: Partial<FileResult>): void {
