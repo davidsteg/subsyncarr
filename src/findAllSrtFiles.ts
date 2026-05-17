@@ -8,7 +8,6 @@ import { DirectoryCache, initDirectoryCache } from './findMatchingVideoFile';
 function isAlreadySynced(srtPath: string, engines: string[]): boolean {
   const format = getSubtitleFormat();
   if (format === 'overwrite') {
-    // Sync header check — fast (microseconds per file) with periodic yields
     return isSyncedSrtSync(srtPath);
   }
 
@@ -36,10 +35,9 @@ export async function findAllSrtFiles(config: ScanConfig): Promise<{ files: stri
   // Initialize directory cache for video file matching (built lazily during processing)
   const directoryCache = initDirectoryCache();
 
-  // Collect all SRT paths first using sync readdir (fast, no per-file I/O yet)
-  const srtPaths: string[] = [];
-
-  function collectSrtPaths(directory: string): void {
+  // Single-phase scan: walk directories and check sync status inline.
+  // Yields every 500 files to keep the event loop responsive.
+  async function scan(directory: string): Promise<void> {
     // Check if this directory should be excluded
     if (config.excludePaths.some((excludePath) => directory.startsWith(excludePath))) {
       return;
@@ -57,48 +55,38 @@ export async function findAllSrtFiles(config: ScanConfig): Promise<{ files: stri
       const fullPath = join(directory, entry.name);
 
       if (entry.isDirectory()) {
-        collectSrtPaths(fullPath);
+        await scan(fullPath);
       } else if (
         entry.isFile() &&
         extname(entry.name).toLowerCase() === '.srt' &&
         !isEngineOutput(entry.name)
       ) {
-        srtPaths.push(fullPath);
+        totalScanned++;
+
+        // Yield to event loop every 500 files to keep UI/API responsive
+        if (totalScanned % 500 === 0) {
+          await yieldToEventLoop();
+        }
+
+        // Log progress every 10K files
+        if (totalScanned % 10000 === 0) {
+          console.log(
+            `${new Date().toLocaleString()} Scan progress: ${totalScanned} SRT files checked, ${files.length} need sync, ${skippedCount} already synced`,
+          );
+        }
+
+        if (isAlreadySynced(fullPath, engines)) {
+          skippedCount++;
+        } else {
+          files.push(fullPath);
+        }
       }
     }
   }
 
-  // Phase 1: Walk directory tree (sync, very fast — just readdir calls)
+  // Scan all included paths
   for (const includePath of config.includePaths) {
-    collectSrtPaths(includePath);
-  }
-
-  console.log(
-    `${new Date().toLocaleString()} Found ${srtPaths.length} SRT files in directory walk, checking sync status...`,
-  );
-
-  // Phase 2: Check sync status with periodic yields to keep event loop responsive
-  for (let i = 0; i < srtPaths.length; i++) {
-    const srtPath = srtPaths[i];
-    totalScanned++;
-
-    // Yield to event loop every 500 files to keep UI/API responsive
-    if (totalScanned % 500 === 0) {
-      await yieldToEventLoop();
-    }
-
-    // Log progress every 10K files
-    if (totalScanned % 10000 === 0) {
-      console.log(
-        `${new Date().toLocaleString()} Scan progress: ${totalScanned}/${srtPaths.length} checked, ${files.length} need sync, ${skippedCount} already synced`,
-      );
-    }
-
-    if (isAlreadySynced(srtPath, engines)) {
-      skippedCount++;
-    } else {
-      files.push(srtPath);
-    }
+    await scan(includePath);
   }
 
   console.log(
