@@ -38,7 +38,7 @@ FROM node:22-slim
 ENV PUID=1000
 ENV PGID=1000
 ENV CRON_SCHEDULE="0 0 * * *"
-ENV NODE_OPTIONS="--max-old-space-size=512"
+ENV NODE_OPTIONS="--max-old-space-size=2048"
 ENV PATH="/home/node/.local/bin:$PATH"
 
 # Install runtime dependencies and gosu
@@ -80,4 +80,4 @@ EXPOSE 3000
 
 USER root
 ENTRYPOINT ["/entrypoint.sh"]
-CMD ["node", "--optimize-for-size", "dist/index-server.js"]
+CMD ["node", "dist/index-server.js"]

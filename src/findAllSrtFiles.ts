@@ -12,7 +12,7 @@ function isEngineOutput(filename: string): boolean {
 }
 
 /** Concurrency limit for async file checks — pipelines I/O on network storage */
-const CHECK_CONCURRENCY = 50;
+const CHECK_CONCURRENCY = 20;
 
 export async function findAllSrtFiles(config: ScanConfig): Promise<{ files: string[]; directoryCache: DirectoryCache }> {
   const engines = process.env.INCLUDE_ENGINES?.split(',') || ['ffsubsync', 'autosubsync', 'alass'];
