@@ -1,15 +1,15 @@
-import { readdir } from 'fs/promises';
+import { readdirSync } from 'fs';
 import { extname, join } from 'path';
 import { existsSync } from 'fs';
 import { ScanConfig } from './config';
-import { getOutputPath, getSubtitleFormat, isSyncedSrt } from './helpers';
+import { getOutputPath, getSubtitleFormat, isSyncedSrtSync } from './helpers';
 import { DirectoryCache, initDirectoryCache } from './findMatchingVideoFile';
 
-async function isAlreadySynced(srtPath: string, engines: string[]): Promise<boolean> {
+function isAlreadySynced(srtPath: string, engines: string[]): boolean {
   const format = getSubtitleFormat();
   if (format === 'overwrite') {
-    // Use async header check — avoids blocking the event loop for 197K+ files
-    return await isSyncedSrt(srtPath);
+    // Sync header check — fast (microseconds per file) with periodic yields
+    return isSyncedSrtSync(srtPath);
   }
 
   return engines.every((engine) => {
@@ -36,7 +36,10 @@ export async function findAllSrtFiles(config: ScanConfig): Promise<{ files: stri
   // Initialize directory cache for video file matching (built lazily during processing)
   const directoryCache = initDirectoryCache();
 
-  async function scan(directory: string): Promise<void> {
+  // Collect all SRT paths first using sync readdir (fast, no per-file I/O yet)
+  const srtPaths: string[] = [];
+
+  function collectSrtPaths(directory: string): void {
     // Check if this directory should be excluded
     if (config.excludePaths.some((excludePath) => directory.startsWith(excludePath))) {
       return;
@@ -44,7 +47,7 @@ export async function findAllSrtFiles(config: ScanConfig): Promise<{ files: stri
 
     let entries;
     try {
-      entries = await readdir(directory, { withFileTypes: true });
+      entries = readdirSync(directory, { withFileTypes: true });
     } catch {
       // Skip directories we can't read (permission errors, etc.)
       return;
@@ -54,38 +57,48 @@ export async function findAllSrtFiles(config: ScanConfig): Promise<{ files: stri
       const fullPath = join(directory, entry.name);
 
       if (entry.isDirectory()) {
-        await scan(fullPath);
+        collectSrtPaths(fullPath);
       } else if (
         entry.isFile() &&
         extname(entry.name).toLowerCase() === '.srt' &&
         !isEngineOutput(entry.name)
       ) {
-        totalScanned++;
-
-        // Yield to event loop every 500 files to prevent blocking
-        if (totalScanned % 500 === 0) {
-          await yieldToEventLoop();
-        }
-
-        // Log progress every 10K files
-        if (totalScanned % 10000 === 0) {
-          console.log(
-            `${new Date().toLocaleString()} Scan progress: ${totalScanned} SRT files checked, ${files.length} need sync, ${skippedCount} already synced`,
-          );
-        }
-
-        if (await isAlreadySynced(fullPath, engines)) {
-          skippedCount++;
-        } else {
-          files.push(fullPath);
-        }
+        srtPaths.push(fullPath);
       }
     }
   }
 
-  // Scan all included paths
+  // Phase 1: Walk directory tree (sync, very fast — just readdir calls)
   for (const includePath of config.includePaths) {
-    await scan(includePath);
+    collectSrtPaths(includePath);
+  }
+
+  console.log(
+    `${new Date().toLocaleString()} Found ${srtPaths.length} SRT files in directory walk, checking sync status...`,
+  );
+
+  // Phase 2: Check sync status with periodic yields to keep event loop responsive
+  for (let i = 0; i < srtPaths.length; i++) {
+    const srtPath = srtPaths[i];
+    totalScanned++;
+
+    // Yield to event loop every 500 files to keep UI/API responsive
+    if (totalScanned % 500 === 0) {
+      await yieldToEventLoop();
+    }
+
+    // Log progress every 10K files
+    if (totalScanned % 10000 === 0) {
+      console.log(
+        `${new Date().toLocaleString()} Scan progress: ${totalScanned}/${srtPaths.length} checked, ${files.length} need sync, ${skippedCount} already synced`,
+      );
+    }
+
+    if (isAlreadySynced(srtPath, engines)) {
+      skippedCount++;
+    } else {
+      files.push(srtPath);
+    }
   }
 
   console.log(
