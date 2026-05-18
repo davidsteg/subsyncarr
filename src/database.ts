@@ -174,6 +174,14 @@ export class SubsyncarrPlusDatabase {
     this.db.prepare(`UPDATE runs SET ${fields} WHERE id = ?`).run(...values, id);
   }
 
+  /**
+   * Atomically increment a numeric column on a run.
+   * Uses SQL `SET field = field + 1` to avoid read-then-write race and overhead.
+   */
+  incrementRunField(id: string, field: 'completed' | 'skipped' | 'failed' | 'not_fitting' | 'completed_engines'): void {
+    this.db.prepare(`UPDATE runs SET ${field} = ${field} + 1, updated_at = ? WHERE id = ?`).run(Date.now(), id);
+  }
+
   getRun(id: string): Run | null {
     const result = this.db.prepare('SELECT * FROM runs WHERE id = ?').get(id);
     return result ? (result as Run) : null;
@@ -273,7 +281,7 @@ export class SubsyncarrPlusDatabase {
     const now = Date.now();
     const insertMany = this.db.transaction(() => {
       for (const filePath of files) {
-        stmt.run(runId, filePath, null, now, now);
+        stmt.run(runId, filePath, now, now);
       }
     });
     insertMany();

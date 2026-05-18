@@ -89,17 +89,11 @@ export class StateManager extends EventEmitter {
   }
 
   incrementRunCounter(runId: string, field: 'completed' | 'skipped' | 'failed' | 'not_fitting'): void {
-    const run = this.db.getRun(runId)!;
-    this.db.updateRun(runId, {
-      [field]: run[field] + 1,
-    });
+    this.db.incrementRunField(runId, field);
   }
 
   incrementCompletedEngines(runId: string): void {
-    const run = this.db.getRun(runId)!;
-    this.db.updateRun(runId, {
-      completed_engines: run.completed_engines + 1,
-    });
+    this.db.incrementRunField(runId, 'completed_engines');
   }
 
   // File management
@@ -142,8 +136,7 @@ export class StateManager extends EventEmitter {
       notFitting?: boolean;
     },
   ): void {
-    const files = this.db.getFileResults(runId);
-    const file = files.find((f) => f.file_path === filePath);
+    const file = this.db.getFileResult(runId, filePath);
 
     if (file) {
       const engines = JSON.parse(file.engines);
