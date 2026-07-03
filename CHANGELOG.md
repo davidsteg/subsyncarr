@@ -1,3 +1,11 @@
+## [1.3.20] — 2026-07-03
+
+### Changed
+- **Delete on not-fitting now requires multiple consecutive failed runs, not one.** Previously a subtitle was deleted the first time both engines disagreed (or neither could align it). That risked deleting a subtitle over a one-off transient failure — a half-downloaded video, a network hiccup, an engine crash unrelated to actual fit. Each file now accumulates a "not-fitting" strike per run and is only deleted once it fails to fit `NOT_FITTING_DELETE_THRESHOLD` (default 3) consecutive runs; the streak resets to zero the moment the file fits on any run. Configurable via Settings ("Not-Fitting Delete Threshold") or the new `NOT_FITTING_DELETE_THRESHOLD` env var. `DRY_RUN` never records strikes or deletes.
+
+### Added
+- New `not_fitting_tracking` DB table for per-file consecutive-strike counts.
+
 ## [1.3.19] — 2026-07-03
 
 ### Fixed

@@ -19,7 +19,7 @@ An automated subtitle synchronization tool that runs as a Docker container. It c
 - **Configurable Timeouts** - Set per-engine timeout limits to prevent hung processes
 - **Log Management** - Configurable retention policies with automatic trimming and deletion
 
-> **Note:** This tool syncs subtitles **in place** (overwriting the original `.srt`, with a `# synced:` header marker) and **deletes** subtitles that neither engine can align. Keep a backup of subtitles you can't easily re-download, and use `DRY_RUN=true` first to preview what would be changed or deleted.
+> **Note:** This tool syncs subtitles **in place** (overwriting the original `.srt`, with a `# synced:` header marker) and **deletes** subtitles that consistently fail to align across multiple runs (see [Not-Fitting Delete Threshold](#not-fitting-delete-threshold) below). Keep a backup of subtitles you can't easily re-download, and use `DRY_RUN=true` first to preview what would be changed or deleted.
 
 ## Quick Start
 
@@ -110,7 +110,8 @@ docker run -d \
 | `INCLUDE_ENGINES`           | `ffsubsync,autosubsync,alass` | Which sync engines to use (comma-separated)                                      |
 | `DEFAULT_ENGINE`            | `alass`                       | Primary engine; its alignment is kept when both engines agree                    |
 | `FALLBACK_ENGINE`           | `ffsubsync`                   | Second engine run for the agreement check                                        |
-| `ENGINE_AGREEMENT_THRESHOLD_MS` | `5000`                    | Max ms the two engines' alignments may differ and still count as a match. Beyond this, the subtitle is deleted as not fitting the video |
+| `ENGINE_AGREEMENT_THRESHOLD_MS` | `5000`                    | Max ms the two engines' alignments may differ and still count as a match. Beyond this, the subtitle is judged not fitting the video for this run |
+| `NOT_FITTING_DELETE_THRESHOLD` | `3`                        | Consecutive runs a subtitle must fail to fit before it's actually deleted — see [Not-Fitting Delete Threshold](#not-fitting-delete-threshold) |
 | `DRY_RUN`                   | `false`                       | Default dry-run mode: engines run normally but nothing is written or deleted. Can also be set per-run from the UI (Dry Run button / checkbox) or toggled persistently in Settings — a UI choice for a given run always takes precedence over this variable |
 | `SYNC_TIMEOUT`              | _(none)_                      | Timeout in seconds per sync operation (overrides SYNC_ENGINE_TIMEOUT_MS)         |
 | `SYNC_ENGINE_TIMEOUT_MS`    | `300000`                      | Timeout for each sync engine in milliseconds (5 min default)                     |
@@ -243,6 +244,12 @@ volumes:
 ### Auto-Skip on Repeated Failures
 
 The app intelligently tracks failures for each file/engine combination. After 3 consecutive failures, that engine will be automatically skipped for that specific file, preventing wasted processing time. You can reset skip status via the API endpoint `/api/skip-status/reset`.
+
+### Not-Fitting Delete Threshold
+
+When both sync engines disagree on a subtitle's alignment (or neither can align it at all), the subtitle doesn't just get deleted on the spot — that would risk deleting a good subtitle over a one-off transient failure (a video still being transferred, a network hiccup, an engine crash unrelated to actual fit). Instead, each file accumulates a "not-fitting" strike per run; the subtitle is only deleted once it fails to fit on `NOT_FITTING_DELETE_THRESHOLD` (default 3) **consecutive runs**. If a file fits on any run before reaching the threshold, its strike count resets to zero.
+
+Configurable from Settings ("Not-Fitting Delete Threshold") or the `NOT_FITTING_DELETE_THRESHOLD` environment variable. `DRY_RUN` mode never records strikes or deletes files, so it's safe to preview.
 
 ### Memory Management
 

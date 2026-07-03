@@ -383,6 +383,7 @@ export class SubsyncarrPlusServer {
         syncRetryThresholdMs: parseInt(dbSettings['sync_retry_threshold_ms'] || process.env.SYNC_RETRY_THRESHOLD_MS || '5000', 10),
         syncMaxRetries: parseInt(dbSettings['sync_max_retries'] || process.env.SYNC_MAX_RETRIES || '2', 10),
         engineAgreementThresholdMs: parseInt(dbSettings['engine_agreement_threshold_ms'] || process.env.ENGINE_AGREEMENT_THRESHOLD_MS || '5000', 10),
+        notFittingDeleteThreshold: parseInt(dbSettings['not_fitting_delete_threshold'] || process.env.NOT_FITTING_DELETE_THRESHOLD || '3', 10),
         engineTimeouts: {
           alass: parseInt(dbSettings['engine_timeout_alass'] || process.env.ALASS_TIMEOUT_MS || '300000', 10),
           ffsubsync: parseInt(dbSettings['engine_timeout_ffsubsync'] || process.env.FFSUBSYNC_TIMEOUT_MS || '300000', 10),
@@ -405,7 +406,7 @@ export class SubsyncarrPlusServer {
         'max_subtitle_shift_ms', 'sync_retry_threshold_ms', 'sync_max_retries',
         'default_engine', 'fallback_engine', 'dry_run', 'theme',
         'engine_timeout_alass', 'engine_timeout_ffsubsync', 'engine_timeout_autosubsync',
-        'max_concurrent_tasks', 'engine_agreement_threshold_ms'
+        'max_concurrent_tasks', 'engine_agreement_threshold_ms', 'not_fitting_delete_threshold'
       ];
       for (const [key, value] of Object.entries(updates_raw)) {
         if (allowedKeys.includes(key)) {
@@ -418,6 +419,7 @@ export class SubsyncarrPlusServer {
         const updates: any = {};
         if (updates_raw['max_concurrent_tasks']) updates.maxConcurrentTasks = parseInt(updates_raw['max_concurrent_tasks'], 10);
         if (updates_raw['engine_agreement_threshold_ms']) updates.engineAgreementThresholdMs = parseInt(updates_raw['engine_agreement_threshold_ms'], 10);
+        if (updates_raw['not_fitting_delete_threshold']) updates.notFittingDeleteThreshold = parseInt(updates_raw['not_fitting_delete_threshold'], 10);
         const timeouts: any = {};
         if (updates_raw['engine_timeout_alass']) timeouts.alass = parseInt(updates_raw['engine_timeout_alass'], 10);
         if (updates_raw['engine_timeout_ffsubsync']) timeouts.ffsubsync = parseInt(updates_raw['engine_timeout_ffsubsync'], 10);

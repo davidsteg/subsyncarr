@@ -7,6 +7,7 @@ export interface RuntimeCfg {
   maxConcurrentTasks: number;
   engineTimeouts: Record<string, number>;
   engineAgreementThresholdMs: number;
+  notFittingDeleteThreshold: number;
 }
 
 function parseTimeout(envVar: string): number {
@@ -30,6 +31,8 @@ function resolveEngineTimeout(engine: string): number {
 const defaults: RuntimeCfg = {
   maxConcurrentTasks: parseInt(process.env.MAX_CONCURRENT_SYNC_TASKS || '1', 10),
   engineAgreementThresholdMs: parseInt(process.env.ENGINE_AGREEMENT_THRESHOLD_MS || '5000', 10),
+  // Matches the existing "3 consecutive failures" convention used for per-engine skip.
+  notFittingDeleteThreshold: parseInt(process.env.NOT_FITTING_DELETE_THRESHOLD || '3', 10),
   engineTimeouts: {
     alass: resolveEngineTimeout('alass'),
     ffsubsync: resolveEngineTimeout('ffsubsync'),
@@ -40,14 +43,16 @@ const defaults: RuntimeCfg = {
 let current: RuntimeCfg = {
   maxConcurrentTasks: defaults.maxConcurrentTasks,
   engineAgreementThresholdMs: defaults.engineAgreementThresholdMs,
+  notFittingDeleteThreshold: defaults.notFittingDeleteThreshold,
   engineTimeouts: { ...defaults.engineTimeouts },
 };
 
 export function getRuntimeCfg(): RuntimeCfg { return current; }
 
-export function updateRuntimeCfg(updates: Partial<{maxConcurrentTasks: number; engineAgreementThresholdMs: number; engineTimeouts: Partial<Record<string, number>>}>): void {
+export function updateRuntimeCfg(updates: Partial<{maxConcurrentTasks: number; engineAgreementThresholdMs: number; notFittingDeleteThreshold: number; engineTimeouts: Partial<Record<string, number>>}>): void {
   if (updates.maxConcurrentTasks !== undefined && updates.maxConcurrentTasks > 0) current.maxConcurrentTasks = updates.maxConcurrentTasks;
   if (updates.engineAgreementThresholdMs !== undefined && updates.engineAgreementThresholdMs > 0) current.engineAgreementThresholdMs = updates.engineAgreementThresholdMs;
+  if (updates.notFittingDeleteThreshold !== undefined && updates.notFittingDeleteThreshold > 0) current.notFittingDeleteThreshold = updates.notFittingDeleteThreshold;
   if (updates.engineTimeouts) {
     const merged = { ...current.engineTimeouts };
     for (const [k, v] of Object.entries(updates.engineTimeouts)) {
@@ -62,6 +67,8 @@ export function loadRuntimeCfgFromDb(getSetting: (key: string) => string | null)
   if (maxConc) { const v = parseInt(maxConc, 10); if (!isNaN(v) && v > 0) current.maxConcurrentTasks = v; }
   const agree = getSetting('engine_agreement_threshold_ms');
   if (agree) { const v = parseInt(agree, 10); if (!isNaN(v) && v > 0) current.engineAgreementThresholdMs = v; }
+  const notFitting = getSetting('not_fitting_delete_threshold');
+  if (notFitting) { const v = parseInt(notFitting, 10); if (!isNaN(v) && v > 0) current.notFittingDeleteThreshold = v; }
   for (const engine of ['alass', 'ffsubsync', 'autosubsync']) {
     const timeout = getSetting(`engine_timeout_${engine}`);
     if (timeout) { const v = parseInt(timeout, 10); if (!isNaN(v) && v > 0) current.engineTimeouts[engine] = v; }
