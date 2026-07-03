@@ -368,10 +368,8 @@ class SubsyncarrPlusClient {
       document.getElementById('setAgreementThreshold').value = s.engineAgreementThresholdMs || 5000;
       document.getElementById('setRetryThreshold').value = s.syncRetryThresholdMs;
       document.getElementById('setMaxRetries').value = s.syncMaxRetries;
-      document.getElementById('setConfidence').value = s.confidenceThreshold;
       document.getElementById('setDefaultEngine').value = s.defaultEngine || 'alass';
       document.getElementById('setFallbackEngine').value = s.fallbackEngine || 'ffsubsync';
-      document.getElementById('confidenceLabel').textContent = s.confidenceThreshold.toFixed(2);
       document.getElementById('setDryRun').checked = s.dryRun;
       document.getElementById('setAlassTimeout').value = (s.engineTimeouts && s.engineTimeouts.alass) || 300000;
       document.getElementById('setFfsubsyncTimeout').value = (s.engineTimeouts && s.engineTimeouts.ffsubsync) || 300000;
@@ -387,7 +385,6 @@ class SubsyncarrPlusClient {
       max_subtitle_shift_ms: document.getElementById('setMaxShift').value,
       sync_retry_threshold_ms: document.getElementById('setRetryThreshold').value,
       sync_max_retries: document.getElementById('setMaxRetries').value,
-      confidence_threshold: document.getElementById('setConfidence').value,
       default_engine: document.getElementById('setDefaultEngine').value,
       fallback_engine: document.getElementById('setFallbackEngine').value,
       dry_run: document.getElementById('setDryRun').checked ? 'true' : 'false',
@@ -563,7 +560,6 @@ class SubsyncarrPlusClient {
     });
     document.getElementById('saveSettings').addEventListener('click', function() { self.saveSettings(); });
     document.getElementById('setConfidence').addEventListener('input', function() {
-      document.getElementById('confidenceLabel').textContent = parseFloat(this.value).toFixed(2);
     });
     document.getElementById('closeMediaDetailModal').addEventListener('click', function() { document.getElementById('mediaDetailModal').classList.add('hidden'); });
     document.getElementById('closeMediaDetailButton').addEventListener('click', function() { document.getElementById('mediaDetailModal').classList.add('hidden'); });

@@ -34,7 +34,6 @@ export class ProcessingEngine extends EventEmitter {
   private directoryCache: DirectoryCache | null = null;
   public stateManager?: StateManager;
   private dryRun: boolean = false;
-  private confidenceThreshold: number = 0.7;
   /** Scan progress during file discovery phase (null when not scanning) */
   public scanProgress: { checked: number; total: number; needSync: number; alreadySynced: number } | null = null;
 
@@ -51,7 +50,6 @@ export class ProcessingEngine extends EventEmitter {
     this.maxLogBufferSize = parseInt(process.env.LOG_BUFFER_SIZE || '1000', 10);
     const dryRunConfig = getDryRunConfig();
     this.dryRun = dryRunConfig.enabled;
-    this.confidenceThreshold = dryRunConfig.confidenceThreshold;
   }
 
   private get subtitleFormat(): string {
@@ -102,7 +100,6 @@ export class ProcessingEngine extends EventEmitter {
     if (this.dryRun) {
       this.log(`[${new Date().toISOString()}] DRY RUN MODE — no files will be written`);
     }
-    this.log(`[${new Date().toISOString()}] Confidence threshold: ${this.confidenceThreshold}`);
 
     const retryConfig = getSyncRetryConfig();
     this.log(
