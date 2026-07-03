@@ -1,8 +1,6 @@
 import { ProcessingEngine } from './processingEngine';
 import { StateManager } from './stateManager';
 import { ScanConfig } from './config';
-import { Run } from './database';
-import { once } from 'events';
 
 export class ProcessingCoordinator {
   private processingPromise: Promise<void> | null = null;
@@ -30,10 +28,17 @@ export class ProcessingCoordinator {
     });
 
     this.engine.on('run:files_found', (files: string[]) => {
-      this.currentRunId = this.stateManager.startRun(files.length, this.enabledEngines);
-
+      // Update the pending run with real file totals
+      const totalEngines = files.length * this.enabledEngines.length;
+      this.stateManager.getDatabase().updateRun(this.currentRunId!, {
+        total_files: files.length,
+        total_engines: totalEngines,
+      });
       // Batch insert all files in a single transaction — orders of magnitude faster
       this.stateManager.batchAddFiles(this.currentRunId!, files);
+      // Re-emit run:started so the frontend gets updated totals
+      const run = this.stateManager.getCurrentRun()!;
+      this.stateManager.emit('run:started', run);
     });
 
     this.engine.on('file:started', ({ srtPath, videoPath }: { srtPath: string; videoPath: string | null }) => {
@@ -137,61 +142,39 @@ export class ProcessingCoordinator {
 
     console.log(`[${new Date().toISOString()}] Starting new processing run${dryRun ? ' (DRY RUN — no changes will be written)' : ''}...`);
     this.engine.reset();
-    this.currentRunId = null;
     this.stopRequested = false;
 
-    const ac = new AbortController();
-    // Use events.once for cleaner listener handling with AbortSignal support
-    const runStartedPromise = once(this.stateManager, 'run:started', { signal: ac.signal }).then(
-      ([run]) => (run as Run).id,
-    );
+    // Create run record immediately so the UI has a run to track from the start
+    const runId = this.stateManager.createPendingRun();
+    this.currentRunId = runId;
+    const run = this.stateManager.getCurrentRun()!;
+    this.stateManager.emit('run:started', run);
 
-    // Suppress unhandled rejection when we abort this promise
-    runStartedPromise.catch(() => {});
-
+    // Start scanning + processing in the background
     const processPromise = this.engine.processRun(config);
 
-    this.processingPromise = processPromise.finally(() => {
-      this.processingPromise = null;
-      const run = this.stateManager.getCurrentRun();
-      if (run) {
-        console.log(
-          `[${new Date().toISOString()}] Run completed - Total: ${run.total_files}, Completed: ${run.completed}, Skipped: ${run.skipped}, Failed: ${run.failed}`,
-        );
-        this.stateManager.completeRun(run.id);
-      }
-      this.currentRunId = null;
-    });
-    // Prevent unhandled rejection on the background promise property,
-    // as the error is handled by the main startRun awaiter.
+    this.processingPromise = processPromise
+      .then(() => {
+        if (this.stopRequested) {
+          console.log(`[${new Date().toISOString()}] Stop was requested during scan. Cancelling run: ${runId}`);
+          this.stopRun();
+        }
+      })
+      .finally(() => {
+        this.processingPromise = null;
+        const r = this.stateManager.getCurrentRun();
+        if (r && r.status === 'running') {
+          console.log(
+            `[${new Date().toISOString()}] Run completed - Total: ${r.total_files}, Completed: ${r.completed}, Skipped: ${r.skipped}, Failed: ${r.failed}`,
+          );
+          this.stateManager.completeRun(r.id);
+        }
+        this.currentRunId = null;
+      });
     this.processingPromise.catch(() => {});
 
-    try {
-      // Wait for run to be created or process to fail/finish
-      const runId = await Promise.race([
-        runStartedPromise,
-        processPromise.then(() => {
-          // Process finished. If run started, we should have the ID.
-          const run = this.stateManager.getCurrentRun();
-          if (!run) {
-            throw new Error('Process completed without starting a run');
-          }
-          return run.id;
-        }),
-      ]);
-
-      if (this.stopRequested) {
-        console.log(`[${new Date().toISOString()}] Stop was requested during scan. Cancelling run: ${runId}`);
-        this.stopRun();
-        throw new Error('Run was stopped during initialization');
-      }
-
-      console.log(`[${new Date().toISOString()}] Run created with ID: ${runId}`);
-      return runId;
-    } finally {
-      // Clean up the event listener if it hasn't fired yet
-      ac.abort();
-    }
+    console.log(`[${new Date().toISOString()}] Run created with ID: ${runId} (scanning...)`);
+    return runId;
   }
 
   skipFile(filePath: string): void {
