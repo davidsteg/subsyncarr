@@ -111,6 +111,7 @@ docker run -d \
 | `DEFAULT_ENGINE`            | `alass`                       | Primary engine; its alignment is kept when both engines agree                    |
 | `FALLBACK_ENGINE`           | `ffsubsync`                   | Second engine run for the agreement check                                        |
 | `ENGINE_AGREEMENT_THRESHOLD_MS` | `5000`                    | Max ms the two engines' alignments may differ and still count as a match. Beyond this, the subtitle is deleted as not fitting the video |
+| `DRY_RUN`                   | `false`                       | Default dry-run mode: engines run normally but nothing is written or deleted. Can also be set per-run from the UI (Dry Run button / checkbox) or toggled persistently in Settings — a UI choice for a given run always takes precedence over this variable |
 | `SYNC_TIMEOUT`              | _(none)_                      | Timeout in seconds per sync operation (overrides SYNC_ENGINE_TIMEOUT_MS)         |
 | `SYNC_ENGINE_TIMEOUT_MS`    | `300000`                      | Timeout for each sync engine in milliseconds (5 min default)                     |
 | `ALASS_TIMEOUT_MS`          | _(none)_                      | Override timeout for alass only (takes precedence over SYNC_ENGINE_TIMEOUT_MS)   |
@@ -194,6 +195,7 @@ Subsyncarr Plus includes a comprehensive web-based monitoring interface accessib
 
 - **Start Full Run** - Process all configured directories immediately
 - **Scan Specific Path** - Process a custom directory on demand
+- **Dry Run** - Run a full scan (or a specific path, via the checkbox in the Scan Specific Path dialog) with both engines executing normally, but without writing or deleting any files. A "DRY RUN" badge marks the run while it's active.
 - **Stop Processing** - Cancel all remaining files in current run
 - **Skip File** - Cancel processing for individual files
 
@@ -220,6 +222,12 @@ Subsyncarr Plus includes a comprehensive web-based monitoring interface accessib
 - Display of monitored paths and excluded paths
 - Schedule status with next run time
 - Human-readable cron schedule translation
+- Media stats: total/synced/skipped/pending file counts and per-engine sync rates (deduplicated by file, so a file tracked by multiple engines counts once)
+- Language distribution chart, grouped by detected subtitle language
+
+**Folders:**
+
+- Per-folder sync progress with drill-down navigation, showing synced/pending counts for each directory in your library
 
 ### Database Persistence
 
