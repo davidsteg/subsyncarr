@@ -348,7 +348,8 @@ export class ProcessingEngine extends EventEmitter {
       }
 
       if (result.success) {
-        const engineOutputPath = getOutputPath(srtPath, engine);
+        // alass/ffsubsync overwrite in-place — synced content is at srtPath
+        const engineOutputPath = srtPath;
 
         // --- Offset check and retry logic ---
         let finalContent: string | null = null;
@@ -356,9 +357,9 @@ export class ProcessingEngine extends EventEmitter {
         let notFitting = false;
 
         if (originalContent && retryConfig.thresholdMs > 0) {
-          // Read the synced output
+          // Read the synced output (already at srtPath since engines overwrite in-place)
           try {
-            const syncedContent = readFileSync(engineOutputPath, 'utf8');
+            const syncedContent = readFileSync(srtPath, 'utf8');
             offsetMs = calculateSubtitleOffset(originalContent, syncedContent);
 
             this.log(
@@ -444,7 +445,7 @@ export class ProcessingEngine extends EventEmitter {
         } else {
           // No original content or threshold disabled — skip offset check
           try {
-            finalContent = readFileSync(engineOutputPath, 'utf8');
+            finalContent = readFileSync(srtPath, 'utf8');
           } catch {
             finalContent = null;
           }
@@ -507,8 +508,8 @@ export class ProcessingEngine extends EventEmitter {
           if (finalContent) {
             markSrtAsSynced(srtPath, engine, finalContent);
           } else {
-            // Fallback: read from engine output if we don't have finalContent
-            const content = readFileSync(engineOutputPath, 'utf8');
+            // Fallback: read from srtPath (engines overwrite in-place)
+            const content = readFileSync(srtPath, 'utf8');
             markSrtAsSynced(srtPath, engine, content);
           }
           // Clean up engine output file
