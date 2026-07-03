@@ -623,20 +623,29 @@ export class SubsyncarrPlusDatabase {
 
   // Folder tree with progress stats — accepts optional sub-path for drill-down
   getFolderStats(parentPath?: string) {
-    // Get all distinct folder paths with their file counts and sync stats
-    let query = `SELECT 
+    // One row per file (not per file+engine) — a file is "synced" if ANY
+    // engine succeeded on it, "skipped" only if it's flagged skipped and was
+    // never successfully synced by any engine. Without this GROUP BY, a file
+    // tracked by 2 engines would count twice toward the folder total and its
+    // synced count would depend on how many engines happened to succeed.
+    let query = `SELECT
         file_path,
-        CASE WHEN last_success_time IS NOT NULL THEN 1 ELSE 0 END as synced,
-        CASE WHEN is_skipped = 1 THEN 1 ELSE 0 END as skipped
+        MAX(CASE WHEN last_success_time IS NOT NULL THEN 1 ELSE 0 END) as synced,
+        MAX(CASE WHEN is_skipped = 1 THEN 1 ELSE 0 END) as skipped
        FROM engine_failure_tracking`;
     const params: string[] = [];
-    
+
     if (parentPath) {
       query += ` WHERE file_path LIKE ?`;
       params.push(parentPath + '/%');
     }
-    
+    query += ` GROUP BY file_path`;
+
     const rows = this.db.prepare(query).all(...params) as Array<{ file_path: string; synced: number; skipped: number }>;
+    // A file synced by one engine but flagged skipped by another should count as synced, not skipped.
+    for (const row of rows) {
+      if (row.synced) row.skipped = 0;
+    }
     
     interface FolderNode {
       total: number;
