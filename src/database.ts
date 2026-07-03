@@ -556,8 +556,8 @@ export class SubsyncarrPlusDatabase {
       if (parentPath && relativePath.startsWith(parentPath + '/')) {
         relativePath = relativePath.substring(parentPath.length + 1);
       }
-      const parts = relativePath.split('/');
-      // Skip empty first part and filename
+      const parts = relativePath.split('/').filter(Boolean);
+      // Skip filename (last element)
       let current = folders;
       for (let i = 0; i < parts.length - 1; i++) {
         const part = parts[i];

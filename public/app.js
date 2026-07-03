@@ -29,7 +29,7 @@ class SubsyncarrPlusClient {
   updateThemeButton() {
     var btn = document.getElementById('themeToggle');
     var isDark = document.documentElement.getAttribute('data-theme') === 'dark';
-    btn.textContent = isDark ? 'Light' : 'Dark';
+    btn.textContent = isDark ? '\u2600\uFE0F Light' : '\uD83C\uDF19 Dark';
   }
   navigate(page) {
     this.activePage = page;
@@ -74,6 +74,7 @@ class SubsyncarrPlusClient {
         break;
       case 'file:updated':
         if (msg.data.run) this.state.currentRun = msg.data.run;
+        this.render();
         break;
       case 'files:cleared':
         this.state.currentRun = msg.data.currentRun; this.state.files = msg.data.files;
