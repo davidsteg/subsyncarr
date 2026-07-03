@@ -88,10 +88,21 @@ function getTimeoutMs(): number {
 
 /**
  * Get timeout for a specific sync engine.
- * Per-engine env vars take precedence: ALASS_TIMEOUT_MS, FFSUBSYNC_TIMEOUT_MS, AUTOSUBSYNC_TIMEOUT_MS
- * Falls back to the general SYNC_ENGINE_TIMEOUT_MS / SYNC_TIMEOUT / default.
+ * Runtime config (set via the Settings UI, persisted in DB) takes precedence
+ * — it already incorporates the per-engine env var as its own default at
+ * load time, so a Settings change always wins instead of being silently
+ * overridden by a stale ALASS_TIMEOUT_MS / FFSUBSYNC_TIMEOUT_MS / AUTOSUBSYNC_TIMEOUT_MS.
+ * Falls back to the env var directly, then SYNC_ENGINE_TIMEOUT_MS / SYNC_TIMEOUT / default.
  */
 export function getEngineTimeoutMs(engine: string): number {
+  try {
+    const { getRuntimeCfg } = require('./engineRuntime');
+    const cfg = getRuntimeCfg();
+    if (cfg.engineTimeouts[engine] && cfg.engineTimeouts[engine] > 0) {
+      return cfg.engineTimeouts[engine];
+    }
+  } catch {}
+
   const engineEnvMap: Record<string, string> = {
     alass: 'ALASS_TIMEOUT_MS',
     ffsubsync: 'FFSUBSYNC_TIMEOUT_MS',
@@ -102,14 +113,6 @@ export function getEngineTimeoutMs(engine: string): number {
     const val = parseInt(process.env[envVar]!, 10);
     if (!isNaN(val) && val > 0) return val;
   }
-  // Check runtime config (set via UI / DB) before falling back to general env vars
-  try {
-    const { getRuntimeCfg } = require('./engineRuntime');
-    const cfg = getRuntimeCfg();
-    if (cfg.engineTimeouts[engine] && cfg.engineTimeouts[engine] > 0) {
-      return cfg.engineTimeouts[engine];
-    }
-  } catch {}
   return getTimeoutMs();
 }
 

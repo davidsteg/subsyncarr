@@ -1,3 +1,32 @@
+## [1.3.19] — 2026-07-03
+
+### Fixed
+- **Stop button no longer reliably stopped a run**: since 1.3.18 creates the run row before scanning starts, `stopRun()` no longer detected "still scanning" — it marked the run cancelled in the DB but the scan and processing continued in the background untouched (writing/deleting files) because nothing was in the file queue yet to cancel. Added `ProcessingEngine.requestStop()`, checked at the top of every file's processing, so files discovered after Stop is clicked are skipped instead of processed.
+- **`run:started` could be re-broadcast with null data**: if a run was cancelled while its scan was still in flight, the `run:files_found` handler read `getCurrentRun()!` (already null after cancellation) and force-broadcast it anyway, flipping the UI back to "running" with no run data. Now only re-emits when a run object actually exists.
+- **Uncaught exception broke page load for every user**: `app.js` still registered a listener on `#setConfidence`, an element removed from `index.html` along with the Confidence Threshold setting. Since `setupEvents()` ran before `fetchInitialState()`/`fetchConfig()`/`fetchVersion()`/`fetchStats()` in the constructor, this threw and silently skipped all of them, plus every handler registered afterward (folder navigation, media detail modal, mobile menu, search boxes, periodic stats refresh).
+- **"Parallel Workers" setting required a server restart**: `ProcessingEngine.maxConcurrent` was only read from runtime config once, at construction. Now refreshed at the start of every run.
+- **Per-engine timeout Settings could be silently overridden by a stale env var**: `getEngineTimeoutMs` checked `ALASS_TIMEOUT_MS`/etc. before the Settings-UI value. Reordered so a Settings change always wins, consistent with how dry-run precedence works.
+
+### Changed
+- Removed dead code: an unused `_pollScanProgress()` method and a shadowed duplicate `_stopScanPoll()` definition in `app.js`.
+
+## [1.3.16]–[1.3.18] — 2026-07-03
+
+Made outside this session; summarized here for changelog continuity.
+
+### Added
+- Engine agreement threshold, per-engine timeouts, and max concurrent tasks are now runtime-configurable from the Settings UI (`src/engineRuntime.ts`), not just via environment variables.
+- Scan-progress polling on the Current Run page, so the UI shows live scan progress instead of a static "Starting scan..." placeholder.
+
+### Changed
+- The run record is now created before scanning starts (rather than after), so the UI has a run to track from the very beginning of a run.
+- Removed the Confidence Threshold setting and its logic — sync fit is judged only by offset limit and engine agreement (see 1.3.12).
+- Reverted the sidebar/favicon logo from the 1.3.14 SVG back to the 🧬 emoji.
+
+### Fixed
+- `startRun` no longer blocks on a `Promise.race` waiting for the file list; the start request returns immediately and the run's progress streams in via WebSocket.
+- A missing `catch` after a `try` in the frontend's `startRun`.
+
 ## [1.3.15] — 2026-07-03
 
 ### Fixed

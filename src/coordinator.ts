@@ -36,9 +36,13 @@ export class ProcessingCoordinator {
       });
       // Batch insert all files in a single transaction — orders of magnitude faster
       this.stateManager.batchAddFiles(this.currentRunId!, files);
-      // Re-emit run:started so the frontend gets updated totals
-      const run = this.stateManager.getCurrentRun()!;
-      this.stateManager.emit('run:started', run);
+      // Re-emit run:started so the frontend gets updated totals. If the run
+      // was already cancelled while this scan was in flight, getCurrentRun()
+      // returns null — don't broadcast a fake "started" state in that case.
+      const run = this.stateManager.getCurrentRun();
+      if (run) {
+        this.stateManager.emit('run:started', run);
+      }
     });
 
     this.engine.on('file:started', ({ srtPath, videoPath }: { srtPath: string; videoPath: string | null }) => {
@@ -185,6 +189,15 @@ export class ProcessingCoordinator {
 
   stopRun(): void {
     console.log(`[${new Date().toISOString()}] Stop run requested`);
+
+    // Covers files not yet known to the coordinator too — since a run row
+    // now exists from the moment startRun() is called (before scanning even
+    // begins), getCurrentRun() below is rarely null anymore, so this can't
+    // rely solely on the "queue stop" branch to catch a stop during the scan
+    // phase. Without this, files the scan discovers after Stop is clicked
+    // would still be processed (and possibly deleted) normally.
+    this.engine.requestStop();
+
     const run = this.stateManager.getCurrentRun();
     if (!run) {
       if (this.isRunning()) {
@@ -195,7 +208,7 @@ export class ProcessingCoordinator {
       throw new Error('No run is currently in progress');
     }
 
-    // Get all files and cancel them
+    // Get all files already known and cancel them (aborts any in-flight engine process)
     const files = this.stateManager.getFileResults(run.id);
     const allFilePaths = files.map((f) => f.file_path);
     this.engine.stopAllProcessing(allFilePaths);

@@ -492,25 +492,6 @@ class SubsyncarrPlusClient {
     sb.classList.toggle('open');
     if (ov) ov.classList.toggle('show');
   }
-  _pollScanProgress() {
-    var self = this;
-    this._stopScanPoll();
-    this._scanPoll = setInterval(function() {
-      if (!self.state.isRunning || (self.state.currentRun && self.state.currentRun.id !== 'pending')) {
-        self._stopScanPoll();
-        return;
-      }
-      fetch('/api/status?brief=true').then(function(r) { return r.json(); }).then(function(d) {
-        if (d.scanProgress) {
-          self.state.scanProgress = d.scanProgress;
-          self.renderRun();
-        }
-      }).catch(function() {});
-    }, 500);
-  }
-  _stopScanPoll() {
-    if (this._scanPoll) { clearInterval(this._scanPoll); }
-  }
   _startScanPoll() {
     if (this._scanPoll) return;
     var self = this;
@@ -559,8 +540,6 @@ class SubsyncarrPlusClient {
       document.getElementById(id).addEventListener('click', function(e) { if (e.target.id === id) document.getElementById(id).classList.add('hidden'); });
     });
     document.getElementById('saveSettings').addEventListener('click', function() { self.saveSettings(); });
-    document.getElementById('setConfidence').addEventListener('input', function() {
-    });
     document.getElementById('closeMediaDetailModal').addEventListener('click', function() { document.getElementById('mediaDetailModal').classList.add('hidden'); });
     document.getElementById('closeMediaDetailButton').addEventListener('click', function() { document.getElementById('mediaDetailModal').classList.add('hidden'); });
     document.getElementById('mediaDetailModal').addEventListener('click', function(e) { if (e.target.id === 'mediaDetailModal') document.getElementById('mediaDetailModal').classList.add('hidden'); });
