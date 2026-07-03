@@ -13,6 +13,16 @@ async function main() {
   console.log(`[${new Date().toISOString()}] Initializing Subsyncarr Plus Server...`);
 
   const stateManager = new StateManager(dbPath);
+
+  // Load runtime config overrides from DB (engine timeouts, concurrency)
+  try {
+    const { loadRuntimeCfgFromDb } = require('./engineRuntime');
+    const db = stateManager.getDatabase();
+    loadRuntimeCfgFromDb((key: string) => db.getSetting(key));
+    console.log(`[${new Date().toISOString()}] Runtime config loaded from DB`);
+  } catch (e) {
+    console.error(`[${new Date().toISOString()}] Failed to load runtime config from DB:`, e);
+  }
   const engine = new ProcessingEngine();
   const coordinator = new ProcessingCoordinator(engine, stateManager);
   const server = new SubsyncarrPlusServer(coordinator, stateManager);

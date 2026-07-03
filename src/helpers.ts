@@ -102,6 +102,14 @@ export function getEngineTimeoutMs(engine: string): number {
     const val = parseInt(process.env[envVar]!, 10);
     if (!isNaN(val) && val > 0) return val;
   }
+  // Check runtime config (set via UI / DB) before falling back to general env vars
+  try {
+    const { getRuntimeCfg } = require('./engineRuntime');
+    const cfg = getRuntimeCfg();
+    if (cfg.engineTimeouts[engine] && cfg.engineTimeouts[engine] > 0) {
+      return cfg.engineTimeouts[engine];
+    }
+  } catch {}
   return getTimeoutMs();
 }
 

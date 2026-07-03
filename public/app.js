@@ -365,6 +365,7 @@ class SubsyncarrPlusClient {
     try {
       var r = await fetch('/api/settings'); var s = await r.json();
       document.getElementById('setMaxShift').value = s.maxSubtitleShiftMs;
+      document.getElementById('setAgreementThreshold').value = s.engineAgreementThresholdMs || 5000;
       document.getElementById('setRetryThreshold').value = s.syncRetryThresholdMs;
       document.getElementById('setMaxRetries').value = s.syncMaxRetries;
       document.getElementById('setConfidence').value = s.confidenceThreshold;
@@ -372,6 +373,10 @@ class SubsyncarrPlusClient {
       document.getElementById('setFallbackEngine').value = s.fallbackEngine || 'ffsubsync';
       document.getElementById('confidenceLabel').textContent = s.confidenceThreshold.toFixed(2);
       document.getElementById('setDryRun').checked = s.dryRun;
+      document.getElementById('setAlassTimeout').value = (s.engineTimeouts && s.engineTimeouts.alass) || 300000;
+      document.getElementById('setFfsubsyncTimeout').value = (s.engineTimeouts && s.engineTimeouts.ffsubsync) || 300000;
+      document.getElementById('setAutosubsyncTimeout').value = (s.engineTimeouts && s.engineTimeouts.autosubsync) || 300000;
+      document.getElementById('setMaxWorkers').value = s.maxConcurrentTasks || 1;
       document.getElementById('setTheme').value = s.theme;
       document.getElementById('setCron').value = s.cronSchedule;
       document.getElementById('setEngines').value = s.includeEngines;
@@ -386,6 +391,11 @@ class SubsyncarrPlusClient {
       default_engine: document.getElementById('setDefaultEngine').value,
       fallback_engine: document.getElementById('setFallbackEngine').value,
       dry_run: document.getElementById('setDryRun').checked ? 'true' : 'false',
+      engine_timeout_alass: document.getElementById('setAlassTimeout').value,
+      engine_timeout_ffsubsync: document.getElementById('setFfsubsyncTimeout').value,
+      engine_timeout_autosubsync: document.getElementById('setAutosubsyncTimeout').value,
+      max_concurrent_tasks: document.getElementById('setMaxWorkers').value,
+      engine_agreement_threshold_ms: document.getElementById('setAgreementThreshold').value,
       theme: document.getElementById('setTheme').value,
     };
     try {

@@ -89,6 +89,12 @@ export function getEngineChainConfig(): EngineChainConfig {
  * disagree by more, it's judged unfit and deleted. Default: 5000 (5s).
  */
 export function getEngineAgreementThresholdMs(): number {
+  // Runtime config (set via UI) takes precedence over env var
+  try {
+    const { getRuntimeCfg } = require('./engineRuntime');
+    const cfg = getRuntimeCfg();
+    if (cfg.engineAgreementThresholdMs > 0) return cfg.engineAgreementThresholdMs;
+  } catch {}
   const val = parseInt(process.env.ENGINE_AGREEMENT_THRESHOLD_MS || '', 10);
   if (!isNaN(val) && val > 0) return val;
   return 5000;
