@@ -1,707 +1,267 @@
 class SubsyncarrPlusClient {
   constructor() {
     this.ws = null;
-    this.state = { currentRun: null, files: [], isRunning: false };
-    this.reconnectInterval = 3000;
-    this.reconnectTimer = null;
-    this.historyCache = {}; // Cache run data for file lookups
-    this.initialized = false; // Track whether initial data has been loaded
-
+    this.state = { currentRun: null, files: [], isRunning: false, scanProgress: null };
+    this.historyCache = {};
+    this.initialized = false;
+    this.activePage = 'dashboard';
+    this.config = null;
+    this.initTheme();
     this.initWebSocket();
-    this.setupEventHandlers();
+    this.setupEvents();
     this.fetchInitialState();
-    this.fetchConfigStatus();
+    this.fetchConfig();
+    this.fetchVersion();
   }
-
+  initTheme() {
+    var saved = localStorage.getItem('subsyncarr-theme');
+    if (saved) document.documentElement.setAttribute('data-theme', saved);
+    this.updateThemeButton();
+  }
+  toggleTheme() {
+    var current = document.documentElement.getAttribute('data-theme');
+    var next = current === 'dark' ? 'light' : 'dark';
+    document.documentElement.setAttribute('data-theme', next);
+    localStorage.setItem('subsyncarr-theme', next);
+    this.updateThemeButton();
+  }
+  updateThemeButton() {
+    var btn = document.getElementById('themeToggle');
+    var isDark = document.documentElement.getAttribute('data-theme') === 'dark';
+    btn.textContent = isDark ? '\u2600\uFE0F Light' : '\uD83C\uDF19 Dark';
+  }
+  navigate(page) {
+    this.activePage = page;
+    document.querySelectorAll('.nav-item').forEach(function(n) { n.classList.remove('active'); });
+    document.querySelector('[data-page="' + page + '"]').classList.add('active');
+    document.querySelectorAll('.page').forEach(function(p) { p.classList.remove('active'); });
+    document.getElementById('page-' + page).classList.add('active');
+    if (page === 'folders') this.fetchFolders();
+    if (page === 'dashboard') { this.fetchStats(); this.fetchConfig(); }
+  }
   initWebSocket() {
-    const protocol = location.protocol === 'https:' ? 'wss:' : 'ws:';
-    this.ws = new WebSocket(`${protocol}//${location.host}/ws`);
-
-    this.ws.onopen = () => {
-      console.log('WebSocket connected');
-    };
-
-    this.ws.onmessage = (event) => {
-      const msg = JSON.parse(event.data);
-      // Handle batched messages from the server
+    var self = this;
+    var protocol = location.protocol === 'https:' ? 'wss:' : 'ws:';
+    this.ws = new WebSocket(protocol + '//' + location.host + '/ws');
+    this.ws.onopen = function() {};
+    this.ws.onmessage = function(event) {
+      var msg = JSON.parse(event.data);
       if (msg.type === 'batch' && Array.isArray(msg.messages)) {
-        for (const innerMsg of msg.messages) {
-          this.handleMessage(innerMsg);
-        }
-        // Render once after processing the entire batch
-        this.render();
-      } else {
-        this.handleMessage(msg);
-      }
+        msg.messages.forEach(function(m) { self.handleMessage(m); });
+        self.render();
+      } else { self.handleMessage(msg); }
     };
-
-    this.ws.onclose = () => {
-      console.log('WebSocket disconnected, reconnecting...');
-      // Debounce reconnection to avoid reconnect storms
-      if (this.reconnectTimer) {
-        clearTimeout(this.reconnectTimer);
-      }
-      this.reconnectTimer = setTimeout(() => {
-        this.reconnectTimer = null;
-        this.initWebSocket();
-      }, this.reconnectInterval);
-    };
-
-    this.ws.onerror = (error) => {
-      console.error('WebSocket error:', error);
-    };
+    this.ws.onclose = function() { setTimeout(function() { self.initWebSocket(); }, 3000); };
   }
-
   handleMessage(msg) {
     switch (msg.type) {
       case 'state':
-        // Merge state instead of replacing to preserve files array
         this.state.currentRun = msg.data.currentRun || this.state.currentRun;
         this.state.isRunning = msg.data.isRunning !== undefined ? msg.data.isRunning : this.state.isRunning;
-        // Only fetch initial state if we haven't loaded data yet
-        if (!this.initialized) {
-          this.fetchInitialState();
-        } else {
-          this.render();
-        }
+        this.state.scanProgress = msg.data.scanProgress || null;
+        if (!this.initialized) this.fetchInitialState(); else this.render();
         break;
       case 'run:started':
-        this.state.currentRun = msg.data;
-        this.state.isRunning = true;
-        this.state.files = [];
-        this.render();
+        this.state.currentRun = msg.data; this.state.isRunning = true; this.state.files = [];
+        this.navigate('run'); this.render();
         break;
-      case 'run:completed':
-        this.state.currentRun = msg.data;
-        this.state.isRunning = false;
-        this.render();
-        this.fetchHistory();
-        break;
-      case 'run:cancelled':
-        this.state.currentRun = msg.data;
-        this.state.isRunning = false;
-        this.render();
-        this.fetchHistory();
+      case 'run:completed': case 'run:cancelled':
+        this.state.currentRun = msg.data; this.state.isRunning = false;
+        this.render(); this.fetchHistory();
         break;
       case 'file:updated':
-        // Lightweight update — just update run counters, don't fetch full file data
-        if (msg.data.run) {
-          this.state.currentRun = msg.data.run;
-        }
-        // Don't render here — batch handler or other message types will trigger render
+        if (msg.data.run) this.state.currentRun = msg.data.run;
         break;
       case 'files:cleared':
-        this.state.currentRun = msg.data.currentRun;
-        this.state.files = msg.data.files;
+        this.state.currentRun = msg.data.currentRun; this.state.files = msg.data.files;
         this.render();
         break;
     }
   }
-
-  updateFile(fileData) {
-    const index = this.state.files.findIndex((f) => f.file_path === fileData.file_path);
-    if (index >= 0) {
-      this.state.files[index] = fileData;
-    } else {
-      this.state.files.push(fileData);
-    }
-  }
-
   async fetchInitialState() {
-    const response = await fetch('/api/status');
-    const data = await response.json();
-    this.state = data;
-    this.initialized = true;
-    this.render();
-    this.fetchHistory();
+    var r = await fetch('/api/status'); var d = await r.json();
+    this.state.currentRun = d.currentRun; this.state.isRunning = d.isRunning;
+    this.state.files = d.files || []; this.state.scanProgress = d.scanProgress;
+    this.initialized = true; this.render(); this.fetchHistory();
   }
-
   async fetchHistory() {
-    const response = await fetch('/api/history?include_files=true');
-    const historyWithStats = await response.json();
-
-    // Cache for file list lookups
-    historyWithStats.forEach((run) => {
-      this.historyCache[run.id] = run;
-    });
-
-    this.renderHistory(historyWithStats);
+    var r = await fetch('/api/history?include_files=true'); var data = await r.json();
+    var self = this; data.forEach(function(run) { self.historyCache[run.id] = run; });
+    this.renderHistory(data);
   }
-
-  async fetchConfigStatus() {
-    try {
-      const response = await fetch('/api/config');
-      const config = await response.json();
-      this.renderConfigStatus(config);
-    } catch (error) {
-      console.error('Failed to fetch config status:', error);
-      this.renderConfigStatus({ isConfigured: false, paths: [], excludePaths: [] });
-    }
+  async fetchConfig() {
+    try { var r = await fetch('/api/config'); this.config = await r.json(); this.renderConfig(); }
+    catch(e) { this.config = { isConfigured: false, paths: [], excludePaths: [], schedule: null }; this.renderConfig(); }
   }
-
-  renderConfigStatus(config) {
-    // Render path status
-    const light = document.getElementById('statusLight');
-    const label = document.getElementById('statusLabel');
-    const paths = document.getElementById('statusPaths');
-
-    if (config.isConfigured) {
-      light.className = 'status-light active';
-      label.textContent = 'Watching Folders';
-      const pathsList = config.paths.join(', ');
-      paths.textContent = pathsList;
-      paths.title = pathsList; // Show full path on hover
+  async fetchVersion() {
+    try { var r = await fetch('/api/version'); var d = await r.json();
+      document.getElementById('versionText').textContent = 'v' + d.version;
+      document.getElementById('releaseLink').href = d.releaseUrl; } catch(e) {}
+  }
+  async fetchStats() { try { var r = await fetch('/api/stats'); this.renderStats(await r.json()); } catch(e) {} }
+  async fetchFolders() { try { var r = await fetch('/api/folders'); this.renderFolders(await r.json()); } catch(e) {} }
+  renderConfig() {
+    var c = this.config;
+    var dot = document.getElementById('dashStatusDot');
+    var txt = document.getElementById('dashStatusText');
+    var sch = document.getElementById('dashSchedule');
+    var sidebar = document.getElementById('sidebarStatus');
+    if (c && c.isConfigured) {
+      dot.className = 'status-dot'; if (this.state.isRunning) dot.classList.add('running');
+      txt.textContent = 'Watching: ' + c.paths.join(', '); sidebar.textContent = '\u25CF Active';
     } else {
-      light.className = 'status-light inactive';
-      label.textContent = 'No Paths Configured';
-      paths.textContent = 'Using default: /scan_dir';
+      dot.className = 'status-dot off'; txt.textContent = 'No paths configured'; sidebar.textContent = '\u25CB Idle';
     }
-
-    // Render schedule status
-    this.renderScheduleStatus(config.schedule);
+    if (c && c.schedule && c.schedule.enabled) {
+      sch.textContent = c.schedule.nextRun ? 'Next: ' + new Date(c.schedule.nextRun).toLocaleTimeString() : (c.schedule.description || c.schedule.cron || 'Scheduled');
+    } else { sch.textContent = 'Manual only'; }
   }
-
-  renderScheduleStatus(schedule) {
-    const scheduleLabel = document.getElementById('scheduleLabel');
-    const scheduleTime = document.getElementById('scheduleTime');
-
-    if (schedule && schedule.enabled) {
-      scheduleLabel.textContent = 'Next Scheduled Scan';
-
-      if (schedule.nextRun) {
-        const nextRunDate = new Date(schedule.nextRun);
-        const now = new Date();
-        const diff = nextRunDate - now;
-
-        // Format time until next run
-        const timeUntil = this.formatTimeUntil(diff);
-        scheduleTime.textContent = `${nextRunDate.toLocaleString()} (${timeUntil})`;
-        scheduleTime.title = `Schedule: ${schedule.description}`;
-
-        // Update countdown every minute
-        if (this.scheduleUpdateTimer) {
-          clearInterval(this.scheduleUpdateTimer);
-        }
-        this.scheduleUpdateTimer = setInterval(() => {
-          this.fetchConfigStatus();
-        }, 60000); // Update every minute
-      } else {
-        scheduleTime.textContent = schedule.description || schedule.cron;
-      }
-    } else {
-      scheduleLabel.textContent = 'Auto-Scan Disabled';
-      scheduleTime.textContent = 'Manual runs only';
+  renderStats(stats) {
+    if (!stats) return;
+    var banner = document.getElementById('scanBanner');
+    var sp = this.state.scanProgress;
+    if (sp && sp.total > 0) {
+      banner.classList.remove('hidden');
+      document.getElementById('scanProgressFill').style.width = Math.round((sp.checked/sp.total)*100) + '%';
+      document.getElementById('scanChecked').textContent = sp.checked.toLocaleString() + ' / ' + sp.total.toLocaleString() + ' checked';
+      document.getElementById('scanNeedSync').textContent = sp.needSync.toLocaleString() + ' need sync';
+      document.getElementById('scanAlready').textContent = sp.alreadySynced.toLocaleString() + ' already synced';
+    } else { banner.classList.add('hidden'); }
+    document.getElementById('statsGrid').innerHTML =
+      '<div class="stat-card accent"><div class="label">Total Tracked</div><div class="value">' + stats.totalFiles.toLocaleString() + '</div></div>' +
+      '<div class="stat-card success"><div class="label">Synced</div><div class="value">' + stats.syncedFiles.toLocaleString() + '</div><div class="sub">' + stats.syncRate + '% complete</div><div class="mini-progress"><div class="mini-progress-fill" style="width:' + stats.syncRate + '%"></div></div></div>' +
+      '<div class="stat-card warning"><div class="label">Skipped</div><div class="value">' + stats.skippedFiles.toLocaleString() + '</div></div>' +
+      '<div class="stat-card"><div class="label">Pending</div><div class="value">' + (stats.totalFiles - stats.syncedFiles - stats.skippedFiles).toLocaleString() + '</div></div>';
+    var engHtml = (stats.engines || []).map(function(e) {
+      return '<div class="stat-card success"><div class="label">' + e.engine + '</div><div class="value">' + e.synced.toLocaleString() + '</div><div class="sub">' + e.rate + '% synced - ' + e.total.toLocaleString() + ' total</div><div class="mini-progress"><div class="mini-progress-fill" style="width:' + e.rate + '%"></div></div></div>';
+    }).join('');
+    document.getElementById('engineCards').innerHTML = engHtml;
+    var langHtml = (stats.languages || []).map(function(l) {
+      return '<div class="lang-chip"><div class="lang-code">' + l.lang.toUpperCase() + '</div><div class="lang-count">' + l.count.toLocaleString() + '</div></div>';
+    }).join('');
+    document.getElementById('langGrid').innerHTML = langHtml || '<p class="text-muted">No language data</p>';
+  }
+  renderRun() {
+    var run = this.state.currentRun;
+    var container = document.getElementById('runContent');
+    if (!run) {
+      container.innerHTML = '<p class="text-muted text-sm">No run in progress.</p>';
+      document.getElementById('runStatusBadge').textContent = 'IDLE';
+      document.getElementById('runStatusBadge').className = 'status-badge'; return;
     }
-  }
-
-  formatTimeUntil(milliseconds) {
-    const seconds = Math.floor(milliseconds / 1000);
-    const minutes = Math.floor(seconds / 60);
-    const hours = Math.floor(minutes / 60);
-    const days = Math.floor(hours / 24);
-
-    if (days > 0) {
-      return `in ${days} day${days > 1 ? 's' : ''}`;
-    } else if (hours > 0) {
-      return `in ${hours} hour${hours > 1 ? 's' : ''}`;
-    } else if (minutes > 0) {
-      return `in ${minutes} minute${minutes > 1 ? 's' : ''}`;
-    } else {
-      return 'very soon';
+    var pct = run.total_engines > 0 ? Math.round((run.completed_engines / run.total_engines) * 100) : 0;
+    document.getElementById('runStatusBadge').textContent = run.status === 'running' ? 'RUNNING' : run.status.toUpperCase();
+    document.getElementById('runStatusBadge').className = 'status-badge ' + run.status;
+    var processing = this.state.files.filter(function(f) { return f.status === 'processing'; });
+    var done = this.state.files.filter(function(f) { return ['completed','skipped','error','not_fitting'].indexOf(f.status) >= 0; });
+    var self = this;
+    function fileCards(arr, showSkip) {
+      return arr.map(function(f) {
+        var engines = {}; try { engines = JSON.parse(f.engines); } catch(e) {}
+        var badges = Object.entries(engines).map(function(e) {
+          var name = e[0], r = e[1];
+          var cls = r.success ? 'pass' : (r.skipped ? 'skip' : 'fail');
+          var icon = r.success ? '\u2713' : (r.skipped ? '\u2298' : '\u2717');
+          var dur = r.duration ? ' ' + (r.duration/1000).toFixed(1) + 's' : '';
+          return '<span class="engine-badge ' + cls + '">' + icon + ' ' + name + dur + '</span>';
+        }).join('');
+        var label = f.status === 'not_fitting' ? '\u26A0' : f.status === 'error' ? '\u2717' : f.status === 'skipped' ? '\u2298' : '\u2713';
+        var skipBtn = showSkip ? '<button class="btn btn-sm btn-danger" onclick="client.skipFile(\'' + f.file_path.replace(/'/g,'\\\'') + '\')">Skip</button>' : '';
+        return '<div class="file-card ' + f.status + '"><div class="file-header"><div class="file-name">' + label + ' ' + f.file_path.split('/').pop() + '</div>' + skipBtn + '</div><div class="engine-badges">' + badges + '</div></div>';
+      }).join('');
     }
+    container.innerHTML =
+      '<div class="run-progress"><div class="run-stats-row"><span>OK ' + (run.completed||0) + '</span><span>SK ' + (run.skipped||0) + '</span><span>FAIL ' + (run.failed||0) + '</span><span>NF ' + (run.not_fitting||0) + '</span><span>Total: ' + (run.total_files||0).toLocaleString() + '</span></div>' +
+      '<div class="progress-bar"><div class="progress-fill" style="width:' + pct + '%"></div></div>' +
+      '<div class="text-sm text-muted">' + (run.completed_engines||0) + ' / ' + (run.total_engines||0) + ' engines (' + pct + '%)</div></div>' +
+      '<h4>Processing (' + processing.length + ')</h4>' + (fileCards(processing, true) || '<p class="text-muted text-sm">None</p>') +
+      '<h4 style="margin-top:20px">Completed (' + done.length + ')</h4>' + (fileCards(done, false) || '<p class="text-muted text-sm">None</p>');
   }
-
-  setupEventHandlers() {
-    document.getElementById('startRun').addEventListener('click', () => {
-      this.startRun();
-    });
-
-    document.getElementById('startCustom').addEventListener('click', () => {
-      document.getElementById('customPathModal').classList.remove('hidden');
-      document.getElementById('customPaths').value = ''; // Clear previous input
-    });
-
-    document.getElementById('stopRun').addEventListener('click', () => {
-      this.stopRun();
-    });
-
-    document.getElementById('closeModal').addEventListener('click', () => {
-      console.log('Close button clicked');
-      document.getElementById('customPathModal').classList.add('hidden');
-      document.getElementById('customPaths').value = '';
-    });
-
-    document.getElementById('cancelCustom').addEventListener('click', () => {
-      document.getElementById('customPathModal').classList.add('hidden');
-      document.getElementById('customPaths').value = '';
-    });
-
-    document.getElementById('submitCustom').addEventListener('click', () => {
-      const paths = document
-        .getElementById('customPaths')
-        .value.split('\n')
-        .map((p) => p.trim())
-        .filter((p) => p.length > 0);
-
-      document.getElementById('customPathModal').classList.add('hidden');
-      document.getElementById('customPaths').value = '';
-      this.startRun(paths);
-    });
-
-    // Close modal when clicking outside
-    document.getElementById('customPathModal').addEventListener('click', (e) => {
-      if (e.target.id === 'customPathModal') {
-        document.getElementById('customPathModal').classList.add('hidden');
-        document.getElementById('customPaths').value = '';
-      }
-    });
-
-    // Logs modal handlers
-    document.getElementById('closeLogsModal').addEventListener('click', () => {
-      document.getElementById('logsModal').classList.add('hidden');
-    });
-
-    document.getElementById('closeLogsButton').addEventListener('click', () => {
-      document.getElementById('logsModal').classList.add('hidden');
-    });
-
-    document.getElementById('copyLogs').addEventListener('click', async () => {
-      const logsContent = document.getElementById('logsContent').textContent;
-      try {
-        await navigator.clipboard.writeText(logsContent);
-        const btn = document.getElementById('copyLogs');
-        const originalText = btn.textContent;
-        btn.textContent = '✓ Copied!';
-        setTimeout(() => {
-          btn.textContent = originalText;
-        }, 2000);
-      } catch (err) {
-        console.error('Failed to copy logs:', err);
-        // Fallback method for older browsers or permission issues
-        const textArea = document.createElement('textarea');
-        textArea.value = logsContent;
-        textArea.style.position = 'fixed';
-        textArea.style.left = '-999999px';
-        document.body.appendChild(textArea);
-        textArea.select();
-        try {
-          document.execCommand('copy');
-          const btn = document.getElementById('copyLogs');
-          const originalText = btn.textContent;
-          btn.textContent = '✓ Copied!';
-          setTimeout(() => {
-            btn.textContent = originalText;
-          }, 2000);
-        } catch (execErr) {
-          console.error('Fallback copy also failed:', execErr);
-          alert('Failed to copy logs to clipboard');
-        }
-        document.body.removeChild(textArea);
-      }
-    });
-
-    // Close logs modal when clicking outside
-    document.getElementById('logsModal').addEventListener('click', (e) => {
-      if (e.target.id === 'logsModal') {
-        document.getElementById('logsModal').classList.add('hidden');
-      }
-    });
-
-    // Clear completed files
-    document.getElementById('clearCompleted').addEventListener('click', () => {
-      this.clearCompleted();
-    });
-
-    // File list modal handlers
-    document.getElementById('closeFileListModal').addEventListener('click', () => {
-      document.getElementById('fileListModal').classList.add('hidden');
-    });
-
-    document.getElementById('closeFileListButton').addEventListener('click', () => {
-      document.getElementById('fileListModal').classList.add('hidden');
-    });
-
-    // Close file list modal when clicking outside
-    document.getElementById('fileListModal').addEventListener('click', (e) => {
-      if (e.target.id === 'fileListModal') {
-        document.getElementById('fileListModal').classList.add('hidden');
-      }
-    });
-  }
-
-  async startRun(paths = null) {
-    try {
-      const response = await fetch('/api/run/start', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ paths }),
-      });
-
-      if (!response.ok) {
-        const error = await response.json();
-        alert(`Failed to start run: ${error.error}`);
-      }
-    } catch (error) {
-      alert(`Failed to start run: ${error.message}`);
-    }
-  }
-
-  async stopRun() {
-    if (!confirm('Are you sure you want to stop the current run? All processing will be halted.')) {
-      return;
-    }
-
-    try {
-      const response = await fetch('/api/run/stop', {
-        method: 'POST',
-      });
-
-      if (!response.ok) {
-        const error = await response.json();
-        alert(`Failed to stop run: ${error.error}`);
-      }
-    } catch (error) {
-      alert(`Failed to stop run: ${error.message}`);
-    }
-  }
-
-  async skipFile(filePath) {
-    try {
-      await fetch('/api/file/skip', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ filePath }),
-      });
-    } catch (error) {
-      console.error('Failed to skip file:', error);
-    }
-  }
-
-  async viewLogs(runId) {
-    try {
-      const response = await fetch(`/api/runs/${runId}/logs`);
-      const data = await response.json();
-
-      document.getElementById('logsContent').textContent = data.logs || 'No logs available';
-      document.getElementById('logsModal').classList.remove('hidden');
-    } catch (error) {
-      console.error('Failed to fetch logs:', error);
-      alert('Failed to load logs');
-    }
-  }
-
-  async clearCompleted() {
-    if (!confirm('Are you sure you want to clear all completed and skipped files?')) {
-      return;
-    }
-
-    try {
-      const response = await fetch('/api/files/clear', {
-        method: 'POST',
-      });
-
-      if (!response.ok) {
-        throw new Error('Failed to clear files');
-      }
-
-      // State will be updated via WebSocket message
-    } catch (error) {
-      console.error('Failed to clear files:', error);
-      alert('Failed to clear files');
-    }
-  }
-
-  render() {
-    this.renderProgress();
-    this.renderFiles();
-    this.updateButtonVisibility();
-  }
-
-  updateButtonVisibility() {
-    const stopButton = document.getElementById('stopRun');
-    const startButton = document.getElementById('startRun');
-    const customButton = document.getElementById('startCustom');
-
-    if (this.state.isRunning) {
-      stopButton.classList.remove('hidden');
-      startButton.classList.add('hidden');
-      customButton.classList.add('hidden');
-    } else {
-      stopButton.classList.add('hidden');
-      startButton.classList.remove('hidden');
-      customButton.classList.remove('hidden');
-    }
-  }
-
-  renderProgress() {
-    const { currentRun } = this.state;
-    const section = document.getElementById('currentRun');
-
-    if (!currentRun || currentRun.status === 'completed') {
-      section.classList.add('hidden');
-      return;
-    }
-
-    section.classList.remove('hidden');
-
-    // Use engine-level progress for more granular updates
-    const percent = currentRun.total_engines > 0 ? (currentRun.completed_engines / currentRun.total_engines) * 100 : 0;
-    document.getElementById('progressFill').style.width = `${percent}%`;
-    document.getElementById('progressText').textContent =
-      `${currentRun.completed} / ${currentRun.total_files} files (${Math.round(percent)}%)`;
-  }
-
-  renderFiles() {
-    const processing = this.state.files.filter((f) => f.status === 'processing');
-    const completed = this.state.files.filter((f) => ['completed', 'skipped', 'error', 'not_fitting'].includes(f.status));
-
-    // Render processing files
-    const progressHtml = processing
-      .map((file) => {
-        const engines = JSON.parse(file.engines);
-        return `
-        <div class="file-card processing">
-          <div class="file-header">
-            <div class="file-name">${this.basename(file.file_path)}</div>
-            <button class="btn-skip" onclick="client.skipFile('${file.file_path.replace(/'/g, "\\'")}')">
-              Skip
-            </button>
-          </div>
-          <div class="engine-status">
-            ${file.current_engine ? `⚙️ Working on ${file.current_engine}` : 'Starting...'}
-          </div>
-          ${this.renderEngineResults(engines)}
-        </div>
-      `;
-      })
-      .join('');
-
-    document.getElementById('filesInProgress').innerHTML = progressHtml;
-
-    // Render completed files
-    const completedHtml = completed
-      .map((file) => {
-        const engines = JSON.parse(file.engines);
-        const statusLabel = file.status === 'not_fitting' ? '⚠ Not Fitting' :
-                           file.status === 'error' ? '✗ Error' :
-                           file.status === 'skipped' ? '⊘ Skipped' : '✓ Completed';
-        return `
-        <div class="file-card ${file.status}">
-          <div class="file-name">${this.basename(file.file_path)} <span class="status-label">${statusLabel}</span></div>
-          ${this.renderEngineResults(engines)}
-        </div>
-      `;
-      })
-      .join('');
-
-    document.getElementById('completedList').innerHTML =
-      completedHtml || '<p class="no-data">No completed files yet</p>';
-  }
-
-  renderEngineResults(engines) {
-    return Object.entries(engines)
-      .map(([name, result]) => {
-        const icon = result.success ? '✓' : '✗';
-        const className = result.success ? 'success' : 'error';
-        const duration = (result.duration / 1000).toFixed(1);
-
-        let extra = '';
-        if (result.notFitting) {
-          extra = ' ⚠ Not fitting';
-        } else if (result.offsetMs !== undefined && result.offsetMs !== null) {
-          const offsetSec = (result.offsetMs / 1000).toFixed(1);
-          extra = ` (${offsetSec}s)`;
-        }
-
-        return `
-        <div class="engine-result ${className}">
-          <span>${icon} ${name}${extra}</span>
-          <span class="duration">${duration}s</span>
-        </div>
-      `;
-      })
-      .join('');
-  }
-
-  calculateEngineStats(files) {
-    const stats = {
-      ffsubsync: { pass: 0, fail: 0 },
-      autosubsync: { pass: 0, fail: 0 },
-      alass: { pass: 0, fail: 0 },
-    };
-
-    files.forEach((file) => {
-      try {
-        const engines = JSON.parse(file.engines);
-        Object.entries(engines).forEach(([engineName, result]) => {
-          if (stats[engineName]) {
-            if (result.success) {
-              stats[engineName].pass++;
-            } else {
-              stats[engineName].fail++;
-            }
-          }
-        });
-      } catch (error) {
-        console.error('Error parsing engine data:', error);
-      }
-    });
-
-    return stats;
-  }
-
-  renderEngineCell(engineStats) {
-    if (engineStats.pass === 0 && engineStats.fail === 0) {
-      return '<td class="engine-cell">-</td>';
-    }
-
-    const parts = [];
-    if (engineStats.pass > 0) {
-      parts.push(`<span class="engine-pass">${engineStats.pass}</span>`);
-    }
-    if (engineStats.fail > 0) {
-      parts.push(`<span class="engine-fail">${engineStats.fail}</span>`);
-    }
-
-    return `<td class="engine-cell">${parts.join('/')}</td>`;
-  }
-
   renderHistory(runs) {
-    const html = runs
-      .map((run) => {
-        const duration = run.end_time ? ((run.end_time - run.start_time) / 1000).toFixed(0) + 's' : 'Running...';
-        const engineStats = this.calculateEngineStats(run.files || []);
-
-        // Make stats clickable if there are files in that category
-        const completedCell =
-          run.completed > 0
-            ? `<span class="stat-clickable stat-completed" onclick="client.showFileList('${run.id}', 'completed')">${run.completed}</span>`
-            : run.completed;
-        const skippedCell =
-          run.skipped > 0
-            ? `<span class="stat-clickable stat-skipped" onclick="client.showFileList('${run.id}', 'skipped')">${run.skipped}</span>`
-            : run.skipped;
-        const failedCell =
-          run.failed > 0
-            ? `<span class="stat-clickable stat-failed" onclick="client.showFileList('${run.id}', 'failed')">${run.failed}</span>`
-            : run.failed;
-        const notFittingCell =
-          run.not_fitting > 0
-            ? `<span class="stat-clickable" style="color:#5b21b6" onclick="client.showFileList('${run.id}', 'not_fitting')">${run.not_fitting}</span>`
-            : run.not_fitting || 0;
-
-        return `
-        <tr>
-          <td>${new Date(run.start_time).toLocaleString()}</td>
-          <td><span class="status-badge ${run.status}">${run.status}</span></td>
-          <td>${run.total_files}</td>
-          <td>${completedCell}</td>
-          <td>${skippedCell}</td>
-          <td>${failedCell}</td>
-          <td>${notFittingCell}</td>
-          ${this.renderEngineCell(engineStats.ffsubsync)}
-          ${this.renderEngineCell(engineStats.autosubsync)}
-          ${this.renderEngineCell(engineStats.alass)}
-          <td>${duration}</td>
-          <td>
-            <button class="btn-view-logs" onclick="client.viewLogs('${run.id}')">
-              📄 View Logs
-            </button>
-          </td>
-        </tr>
-      `;
-      })
-      .join('');
-
-    document.getElementById('historyBody').innerHTML =
-      html || '<tr><td colspan="12" class="no-data">No runs yet</td></tr>';
+    var self = this;
+    var html = runs.map(function(run) {
+      var dur = run.end_time ? Math.round((run.end_time - run.start_time)/1000) + 's' : '-';
+      var stats = { ffsubsync:{pass:0,fail:0}, autosubsync:{pass:0,fail:0}, alass:{pass:0,fail:0} };
+      (run.files || []).forEach(function(f) {
+        try { var e = JSON.parse(f.engines); Object.entries(e).forEach(function(x) { if (stats[x[0]]) x[1].success ? stats[x[0]].pass++ : stats[x[0]].fail++; }); } catch(er) {}
+      });
+      function engCell(s) {
+        if (s.pass + s.fail === 0) return '<td>-</td>';
+        return '<td>' + (s.pass>0?'<span style="color:#10b981">'+s.pass+'</span>':'') + (s.pass>0&&s.fail>0?'/':'') + (s.fail>0?'<span style="color:#ef4444">'+s.fail+'</span>':'') + '</td>';
+      }
+      function click(n, cat) { return n>0 ? '<span class="stat-clickable" onclick="client.showFileList(\''+run.id+'\',\''+cat+'\')">'+n+'</span>' : n; }
+      return '<tr><td>' + new Date(run.start_time).toLocaleString() + '</td>' +
+        '<td><span class="status-badge ' + run.status + '">' + run.status + '</span></td>' +
+        '<td>' + (run.total_files||0).toLocaleString() + '</td>' +
+        '<td>' + click(run.completed,'completed') + '</td>' +
+        '<td>' + click(run.skipped,'skipped') + '</td>' +
+        '<td>' + click(run.failed,'failed') + '</td>' +
+        '<td>' + click(run.not_fitting||0,'not_fitting') + '</td>' +
+        engCell(stats.ffsubsync) + engCell(stats.autosubsync) + engCell(stats.alass) +
+        '<td>' + dur + '</td>' +
+        '<td><button class="btn btn-sm btn-secondary" onclick="client.viewLogs(\''+run.id+'\')">Logs</button></td></tr>';
+    }).join('');
+    document.getElementById('historyBody').innerHTML = html || '<tr><td colspan="12" class="text-muted">No runs yet</td></tr>';
   }
-
-  basename(path) {
-    return path.split('/').pop();
+  renderFolders(folders) {
+    if (!folders || folders.length === 0) { document.getElementById('folderList').innerHTML = '<p class="text-muted">No folder data yet.</p>'; return; }
+    document.getElementById('folderList').innerHTML = folders.map(function(f) {
+      return '<div class="folder-row"><span style="font-size:18px">F</span><span class="folder-name">' + f.name + '</span><div class="folder-bar"><div class="folder-bar-fill" style="width:' + f.progress + '%"></div></div><div class="folder-numbers"><span>OK ' + f.synced.toLocaleString() + '</span><span>Pend ' + f.pending.toLocaleString() + '</span></div></div>';
+    }).join('');
   }
-
-  // Extract clean movie/show title from filename
-  cleanFileName(filePath) {
-    // Get just the filename from the path
-    let name = filePath.split('/').pop();
-
-    // Remove file extension (.srt, .eng.srt, .eng.sdh.srt, etc.)
-    name = name.replace(/\.(eng|spa|fre|ger|ita|por|jpn|kor|chi|rus|ara|hin|pol|dut|swe|nor|dan|fin|tur|heb|tha|vie|ind|msa|hun|ces|slk|ron|bul|ukr|ell|srp|hrv|slv|lit|lav|est|cat|eus|glg|sdh)?\.(srt|sub|ass|ssa|vtt)$/i, '');
-    name = name.replace(/\.(srt|sub|ass|ssa|vtt)$/i, '');
-
-    // Try to extract just the title with year
-    // Pattern: "Movie Title (Year)" followed by metadata in brackets
-    const titleMatch = name.match(/^(.+?\s*\(\d{4}\))/);
-    if (titleMatch) {
-      return titleMatch[1].trim();
-    }
-
-    // Fallback: remove common metadata patterns
-    // Remove [imdbid-...], [Bluray-...], [AAC ...], [x265], etc.
-    name = name.replace(/\s*\[.*?\]/g, '');
-    // Remove release group tags at the end like -DDR, -YTS.MX
-    name = name.replace(/\s*-[A-Za-z0-9.]+$/, '');
-    // Clean up extra whitespace
-    name = name.replace(/\s+/g, ' ').trim();
-
-    return name || filePath.split('/').pop();
+  render() { this.renderConfig(); if (this.activePage === 'dashboard' || this.activePage === 'run') this.renderRun(); this.updateButtons(); }
+  updateButtons() {
+    var stop = document.getElementById('stopRun'), start = document.getElementById('startRun'), custom = document.getElementById('startCustom');
+    if (this.state.isRunning) { stop.classList.remove('hidden'); start.classList.add('hidden'); custom.classList.add('hidden'); }
+    else { stop.classList.add('hidden'); start.classList.remove('hidden'); custom.classList.remove('hidden'); }
   }
-
-  // Show files in a category for a specific run
-  showFileList(runId, category) {
-    const run = this.historyCache[runId];
-    if (!run || !run.files) {
-      alert('File data not available for this run');
-      return;
-    }
-
-    let files = [];
-    let title = '';
-
-    switch (category) {
-      case 'completed':
-        files = run.files.filter((f) => f.status === 'completed');
-        title = `Completed Files (${files.length})`;
-        break;
-      case 'skipped':
-        files = run.files.filter((f) => f.status === 'skipped');
-        title = `Skipped Files (${files.length})`;
-        break;
-      case 'failed':
-        files = run.files.filter((f) => f.status === 'error');
-        title = `Failed Files (${files.length})`;
-        break;
-      case 'not_fitting':
-        files = run.files.filter((f) => f.status === 'not_fitting');
-        title = `Not Fitting Files (${files.length})`;
-        break;
-      default:
-        return;
-    }
-
-    document.getElementById('fileListTitle').textContent = title;
-
-    if (files.length === 0) {
-      document.getElementById('fileListContent').innerHTML =
-        '<div class="file-list-empty">No files in this category</div>';
-    } else {
-      const html = files
-        .map((file) => `<div class="file-list-item">${this.cleanFileName(file.file_path)}</div>`)
-        .join('');
-      document.getElementById('fileListContent').innerHTML = html;
-    }
-
+  async startRun(paths) {
+    try { var body = paths && paths.length > 0 ? JSON.stringify({ paths: paths }) : '{}';
+      await fetch('/api/run/start', { method: 'POST', headers: {'Content-Type':'application/json'}, body: body }); this.navigate('run'); }
+    catch(e) { alert('Failed: ' + e.message); }
+  }
+  async stopRun() { if (!confirm('Stop run?')) return; try { await fetch('/api/run/stop', { method:'POST' }); } catch(e) {} }
+  async skipFile(fp) { try { await fetch('/api/file/skip', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({filePath:fp}) }); } catch(e) {} }
+  async viewLogs(runId) {
+    var r = await fetch('/api/runs/' + runId + '/logs'); var d = await r.json();
+    document.getElementById('logsContent').textContent = d.logs || 'No logs';
+    document.getElementById('logsModal').classList.remove('hidden');
+  }
+  showFileList(runId, cat) {
+    var run = this.historyCache[runId]; if (!run || !run.files) return;
+    var map = { completed: 'completed', skipped: 'skipped', failed: 'error', not_fitting: 'not_fitting' };
+    var files = run.files.filter(function(f) { return f.status === map[cat]; });
+    document.getElementById('fileListTitle').textContent = cat + ' (' + files.length + ')';
+    document.getElementById('fileListContent').innerHTML = files.length === 0 ? '<p class="text-muted">None</p>' : files.map(function(f) { return '<div style="padding:4px 0;font-size:13px;border-bottom:1px solid var(--border)">' + f.file_path.split('/').pop() + '</div>'; }).join('');
     document.getElementById('fileListModal').classList.remove('hidden');
   }
-}
-
-// Initialize client when DOM is ready
-let client;
-if (document.readyState === 'loading') {
-  document.addEventListener('DOMContentLoaded', () => {
-    client = new SubsyncarrPlusClient();
-  });
-} else {
-    client = new SubsyncarrPlusClient();
+  setupEvents() {
+    var self = this;
+    document.getElementById('themeToggle').addEventListener('click', function() { self.toggleTheme(); });
+    document.querySelectorAll('.nav-item').forEach(function(btn) { btn.addEventListener('click', function() { self.navigate(btn.dataset.page); }); });
+    document.getElementById('startRun').addEventListener('click', function() { self.startRun(null); });
+    document.getElementById('startCustom').addEventListener('click', function() { document.getElementById('customPathModal').classList.remove('hidden'); });
+    document.getElementById('stopRun').addEventListener('click', function() { self.stopRun(); });
+    document.getElementById('closeModal').addEventListener('click', function() { document.getElementById('customPathModal').classList.add('hidden'); });
+    document.getElementById('cancelCustom').addEventListener('click', function() { document.getElementById('customPathModal').classList.add('hidden'); });
+    document.getElementById('submitCustom').addEventListener('click', function() {
+      var paths = document.getElementById('customPaths').value.split('\\n').map(function(p){return p.trim()}).filter(function(p){return p;});
+      document.getElementById('customPathModal').classList.add('hidden'); document.getElementById('customPaths').value = ''; self.startRun(paths);
+    });
+    document.getElementById('closeLogsModal').addEventListener('click', function() { document.getElementById('logsModal').classList.add('hidden'); });
+    document.getElementById('closeLogsButton').addEventListener('click', function() { document.getElementById('logsModal').classList.add('hidden'); });
+    document.getElementById('copyLogs').addEventListener('click', function() {
+      navigator.clipboard.writeText(document.getElementById('logsContent').textContent);
+      var btn = document.getElementById('copyLogs'); btn.textContent = 'Copied!'; setTimeout(function(){btn.textContent='Copy'},2000);
+    });
+    document.getElementById('closeFileListModal').addEventListener('click', function() { document.getElementById('fileListModal').classList.add('hidden'); });
+    document.getElementById('closeFileListButton').addEventListener('click', function() { document.getElementById('fileListModal').classList.add('hidden'); });
+    ['customPathModal','logsModal','fileListModal'].forEach(function(id) {
+      document.getElementById(id).addEventListener('click', function(e) { if (e.target.id === id) document.getElementById(id).classList.add('hidden'); });
+    });
+    setInterval(function() { if (self.activePage === 'dashboard') self.fetchStats(); }, 15000);
   }
+}
+var client;
+if (document.readyState === 'loading') { document.addEventListener('DOMContentLoaded', function() { client = new SubsyncarrPlusClient(); }); }
+else { client = new SubsyncarrPlusClient(); }
