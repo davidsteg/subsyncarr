@@ -193,7 +193,7 @@ export class SubsyncarrPlusDatabase {
    * Uses SQL `SET field = field + 1` to avoid read-then-write race and overhead.
    */
   incrementRunField(id: string, field: 'completed' | 'skipped' | 'failed' | 'not_fitting' | 'completed_engines'): void {
-    this.db.prepare(`UPDATE runs SET ${field} = ${field} + 1, updated_at = ? WHERE id = ?`).run(Date.now(), id);
+    this.db.prepare(`UPDATE runs SET ${field} = ${field} + 1 WHERE id = ?`).run(id);
   }
 
   getRun(id: string): Run | null {

@@ -1,3 +1,10 @@
+## [1.3.7] — 2026-07-03
+
+### Fixed
+- **incrementRunField**: removed `updated_at` from UPDATE query (column doesn't exist in `runs` table — all counter increments were silently failing)
+- **Favicon**: restored 🧬 emoji in browser tab
+- **Logo**: removed blue background box from sidebar brand logo
+
 ## [1.3.6] — 2026-07-03
 
 ### Added
