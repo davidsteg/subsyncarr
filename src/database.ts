@@ -2,6 +2,50 @@ import Database from 'better-sqlite3';
 import * as fs from 'fs';
 import * as path from 'path';
 
+// ISO 639-1 (2-letter) and common ISO 639-2 (3-letter) subtitle language codes → display name.
+// Both variants map to the same name so counts merge (e.g. "de" and "ger" → German).
+const LANGUAGE_NAMES: Record<string, string> = {
+  en: 'English', eng: 'English',
+  fr: 'French', fre: 'French', fra: 'French',
+  de: 'German', ger: 'German', deu: 'German',
+  es: 'Spanish', spa: 'Spanish',
+  it: 'Italian', ita: 'Italian',
+  pt: 'Portuguese', por: 'Portuguese',
+  nl: 'Dutch', dut: 'Dutch', nld: 'Dutch',
+  sv: 'Swedish', swe: 'Swedish',
+  no: 'Norwegian', nor: 'Norwegian',
+  da: 'Danish', dan: 'Danish',
+  fi: 'Finnish', fin: 'Finnish',
+  pl: 'Polish', pol: 'Polish',
+  cs: 'Czech', cze: 'Czech', ces: 'Czech',
+  sk: 'Slovak', slo: 'Slovak', slk: 'Slovak',
+  hu: 'Hungarian', hun: 'Hungarian',
+  ro: 'Romanian', rum: 'Romanian', ron: 'Romanian',
+  tr: 'Turkish', tur: 'Turkish',
+  ru: 'Russian', rus: 'Russian',
+  uk: 'Ukrainian', ukr: 'Ukrainian',
+  ja: 'Japanese', jpn: 'Japanese',
+  ko: 'Korean', kor: 'Korean',
+  zh: 'Chinese', chi: 'Chinese', zho: 'Chinese',
+  ar: 'Arabic', ara: 'Arabic',
+  he: 'Hebrew', heb: 'Hebrew',
+  hi: 'Hindi', hin: 'Hindi',
+  el: 'Greek', gre: 'Greek', ell: 'Greek',
+  bg: 'Bulgarian', bul: 'Bulgarian',
+  hr: 'Croatian', hrv: 'Croatian',
+  sr: 'Serbian', srp: 'Serbian',
+  sl: 'Slovenian', slv: 'Slovenian',
+  et: 'Estonian', est: 'Estonian',
+  lv: 'Latvian', lav: 'Latvian',
+  lt: 'Lithuanian', lit: 'Lithuanian',
+  th: 'Thai', tha: 'Thai',
+  vi: 'Vietnamese', vie: 'Vietnamese',
+  id: 'Indonesian', ind: 'Indonesian',
+  ms: 'Malay', may: 'Malay', msa: 'Malay',
+  fa: 'Persian', per: 'Persian', fas: 'Persian',
+  ca: 'Catalan', cat: 'Catalan',
+};
+
 export interface Run {
   id: string;
   start_time: number;
@@ -512,34 +556,60 @@ export class SubsyncarrPlusDatabase {
 
   // Media stats queries
   getMediaStats() {
-    const totalFiles = this.db.prepare('SELECT COUNT(*) as count FROM engine_failure_tracking').get() as {
-      count: number;
-    };
+    // Count DISTINCT files, not (file, engine) rows — otherwise every count is
+    // multiplied by the number of engines tracked per file.
+    const totalFiles = this.db
+      .prepare('SELECT COUNT(DISTINCT file_path) as count FROM engine_failure_tracking')
+      .get() as { count: number };
 
+    // A file is "synced" if any engine synced it at least once.
     const syncedFiles = this.db
-      .prepare('SELECT COUNT(*) as count FROM engine_failure_tracking WHERE last_success_time IS NOT NULL')
+      .prepare('SELECT COUNT(DISTINCT file_path) as count FROM engine_failure_tracking WHERE last_success_time IS NOT NULL')
       .get() as { count: number };
 
+    // A file is "skipped" if it's flagged skipped and was never successfully synced.
     const skippedCount = this.db
-      .prepare('SELECT COUNT(*) as count FROM engine_failure_tracking WHERE is_skipped = 1')
+      .prepare(
+        `SELECT COUNT(DISTINCT file_path) as count FROM engine_failure_tracking
+         WHERE is_skipped = 1
+           AND file_path NOT IN (SELECT file_path FROM engine_failure_tracking WHERE last_success_time IS NOT NULL)`,
+      )
       .get() as { count: number };
 
-    // File counts by engine success
+    // File counts by engine success (per-engine, so row counts are correct here)
     const engineStats = this.db
       .prepare(
         'SELECT engine, COUNT(*) as total, SUM(CASE WHEN last_success_time IS NOT NULL THEN 1 ELSE 0 END) as synced FROM engine_failure_tracking GROUP BY engine',
       )
       .all() as Array<{ engine: string; total: number; synced: number }>;
 
-    // Language distribution (parse from filename: .en.srt, .ger.srt, etc.)
-    const langStats = this.db
+    // Language distribution: extract the code between the last two dots
+    // (e.g. movie.en.srt -> "en", movie.ger.srt -> "ger") and map known ISO
+    // 639-1/639-2 codes to a language name. Non-language tokens (cd1, sdh,
+    // forced, ...) are dropped by not being in the map.
+    const twoLetter = this.db
       .prepare(
-        "SELECT SUBSTR(file_path, -7, 2) as lang, COUNT(*) as count FROM engine_failure_tracking WHERE file_path LIKE '%.__srt' OR file_path LIKE '%.___.srt' OR file_path LIKE '%.____.srt' GROUP BY lang ORDER BY count DESC LIMIT 20",
+        "SELECT LOWER(SUBSTR(file_path, LENGTH(file_path) - 5, 2)) as code, COUNT(DISTINCT file_path) as count FROM engine_failure_tracking WHERE file_path LIKE '%.__.srt' GROUP BY code",
       )
-      .all() as Array<{ lang: string; count: number }>;
+      .all() as Array<{ code: string; count: number }>;
+    const threeLetter = this.db
+      .prepare(
+        "SELECT LOWER(SUBSTR(file_path, LENGTH(file_path) - 6, 3)) as code, COUNT(DISTINCT file_path) as count FROM engine_failure_tracking WHERE file_path LIKE '%.___.srt' GROUP BY code",
+      )
+      .all() as Array<{ code: string; count: number }>;
 
-    // Filter to only real language codes (2 lowercase letters)
-    const realLangs = langStats.filter((l) => /^[a-z]{2}$/.test(l.lang));
+    const byName: Record<string, { name: string; count: number }> = {};
+    const addLang = (code: string, count: number) => {
+      const name = LANGUAGE_NAMES[code];
+      if (!name) return;
+      if (!byName[name]) byName[name] = { name, count: 0 };
+      byName[name].count += count;
+    };
+    for (const r of twoLetter) if (/^[a-z]{2}$/.test(r.code)) addLang(r.code, r.count);
+    for (const r of threeLetter) if (/^[a-z]{3}$/.test(r.code)) addLang(r.code, r.count);
+    const languages = Object.values(byName)
+      .sort((a, b) => b.count - a.count)
+      .slice(0, 10);
 
     return {
       totalFiles: totalFiles.count,
@@ -547,7 +617,7 @@ export class SubsyncarrPlusDatabase {
       skippedFiles: skippedCount.count,
       syncRate: totalFiles.count > 0 ? Math.round((syncedFiles.count / totalFiles.count) * 100) : 0,
       engines: engineStats.map((e) => ({ ...e, rate: e.total > 0 ? Math.round((e.synced / e.total) * 100) : 0 })),
-      languages: realLangs.slice(0, 10),
+      languages,
     };
   }
 

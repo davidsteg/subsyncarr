@@ -1,3 +1,15 @@
+## [1.3.13] — 2026-07-03
+
+### Added
+- **Dry Run in the UI**: a "Dry Run" button on the dashboard and a "Dry run — preview only" checkbox in the Scan Specific Path modal launch a run that executes both engines but writes and deletes nothing. A "DRY RUN" badge shows on the Current Run header (backed by real server state via `/api/status` and the WebSocket).
+
+### Fixed
+- **Settings dry-run toggle was a no-op**: the engine only read `DRY_RUN` from the environment at startup. `startRun` now resolves the effective mode as explicit request → saved setting → env var, so the toggle (and per-run dry runs) actually take effect.
+- **Blank dashboard on load**: stats were only fetched on the 15s interval or when navigating to the dashboard, so the default page sat empty for up to 15s. Now fetched immediately on startup.
+- **Garbage language chart**: language codes were truncated (`SUBSTR(file_path, -7, 2)` turned `.ger.srt` into "ge", `.sdh.srt` into "sd"). Now extracts the full code between the last two dots and maps ISO 639-1/639-2 codes to language names, dropping non-language tags (sdh, cd1, forced).
+- **Inflated media counts**: "Total Tracked"/"Synced"/"Pending" counted `(file, engine)` rows, roughly doubling the real file count. Now counts `DISTINCT file_path`.
+- **History clutter**: empty 0-file runs (accidental no-op starts) are hidden from the history table.
+
 ## [1.3.12] — 2026-07-03
 
 ### Changed

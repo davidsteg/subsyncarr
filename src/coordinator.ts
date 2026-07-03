@@ -117,13 +117,25 @@ export class ProcessingCoordinator {
     );
   }
 
-  async startRun(config?: ScanConfig): Promise<string> {
+  async startRun(config?: ScanConfig, options?: { dryRun?: boolean }): Promise<string> {
     if (this.processingPromise) {
       console.log(`[${new Date().toISOString()}] Cannot start run: Another run is already in progress`);
       throw new Error('A run is already in progress');
     }
 
-    console.log(`[${new Date().toISOString()}] Starting new processing run...`);
+    // Resolve effective dry-run: explicit request wins, else the saved
+    // setting, else the DRY_RUN env var. This also makes the Settings toggle
+    // actually take effect (the engine no longer reads env only at startup).
+    let dryRun: boolean;
+    if (options?.dryRun !== undefined) {
+      dryRun = options.dryRun;
+    } else {
+      const dbVal = this.stateManager.getDatabase().getSetting('dry_run');
+      dryRun = dbVal !== null ? dbVal === 'true' : (process.env.DRY_RUN || 'false') === 'true';
+    }
+    this.engine.setDryRun(dryRun);
+
+    console.log(`[${new Date().toISOString()}] Starting new processing run${dryRun ? ' (DRY RUN — no changes will be written)' : ''}...`);
     this.engine.reset();
     this.currentRunId = null;
     this.stopRequested = false;
@@ -215,5 +227,9 @@ export class ProcessingCoordinator {
 
   isRunning(): boolean {
     return this.processingPromise !== null;
+  }
+
+  isDryRun(): boolean {
+    return this.engine.isDryRun();
   }
 }

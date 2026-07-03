@@ -1,7 +1,7 @@
 class SubsyncarrPlusClient {
   constructor() {
     this.ws = null;
-    this.state = { currentRun: null, files: [], isRunning: false, scanProgress: null, avgTimePerFile: 0, fileTimestamps: [] };
+    this.state = { currentRun: null, files: [], isRunning: false, scanProgress: null, avgTimePerFile: 0, fileTimestamps: [], dryRun: false };
     this.historyCache = {};
     this.initialized = false;
     this.activePage = 'dashboard';
@@ -13,6 +13,7 @@ class SubsyncarrPlusClient {
     this.fetchInitialState();
     this.fetchConfig();
     this.fetchVersion();
+    this.fetchStats(); // dashboard is the default page — populate it immediately, not after the 15s interval
   }
   initTheme() {
     var saved = localStorage.getItem('subsyncarr-theme');
@@ -63,6 +64,7 @@ class SubsyncarrPlusClient {
         this.state.currentRun = msg.data.currentRun || this.state.currentRun;
         this.state.isRunning = msg.data.isRunning !== undefined ? msg.data.isRunning : this.state.isRunning;
         this.state.scanProgress = msg.data.scanProgress || null;
+        if (msg.data.dryRun !== undefined) this.state.dryRun = msg.data.dryRun;
         if (!this.initialized) this.fetchInitialState(); else this.render();
         break;
       case 'run:started':
@@ -94,6 +96,7 @@ class SubsyncarrPlusClient {
     var r = await fetch('/api/status?brief=true'); var d = await r.json();
     this.state.currentRun = d.currentRun; this.state.isRunning = d.isRunning;
     this.state.files = d.files || []; this.state.scanProgress = d.scanProgress;
+    if (d.dryRun !== undefined) this.state.dryRun = d.dryRun;
     this.initialized = true; this.render(); this.fetchHistory();
   }
   async fetchRunFiles() {
@@ -165,7 +168,8 @@ class SubsyncarrPlusClient {
     }).join('');
     document.getElementById('engineCards').innerHTML = engHtml;
     var langHtml = (stats.languages || []).map(function(l) {
-      return '<div class="lang-chip"><div class="lang-code">' + l.lang.toUpperCase() + '</div><div class="lang-count">' + l.count.toLocaleString() + '</div></div>';
+      var label = l.name || (l.lang ? l.lang.toUpperCase() : '?');
+      return '<div class="lang-chip"><div class="lang-code">' + label + '</div><div class="lang-count">' + l.count.toLocaleString() + '</div></div>';
     }).join('');
     document.getElementById('langGrid').innerHTML = langHtml || '<p class="text-muted">No language data</p>';
   }
@@ -225,6 +229,10 @@ class SubsyncarrPlusClient {
   }
   renderHistory(runs) {
     var self = this;
+    // Hide empty runs (0 files, nothing processed) — accidental/no-op starts that just clutter history
+    runs = (runs || []).filter(function(run) {
+      return (run.total_files || 0) > 0 || (run.completed + run.skipped + run.failed + (run.not_fitting||0)) > 0;
+    });
     var html = runs.map(function(run) {
       var dur = run.end_time ? Math.round((run.end_time - run.start_time)/1000) + 's' : '-';
       var stats = { ffsubsync:{pass:0,fail:0}, autosubsync:{pass:0,fail:0}, alass:{pass:0,fail:0} };
@@ -287,9 +295,11 @@ class SubsyncarrPlusClient {
     this.updateNavVisibility();
   }
   updateButtons() {
-    var stop = document.getElementById('stopRun'), start = document.getElementById('startRun'), custom = document.getElementById('startCustom');
-    if (this.state.isRunning) { stop.classList.remove('hidden'); start.classList.add('hidden'); custom.classList.add('hidden'); }
-    else { stop.classList.add('hidden'); start.classList.remove('hidden'); custom.classList.remove('hidden'); }
+    var stop = document.getElementById('stopRun'), start = document.getElementById('startRun'), custom = document.getElementById('startCustom'), dry = document.getElementById('dryRun');
+    if (this.state.isRunning) { stop.classList.remove('hidden'); start.classList.add('hidden'); custom.classList.add('hidden'); if (dry) dry.classList.add('hidden'); }
+    else { stop.classList.add('hidden'); start.classList.remove('hidden'); custom.classList.remove('hidden'); if (dry) dry.classList.remove('hidden'); }
+    var badge = document.getElementById('dryRunBadge');
+    if (badge) badge.classList.toggle('hidden', !(this.state.isRunning && this.state.dryRun));
   }
   updateNavVisibility() {
     var navRun = document.getElementById('navRun');
@@ -300,10 +310,13 @@ class SubsyncarrPlusClient {
       if (this.activePage === 'run') this.navigate('dashboard');
     }
   }
-  async startRun(paths) {
+  async startRun(paths, dryRun) {
     try {
-      var body = paths && paths.length > 0 ? JSON.stringify({ paths: paths }) : '{}';
-      await fetch('/api/run/start', { method: 'POST', headers: {'Content-Type':'application/json'}, body: body });
+      var payload = {};
+      if (paths && paths.length > 0) payload.paths = paths;
+      if (dryRun) payload.dryRun = true;
+      this.state.dryRun = !!dryRun;
+      await fetch('/api/run/start', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify(payload) });
       this.state.isRunning = true;
       this.state.currentRun = { status: 'running', total_files: 0, completed: 0, skipped: 0, failed: 0, not_fitting: 0, total_engines: 0, completed_engines: 0, start_time: Date.now(), id: 'pending' };
       this.navigate('run');
@@ -466,12 +479,16 @@ class SubsyncarrPlusClient {
     document.querySelectorAll('.nav-item').forEach(function(btn) { btn.addEventListener('click', function() { self.navigate(btn.dataset.page); }); });
     document.getElementById('startRun').addEventListener('click', function() { self.startRun(null); });
     document.getElementById('startCustom').addEventListener('click', function() { document.getElementById('customPathModal').classList.remove('hidden'); });
+    var dryBtn = document.getElementById('dryRun');
+    if (dryBtn) dryBtn.addEventListener('click', function() { if (confirm('Start a dry run? Engines will run but no files are written or deleted.')) self.startRun(null, true); });
     document.getElementById('stopRun').addEventListener('click', function() { self.stopRun(); });
     document.getElementById('closeModal').addEventListener('click', function() { document.getElementById('customPathModal').classList.add('hidden'); });
     document.getElementById('cancelCustom').addEventListener('click', function() { document.getElementById('customPathModal').classList.add('hidden'); });
     document.getElementById('submitCustom').addEventListener('click', function() {
       var paths = document.getElementById('customPaths').value.split('\\n').map(function(p){return p.trim()}).filter(function(p){return p;});
-      document.getElementById('customPathModal').classList.add('hidden'); document.getElementById('customPaths').value = ''; self.startRun(paths);
+      var dryEl = document.getElementById('customDryRun');
+      var dry = dryEl ? dryEl.checked : false;
+      document.getElementById('customPathModal').classList.add('hidden'); document.getElementById('customPaths').value = ''; if (dryEl) dryEl.checked = false; self.startRun(paths, dry);
     });
     document.getElementById('closeLogsModal').addEventListener('click', function() { document.getElementById('logsModal').classList.add('hidden'); });
     document.getElementById('closeLogsButton').addEventListener('click', function() { document.getElementById('logsModal').classList.add('hidden'); });

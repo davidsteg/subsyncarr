@@ -499,6 +499,15 @@ export class ProcessingEngine extends EventEmitter {
     this.emit('file:not_fitting', { srtPath, engine: lastEngine, offsetMs });
   }
 
+  /** Enable/disable dry-run for the next run (no files written or deleted). */
+  setDryRun(enabled: boolean): void {
+    this.dryRun = enabled;
+  }
+
+  isDryRun(): boolean {
+    return this.dryRun;
+  }
+
   skipFile(filePath: string): void {
     this.cancelledFiles.add(filePath);
     // Kill any running process for this file immediately
