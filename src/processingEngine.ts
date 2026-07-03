@@ -34,22 +34,35 @@ export class ProcessingEngine extends EventEmitter {
   private directoryCache: DirectoryCache | null = null;
   public stateManager?: StateManager;
   private dryRun: boolean = false;
+  /**
+   * Set when Stop is requested. Unlike `cancelledFiles` (which only covers
+   * files already known to the coordinator), this also covers files
+   * discovered *after* Stop was clicked — e.g. ones the scan phase finds
+   * after the user has already asked to stop. Checked at the top of
+   * processFile so nothing gets written or deleted once a stop is pending.
+   */
+  private stopRequested: boolean = false;
   /** Scan progress during file discovery phase (null when not scanning) */
   public scanProgress: { checked: number; total: number; needSync: number; alreadySynced: number } | null = null;
 
   constructor() {
     super();
-    this.maxConcurrent = parseInt(process.env.MAX_CONCURRENT_SYNC_TASKS || '1', 10);
-    // Override from runtime config if set via UI
-    try {
-      const { getRuntimeCfg } = require('./engineRuntime');
-      const cfg = getRuntimeCfg();
-      if (cfg.maxConcurrentTasks > 0) this.maxConcurrent = cfg.maxConcurrentTasks;
-    } catch {}
+    this.maxConcurrent = this.resolveMaxConcurrent();
     this.enabledEngines = process.env.INCLUDE_ENGINES?.split(',') || ['ffsubsync', 'autosubsync', 'alass'];
     this.maxLogBufferSize = parseInt(process.env.LOG_BUFFER_SIZE || '1000', 10);
     const dryRunConfig = getDryRunConfig();
     this.dryRun = dryRunConfig.enabled;
+  }
+
+  /** Reads MAX_CONCURRENT_SYNC_TASKS, overridden by the runtime/DB setting if present. */
+  private resolveMaxConcurrent(): number {
+    let value = parseInt(process.env.MAX_CONCURRENT_SYNC_TASKS || '1', 10);
+    try {
+      const { getRuntimeCfg } = require('./engineRuntime');
+      const cfg = getRuntimeCfg();
+      if (cfg.maxConcurrentTasks > 0) value = cfg.maxConcurrentTasks;
+    } catch {}
+    return value;
   }
 
   private get subtitleFormat(): string {
@@ -77,6 +90,10 @@ export class ProcessingEngine extends EventEmitter {
   }
 
   async processRun(config?: ScanConfig): Promise<void> {
+    // Refresh from runtime config each run — a Settings change now takes
+    // effect on the next run instead of requiring a server restart.
+    this.maxConcurrent = this.resolveMaxConcurrent();
+
     const scanConfig = config || getScanConfig();
     this.log(`[${new Date().toISOString()}] Scanning for subtitle files...`);
     this.log(`[${new Date().toISOString()}] Scan paths: ${JSON.stringify(scanConfig.includePaths)}`);
@@ -218,6 +235,13 @@ export class ProcessingEngine extends EventEmitter {
 
   private async processFile(srtPath: string): Promise<void> {
     const fileName = srtPath.split('/').pop()!;
+
+    // Run was stopped (possibly mid-scan) — skip without touching the file at all
+    if (this.stopRequested) {
+      this.log(`[${new Date().toISOString()}] Skipped (run stopped): ${fileName}`);
+      this.emit('file:skipped', { srtPath, reason: 'cancelled' });
+      return;
+    }
 
     // Skip already-synced files (overwrite mode)
     if (this.subtitleFormat === 'overwrite' && (await isSyncedSrt(srtPath))) {
@@ -533,9 +557,23 @@ export class ProcessingEngine extends EventEmitter {
     });
   }
 
+  /**
+   * Request a full stop, covering files not yet known to the coordinator too
+   * (e.g. still being discovered by the directory scan). `stopAllProcessing`
+   * only cancels files already in the DB/queue at the moment Stop is
+   * clicked — without this, a stop during a long scan would leave every
+   * file the scan finds afterward to be processed (and possibly deleted)
+   * normally, with the UI showing the run as cancelled the whole time.
+   */
+  requestStop(): void {
+    this.stopRequested = true;
+    this.log(`[${new Date().toISOString()}] Stop requested — remaining and newly discovered files will be skipped`);
+  }
+
   reset(): void {
     this.cancelledFiles.clear();
     this.abortControllers.clear();
+    this.stopRequested = false;
     this.clearLogs();
     this.directoryCache = null;
     clearDirectoryCache();
