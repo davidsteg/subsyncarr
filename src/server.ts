@@ -380,6 +380,7 @@ export class SubsyncarrPlusServer {
         syncRetryThresholdMs: parseInt(dbSettings['sync_retry_threshold_ms'] || process.env.SYNC_RETRY_THRESHOLD_MS || '5000', 10),
         syncMaxRetries: parseInt(dbSettings['sync_max_retries'] || process.env.SYNC_MAX_RETRIES || '2', 10),
         confidenceThreshold: parseFloat(dbSettings['confidence_threshold'] || process.env.CONFIDENCE_THRESHOLD || '0.7'),
+        engineAgreementThresholdMs: parseInt(process.env.ENGINE_AGREEMENT_THRESHOLD_MS || '5000', 10),
         defaultEngine: process.env.DEFAULT_ENGINE || 'alass',
         fallbackEngine: process.env.FALLBACK_ENGINE || 'ffsubsync',
         dryRun: (dbSettings['dry_run'] || process.env.DRY_RUN || 'false') === 'true',

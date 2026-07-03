@@ -82,6 +82,18 @@ export function getEngineChainConfig(): EngineChainConfig {
   };
 }
 
+/**
+ * Max time difference (ms) allowed between the two engines' aligned outputs for
+ * the subtitle to count as "fitting" the video. If both engines independently
+ * land within this distance of each other, the subtitle is kept; if they
+ * disagree by more, it's judged unfit and deleted. Default: 5000 (5s).
+ */
+export function getEngineAgreementThresholdMs(): number {
+  const val = parseInt(process.env.ENGINE_AGREEMENT_THRESHOLD_MS || '', 10);
+  if (!isNaN(val) && val > 0) return val;
+  return 5000;
+}
+
 export interface DryRunConfig {
   enabled: boolean;
   confidenceThreshold: number;

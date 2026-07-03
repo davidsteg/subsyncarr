@@ -1,5 +1,5 @@
 import EventEmitter from 'events';
-import { ScanConfig, getScanConfig, getSyncRetryConfig, getDryRunConfig, getEngineChainConfig } from './config';
+import { ScanConfig, getScanConfig, getSyncRetryConfig, getDryRunConfig, getEngineChainConfig, getEngineAgreementThresholdMs } from './config';
 import { findAllSrtFiles } from './findAllSrtFiles';
 import { findMatchingVideoFile, DirectoryCache, clearDirectoryCache } from './findMatchingVideoFile';
 import { generateFfsubsyncSubtitles } from './generateFfsubsyncSubtitles';
@@ -11,6 +11,18 @@ import { getSubtitleFormat, getOutputPath, markSrtAsSynced, isSyncedSrt } from '
 import { calculateSubtitleOffset } from './subtitleOffsetCalculator';
 import { validateSubtitleMatch } from './subtitleValidator';
 import { basename, dirname, join } from 'path';
+
+interface EngineRunResult {
+  success: boolean;
+  message: string;
+  stdout?: string;
+  stderr?: string;
+  skipped?: boolean;
+  duration: number;
+  shiftTooLarge?: boolean;
+  originalShiftMs?: number;
+  offsetMs?: number;
+}
 
 export class ProcessingEngine extends EventEmitter {
   private cancelledFiles: Set<string> = new Set();
@@ -131,16 +143,7 @@ export class ProcessingEngine extends EventEmitter {
     await Promise.all(workers);
   }
 
-  private async runEngine(engine: string, srtPath: string, videoPath: string, signal?: AbortSignal): Promise<{
-    success: boolean;
-    message: string;
-    stdout?: string;
-    stderr?: string;
-    skipped?: boolean;
-    duration: number;
-    shiftTooLarge?: boolean;
-    originalShiftMs?: number;
-  }> {
+  private async runEngine(engine: string, srtPath: string, videoPath: string, signal?: AbortSignal): Promise<EngineRunResult> {
     const startTime = Date.now();
     try {
       let result;
@@ -269,22 +272,29 @@ export class ProcessingEngine extends EventEmitter {
 
     const engineConfig = getEngineChainConfig();
     const retryConfig = getSyncRetryConfig();
-    const maxShift = parseInt(process.env.MAX_SUBTITLE_SHIFT_MS || '30000', 10);
-    const engineChain = [
-      { name: engineConfig.defaultEngine, label: 'default' },
-      { name: engineConfig.fallbackEngine, label: 'fallback' },
-    ];
+    const agreementThresholdMs = getEngineAgreementThresholdMs();
 
-    this.log(`[${new Date().toISOString()}] Engine chain: ${engineConfig.defaultEngine} → ${engineConfig.fallbackEngine} (max retries: ${retryConfig.maxRetries})`);
+    // Both engines run independently on the ORIGINAL subtitle. We then compare
+    // the two aligned outputs: if they land on the same alignment (within the
+    // agreement threshold) the subtitle fits the video and we keep it; if they
+    // disagree — or neither can produce output — the subtitle doesn't fit and
+    // is deleted. Deletion therefore requires BOTH engines to fail to agree.
+    const engineChain = [engineConfig.defaultEngine, engineConfig.fallbackEngine];
+    this.log(
+      `[${new Date().toISOString()}] Engine chain: ${engineChain.join(' + ')} ` +
+        `(agreement threshold: ${agreementThresholdMs}ms, max retries: ${retryConfig.maxRetries})`,
+    );
 
-    for (const { name: engine, label } of engineChain) {
-      if (this.cancelledFiles.has(srtPath)) {
+    const alignments: { engine: string; content: string; shiftMs: number }[] = [];
+
+    for (const engine of engineChain) {
+      if (this.cancelledFiles.has(srtPath) || signal.aborted) {
         this.log(`[${new Date().toISOString()}] Skipped (cancelled): ${fileName}`);
         this.emit('file:skipped', { srtPath, reason: 'cancelled' });
         return;
       }
 
-      // Check if engine should be skipped due to consecutive failures
+      // Skip engines that have failed on this file 3+ times in a row
       if (this.stateManager?.shouldSkipEngine(srtPath, engine)) {
         this.log(`[${new Date().toISOString()}] ⊘ Skipping ${engine} (3+ consecutive failures): ${fileName}`);
         this.emit('file:engine_completed', {
@@ -294,165 +304,198 @@ export class ProcessingEngine extends EventEmitter {
         continue;
       }
 
-      this.log(`[${new Date().toISOString()}] [${label}] Starting ${engine} for: ${fileName}`);
+      // Always align from the pristine original so the two engines are comparable.
+      if (originalContent !== null) {
+        try { writeFileSync(srtPath, originalContent, 'utf8'); } catch {}
+      }
+
+      this.log(`[${new Date().toISOString()}] Starting ${engine} for: ${fileName}`);
       this.emit('file:engine_started', { srtPath, engine });
 
-      // Save original file before engine overwrites it (for fallback restore)
-      let originalBackup: string | null = null;
-      try { originalBackup = readFileSync(srtPath, 'utf8'); } catch {}
+      const aligned = await this.alignWithEngine(engine, srtPath, videoPath, originalContent, retryConfig, signal);
 
-      const result = await this.runEngine(engine, srtPath, videoPath, signal);
-
-      if (signal.aborted) {
+      if (aligned.cancelled) {
         this.log(`[${new Date().toISOString()}] Skipped (cancelled during ${engine}): ${fileName}`);
         this.emit('file:skipped', { srtPath, reason: 'cancelled' });
         return;
       }
 
-      if (result.skipped) {
-        this.log(`[${new Date().toISOString()}] ⊘ ${engine} skipped: ${fileName}`);
-        this.emit('file:engine_completed', { srtPath, engine, result: { ...result } });
-        continue;
-      }
+      this.emit('file:engine_completed', { srtPath, engine, result: aligned.result });
 
-      this.log(`[${new Date().toISOString()}] [${label}] ${engine} completed (${(result.duration / 1000).toFixed(1)}s): ${fileName}`);
-      if (!result.success) {
-        this.log(`[${new Date().toISOString()}]   Error: ${result.message}`);
-        if (result.stderr && result.stderr.length > 0) {
-          this.log(`[${new Date().toISOString()}]   Stderr: ${result.stderr.substring(0, 500)}`);
-        }
-        this.emit('file:engine_completed', { srtPath, engine, result: { ...result } });
-        // Restore original for fallback
-        if (originalBackup && label === 'default') {
-          try { writeFileSync(srtPath, originalBackup, 'utf8'); } catch {}
-        }
-        continue;
-      }
-
-      // shiftTooLarge — subtitle fundamentally doesn't match
-      if (result.shiftTooLarge) {
-        this.log(`[${new Date().toISOString()}] [${label}] ✗ Subtitle doesn't match video (shift too large): ${fileName}`);
-        this.emit('file:engine_completed', { srtPath, engine, result: { ...result } });
-        // If this is the fallback, delete the file
-        if (label === 'fallback') {
-          await this.deleteSubtitleFile(srtPath, fileName, engine, result.originalShiftMs ?? 0);
-        } else {
-          // Restore original for fallback attempt
-          if (originalBackup) {
-            try { writeFileSync(srtPath, originalBackup, 'utf8'); } catch {}
-          }
-        }
-        continue;
-      }
-
-      // --- Retry loop with confidence check ---
-      let currentInputContent = result.success ? readFileSync(srtPath, 'utf8') : null;
-      let finalContent: string | null = null;
-      let finalOffsetMs: number | null = null;
-
-      for (let attempt = 0; attempt <= retryConfig.maxRetries; attempt++) {
-        if (attempt > 0) {
-          this.log(`[${new Date().toISOString()}] [${label}] Retry ${attempt}/${retryConfig.maxRetries} with ${engine}...`);
-          // Create temp file with last synced content
-          const tempSrtPath = this.createTempSrtFile(srtPath, currentInputContent!);
-          if (!tempSrtPath) break;
-
-          const retryResult = await this.runEngine(engine, tempSrtPath, videoPath, signal);
-          this.cleanupTempFiles(tempSrtPath, engine);
-
-          if (!retryResult.success) {
-            this.log(`[${new Date().toISOString()}] [${label}] Retry failed: ${retryResult.message}`);
-            this.emit('file:engine_completed', { srtPath, engine, result: { ...retryResult } });
-            break;
-          }
-
-          // Read retry output
-          const retryOutputPath = getOutputPath(tempSrtPath, engine);
-          try { currentInputContent = readFileSync(retryOutputPath, 'utf8'); } catch { break; }
-        }
-
-        // Calculate confidence from offset (use original vs current)
-        if (originalContent && currentInputContent) {
-          const offsetMs = calculateSubtitleOffset(originalContent, currentInputContent);
-          const confidence = maxShift > 0 ? Math.max(0, 1 - (Math.abs(offsetMs) / maxShift)) : 1;
-
-          this.log(`[${new Date().toISOString()}] [${label}]   Offset: ${offsetMs}ms, Confidence: ${(confidence * 100).toFixed(1)}% (threshold: ${(this.confidenceThreshold * 100).toFixed(0)}%)`);
-
-          if (confidence >= this.confidenceThreshold) {
-            finalContent = currentInputContent;
-            finalOffsetMs = offsetMs;
-            this.log(`[${new Date().toISOString()}] [${label}] ✓ Confidence OK on attempt ${attempt + 1}`);
-            break;
-          }
-
-          this.log(`[${new Date().toISOString()}] [${label}]   Confidence too low, ${attempt < retryConfig.maxRetries ? 'retrying...' : 'exhausted retries'}`);
-        } else {
-          // No original content — accept as-is
-          finalContent = currentInputContent;
-          break;
-        }
-
-        if (attempt >= retryConfig.maxRetries) {
-          this.log(`[${new Date().toISOString()}] [${label}] ✗ Max retries exhausted`);
-        }
-      }
-
-      if (finalContent && finalOffsetMs !== null) {
-        // SUCCESS — write final content back to srtPath
-        try { writeFileSync(srtPath, finalContent, 'utf8'); } catch {}
-
-        if (this.subtitleFormat === 'overwrite') {
-          if (this.dryRun) {
-            this.log(`[${new Date().toISOString()}] [DRY RUN] Would sync (header-marked): ${fileName}`);
-            this.emit('file:engine_completed', { srtPath, engine, result: { ...result, offsetMs: finalOffsetMs, dryRun: true } });
-          } else {
-            markSrtAsSynced(srtPath, engine, finalContent);
-            if (this.stateManager) {
-              try { this.stateManager.getDatabase().addFileToSyncCache(srtPath); } catch {}
-            }
-            this.log(`[${new Date().toISOString()}] Synced (header-marked): ${fileName}`);
-            this.emit('file:engine_completed', { srtPath, engine, result: { ...result, offsetMs: finalOffsetMs } });
-          }
-        } else {
-          this.emit('file:engine_completed', { srtPath, engine, result: { ...result, offsetMs: finalOffsetMs } });
-        }
-
-        this.log(`[${new Date().toISOString()}] ✓ Completed successfully (${engine}): ${fileName}`);
-        this.emit('file:completed', { srtPath });
-        return;
-      }
-
-      // This engine failed — restore original if default (for fallback to try fresh)
-      if (label === 'default' && originalBackup) {
-        try { writeFileSync(srtPath, originalBackup, 'utf8'); } catch {}
-        this.log(`[${new Date().toISOString()}] [${label}] Restored original file for fallback attempt`);
+      if (aligned.success && aligned.content !== null) {
+        this.log(`[${new Date().toISOString()}] ${engine} aligned (shift ${aligned.shiftMs}ms): ${fileName}`);
+        alignments.push({ engine, content: aligned.content, shiftMs: aligned.shiftMs });
+      } else {
+        this.log(`[${new Date().toISOString()}] ${engine} could not align: ${aligned.result.message}`);
       }
     }
 
-    // Both engines failed — delete the subtitle
-    this.log(`[${new Date().toISOString()}] ✗ All engines exhausted — deleting subtitle: ${fileName}`);
-    await this.deleteSubtitleFile(srtPath, fileName, 'none', 0);
-    this.emit('file:failed', { srtPath });
+    // --- Keep vs. delete decision ---
+    if (alignments.length === 0) {
+      // Neither engine produced a usable alignment → subtitle doesn't fit.
+      this.log(`[${new Date().toISOString()}] ✗ No engine could sync — deleting: ${fileName}`);
+      await this.deleteSubtitleFile(srtPath, fileName, 'none', 0, originalContent);
+      return;
+    }
+
+    if (alignments.length === 1) {
+      // Only one engine produced output; the other errored or judged it unfit.
+      // Deleting requires BOTH engines to agree it doesn't fit, so keep this one.
+      const only = alignments[0];
+      this.log(
+        `[${new Date().toISOString()}] Only ${only.engine} produced output — keeping (no second engine to corroborate a delete): ${fileName}`,
+      );
+      this.commitSync(srtPath, fileName, only.engine, only.content, only.shiftMs, originalContent);
+      return;
+    }
+
+    // Both engines produced output — compare how far apart their alignments are.
+    const [first, second] = alignments;
+    const disagreementMs = Math.abs(calculateSubtitleOffset(first.content, second.content));
+    this.log(
+      `[${new Date().toISOString()}] ${first.engine} vs ${second.engine} disagree by ${disagreementMs}ms ` +
+        `(threshold: ${agreementThresholdMs}ms): ${fileName}`,
+    );
+
+    if (disagreementMs <= agreementThresholdMs) {
+      // Engines agree → the subtitle fits. Keep the default engine's alignment.
+      this.log(`[${new Date().toISOString()}] ✓ Engines agree — subtitle fits: ${fileName}`);
+      this.commitSync(srtPath, fileName, first.engine, first.content, first.shiftMs, originalContent);
+    } else {
+      // Engines disagree → the subtitle doesn't fit this video → delete.
+      this.log(`[${new Date().toISOString()}] ✗ Engines disagree — subtitle doesn't fit: ${fileName}`);
+      await this.deleteSubtitleFile(srtPath, fileName, `${first.engine}/${second.engine}`, disagreementMs, originalContent);
+    }
   }
 
-  /** Delete a subtitle file that couldn't be synced by any engine. */
-  private async deleteSubtitleFile(srtPath: string, fileName: string, lastEngine: string, offsetMs: number): Promise<void> {
-    try {
-      if (existsSync(srtPath)) {
-        unlinkSync(srtPath);
-        this.log(`[${new Date().toISOString()}] 🗑 Deleted unsyncable subtitle: ${fileName}`);
-      }
-    } catch {
-      this.log(`[${new Date().toISOString()}] Failed to delete subtitle: ${fileName}`);
+  /**
+   * Run one engine on the given subtitle and return its aligned output.
+   * Retries feed the engine its own previous output until the alignment stops
+   * moving (converges within the retry threshold) or maxRetries is reached.
+   */
+  private async alignWithEngine(
+    engine: string,
+    srtPath: string,
+    videoPath: string,
+    originalContent: string | null,
+    retryConfig: { thresholdMs: number; maxRetries: number },
+    signal: AbortSignal,
+  ): Promise<{ success: boolean; content: string | null; shiftMs: number; cancelled: boolean; result: EngineRunResult }> {
+    const result = await this.runEngine(engine, srtPath, videoPath, signal);
+
+    if (signal.aborted) {
+      return { success: false, content: null, shiftMs: 0, cancelled: true, result };
     }
-    this.emit('file:engine_completed', {
-      srtPath, engine: lastEngine,
-      result: {
-        success: false, duration: 0,
-        message: `Deleted — no engine could sync (offset: ${offsetMs}ms)`,
-        offsetMs, notFitting: true,
-      },
-    });
+    if (result.skipped || !result.success) {
+      // Includes shiftTooLarge — this engine judges the subtitle unfit.
+      return { success: false, content: null, shiftMs: 0, cancelled: false, result };
+    }
+
+    let content = this.readEngineOutput(engine, srtPath);
+    if (content === null) {
+      return {
+        success: false, content: null, shiftMs: 0, cancelled: false,
+        result: { ...result, success: false, message: 'Engine reported success but produced no output' },
+      };
+    }
+
+    // Re-run the engine on its own output until the alignment stabilizes.
+    for (let attempt = 1; attempt <= retryConfig.maxRetries; attempt++) {
+      if (this.cancelledFiles.has(srtPath) || signal.aborted) break;
+
+      const tempPath = this.createTempSrtFile(srtPath, content);
+      if (!tempPath) break;
+
+      const retry = await this.runEngine(engine, tempPath, videoPath, signal);
+      const retryContent = retry.success ? this.readEngineOutput(engine, tempPath) : null;
+      this.cleanupTempFiles(tempPath, engine);
+
+      if (!retryContent) break;
+
+      const delta = Math.abs(calculateSubtitleOffset(content, retryContent));
+      content = retryContent;
+      this.log(`[${new Date().toISOString()}] [retry ${attempt}/${retryConfig.maxRetries}] ${engine} moved a further ${delta}ms`);
+      if (delta <= retryConfig.thresholdMs) break; // converged
+    }
+
+    const shiftMs = originalContent ? calculateSubtitleOffset(originalContent, content) : 0;
+    return { success: true, content, shiftMs, cancelled: false, result: { ...result, offsetMs: shiftMs } };
+  }
+
+  /** Read an engine's synced output. alass/ffsubsync overwrite in place; others write a sidecar. */
+  private readEngineOutput(engine: string, inputPath: string): string | null {
+    const inPlace = engine === 'alass' || engine === 'ffsubsync';
+    const outputPath = inPlace ? inputPath : getOutputPath(inputPath, engine);
+    try {
+      const content = readFileSync(outputPath, 'utf8');
+      if (!inPlace) {
+        try { unlinkSync(outputPath); } catch { /* ignore */ }
+      }
+      return content;
+    } catch {
+      return null;
+    }
+  }
+
+  /** Persist a successful sync and emit completion. Honors dry-run and overwrite/standard modes. */
+  private commitSync(
+    srtPath: string,
+    fileName: string,
+    engine: string,
+    content: string,
+    shiftMs: number,
+    originalContent: string | null,
+  ): void {
+    if (this.dryRun) {
+      // Engines already overwrote srtPath in place; undo that so dry-run leaves files untouched.
+      if (originalContent !== null) {
+        try { writeFileSync(srtPath, originalContent, 'utf8'); } catch {}
+      }
+      this.log(`[${new Date().toISOString()}] [DRY RUN] Would sync (${engine}, shift ${shiftMs}ms): ${fileName}`);
+      this.emit('file:completed', { srtPath });
+      return;
+    }
+
+    try {
+      if (this.subtitleFormat === 'overwrite') {
+        markSrtAsSynced(srtPath, engine, content);
+        if (this.stateManager) {
+          try { this.stateManager.getDatabase().addFileToSyncCache(srtPath); } catch {}
+        }
+      } else {
+        writeFileSync(srtPath, content, 'utf8');
+      }
+      this.log(`[${new Date().toISOString()}] ✓ Synced (${engine}, shift ${shiftMs}ms): ${fileName}`);
+    } catch {
+      this.log(`[${new Date().toISOString()}] Failed to write synced subtitle: ${fileName}`);
+    }
+    this.emit('file:completed', { srtPath });
+  }
+
+  /** Delete a subtitle that both engines agree does not fit the video. */
+  private async deleteSubtitleFile(
+    srtPath: string,
+    fileName: string,
+    lastEngine: string,
+    offsetMs: number,
+    originalContent: string | null,
+  ): Promise<void> {
+    if (this.dryRun) {
+      // Restore the original the engines overwrote; don't actually delete in dry-run.
+      if (originalContent !== null) {
+        try { writeFileSync(srtPath, originalContent, 'utf8'); } catch {}
+      }
+      this.log(`[${new Date().toISOString()}] [DRY RUN] Would delete unsyncable subtitle: ${fileName}`);
+    } else {
+      try {
+        if (existsSync(srtPath)) {
+          unlinkSync(srtPath);
+          this.log(`[${new Date().toISOString()}] 🗑 Deleted unsyncable subtitle: ${fileName}`);
+        }
+      } catch {
+        this.log(`[${new Date().toISOString()}] Failed to delete subtitle: ${fileName}`);
+      }
+    }
     this.emit('file:not_fitting', { srtPath, engine: lastEngine, offsetMs });
   }
 
