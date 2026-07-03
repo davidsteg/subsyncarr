@@ -9,7 +9,9 @@
 </head>
 <body>
 <div class="app">
-  <nav class="sidebar">
+  <button class="hamburger" id="hamburgerBtn" aria-label="Menu">☰</button>
+<div class="sidebar-overlay" id="sidebarOverlay"></div>
+<nav class="sidebar" id="sidebar">
     <div class="sidebar-brand">
       <h1><span class="logo">🧬</span> Subsyncarr+</h1>
       <div class="version"><span id="versionText">-</span> · <a id="releaseLink" href="#" target="_blank">GitHub</a></div>
@@ -60,11 +62,12 @@
         <h2>Current Run</h2>
         <span class="status-badge running" id="runStatusBadge">IDLE</span>
       </div>
+      <div class="run-filters" id="runFilters" style="display:none"><input type="text" id="runSearch" placeholder="Filter files..."><span class="eta-text" id="etaText"></span></div>
       <div id="runContent" class="text-muted text-sm">No run in progress.</div>
     </div>
 
     <div class="page" id="page-history">
-      <div class="topbar"><h2>Run History</h2></div>
+      <div class="topbar"><h2>Run History</h2><input type="text" id="historySearch" placeholder="Filter history..." class="search-input"></div>
       <table id="historyTable"><thead><tr>
         <th>Start</th><th>Status</th><th>Files</th><th>OK</th><th>SK</th><th>FAIL</th><th>NF</th><th>FF</th><th>AU</th><th>AL</th><th>Time</th><th></th>
       </tr></thead><tbody id="historyBody"></tbody></table>

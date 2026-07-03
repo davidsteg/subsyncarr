@@ -93,13 +93,6 @@ export class SubsyncarrPlusServer {
       res.json(stats);
     });
 
-    // Folder tree with optional sub-path drill-down
-    this.app.get('/api/folders', (req, res) => {
-      const subPath = req.query.path as string | undefined;
-      const folders = this.stateManager.getDatabase().getFolderStats(subPath);
-      res.json(folders);
-    });
-
     // Get current status
     // API version info
     this.app.get('/api/version', (req, res) => {

@@ -1,4 +1,14 @@
+## [1.3.9] — 2026-07-03
+
+### Added
+- **ETA**: estimated time remaining during scan (based on avg file processing time)
+- **Search/Filter**: filter files in Current Run and History by filename or status
+- **Mobile sidebar**: hamburger menu with overlay for phones/small screens
+
 ## [1.3.8] — 2026-07-03
+
+### Fixed
+- **Current Run rendering**: `showFiles` used before declaration, causing Current Run page to crash
 
 ### Changed
 - **Concurrency**: 2→6 parallel sync tasks (3× faster scans)

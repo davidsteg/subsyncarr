@@ -1,7 +1,7 @@
 class SubsyncarrPlusClient {
   constructor() {
     this.ws = null;
-    this.state = { currentRun: null, files: [], isRunning: false, scanProgress: null };
+    this.state = { currentRun: null, files: [], isRunning: false, scanProgress: null, avgTimePerFile: 0, fileTimestamps: [] };
     this.historyCache = {};
     this.initialized = false;
     this.activePage = 'dashboard';
@@ -75,6 +75,13 @@ class SubsyncarrPlusClient {
         break;
       case 'file:updated':
         if (msg.data.run) this.state.currentRun = msg.data.run;
+        // Track recent file completion times for ETA
+        var now = Date.now();
+        this.state.fileTimestamps.push(now);
+        if (this.state.fileTimestamps.length > 20) this.state.fileTimestamps.shift();
+        if (this.state.fileTimestamps.length >= 2) {
+          this.state.avgTimePerFile = (now - this.state.fileTimestamps[0]) / this.state.fileTimestamps.length;
+        }
         this.render();
         break;
       case 'files:cleared':
@@ -173,9 +180,11 @@ class SubsyncarrPlusClient {
     var pct = run.total_engines > 0 ? Math.round((run.completed_engines / run.total_engines) * 100) : 0;
     document.getElementById('runStatusBadge').textContent = run.status === 'running' ? 'RUNNING' : run.status.toUpperCase();
     document.getElementById('runStatusBadge').className = 'status-badge ' + run.status;
-    var processing = this.state.files.filter(function(f) { return f.status === 'processing'; });
-    var done = this.state.files.filter(function(f) { return ['completed','skipped','error','not_fitting'].indexOf(f.status) >= 0; });
     var self = this;
+    var searchQ = document.getElementById("runSearch");
+    var showFiles = searchQ ? self._filterFiles(self.state.files, searchQ.value) : self.state.files;
+    var processing = showFiles.filter(function(f) { return f.status === "processing"; });
+    var done = showFiles.filter(function(f) { return ["completed","skipped","error","not_fitting"].indexOf(f.status) >= 0; });
     function fileCards(arr, showSkip) {
       return arr.map(function(f) {
         var engines = {}; try { engines = JSON.parse(f.engines); } catch(e) {}
@@ -190,6 +199,16 @@ class SubsyncarrPlusClient {
         var skipBtn = showSkip ? '<button class="btn btn-sm btn-danger" onclick="client.skipFile(\'' + f.file_path.replace(/'/g,'\\\'') + '\')">Skip</button>' : '';
         return '<div class="file-card ' + f.status + '"><div class="file-header"><div class="file-name"><span class="status-tag ' + f.status + '">' + statusLabel + '</span> ' + f.file_path.split('/').pop() + '</div>' + skipBtn + '</div><div class="engine-badges">' + badges + '</div></div>';
       }).join('');
+    }
+    // Show filters
+    var filterEl = document.getElementById('runFilters');
+    if (filterEl) filterEl.style.display = run.status === 'running' ? 'flex' : 'none';
+    // Update ETA
+    var etaEl = document.getElementById('etaText');
+    if (etaEl && self.state.avgTimePerFile > 0 && run.total_files) {
+      var remaining = run.total_files - (run.completed+run.skipped+run.failed+run.not_fitting);
+      etaEl.textContent = 'ETA: ' + self._formatETA(remaining * self.state.avgTimePerFile / 6);
+      etaEl.className = 'eta-text ' + (remaining * self.state.avgTimePerFile / 1000 > 3600 ? 'slow' : 'fast');
     }
     container.innerHTML =
       '<div class="run-progress"><div class="run-stats-row"><span>OK ' + (run.completed||0) + '</span><span>SK ' + (run.skipped||0) + '</span><span>FAIL ' + (run.failed||0) + '</span><span>NF ' + (run.not_fitting||0) + '</span><span>Total: ' + (run.total_files||0).toLocaleString() + '</span></div>' +
@@ -283,6 +302,15 @@ class SubsyncarrPlusClient {
     var r = await fetch('/api/runs/' + runId + '/logs'); var d = await r.json();
     document.getElementById('logsContent').textContent = d.logs || 'No logs';
     document.getElementById('logsModal').classList.remove('hidden');
+  }
+  _filterHistory(runs, query) {
+    if (!query) return runs;
+    var q = query.toLowerCase();
+    return runs.filter(function(r) {
+      return new Date(r.start_time).toLocaleString().toLowerCase().indexOf(q) >= 0 ||
+        r.status.toLowerCase().indexOf(q) >= 0 ||
+        String(r.total_files||0).indexOf(q) >= 0;
+    });
   }
   showFileList(runId, cat) {
     var run = this.historyCache[runId]; if (!run || !run.files) return;
@@ -393,6 +421,25 @@ class SubsyncarrPlusClient {
       document.getElementById('mediaDetailModal').classList.remove('hidden');
     } catch(e) { alert('Failed to load: ' + e.message); }
   }
+  _formatETA(ms) {
+    if (ms < 60000) return Math.round(ms/1000) + 's';
+    if (ms < 3600000) return Math.round(ms/60000) + 'm';
+    return (ms/3600000).toFixed(1) + 'h';
+  }
+  _filterFiles(files, query) {
+    if (!query) return files;
+    var q = query.toLowerCase();
+    return files.filter(function(f) {
+      var name = f.file_path.split('/').pop().toLowerCase();
+      return name.indexOf(q) >= 0 || f.status.indexOf(q) >= 0;
+    });
+  }
+  toggleSidebar() {
+    var sb = document.getElementById('sidebar');
+    var ov = document.getElementById('sidebarOverlay');
+    sb.classList.toggle('open');
+    if (ov) ov.classList.toggle('show');
+  }
   setupEvents() {
     var self = this;
     document.getElementById('themeToggle').addEventListener('click', function() { self.toggleTheme(); });
@@ -432,6 +479,19 @@ class SubsyncarrPlusClient {
     document.getElementById('fileListContent').addEventListener('click', function(e) {
       var el = e.target.closest('[data-file]');
       if (el) { self.viewMediaDetail(el.getAttribute('data-file')); }
+    });
+    // Mobile sidebar toggle
+    document.getElementById('hamburgerBtn').addEventListener('click', function() { self.toggleSidebar(); });
+    // Search inputs
+    document.getElementById('runSearch').addEventListener('input', function() { self.render(); });
+    // Sidebar overlay click-to-close
+    var overlay = document.getElementById('sidebarOverlay');
+    if (overlay) overlay.addEventListener('click', function() { self.toggleSidebar(); });
+    // History search
+    var historySearch = document.getElementById('historySearch');
+    if (historySearch) historySearch.addEventListener('input', function() {
+      var runs = Object.values(self.historyCache).sort(function(a,b){ return b.start_time - a.start_time; });
+      self.renderHistory(self._filterHistory(runs, this.value));
     });
     setInterval(function() { if (self.activePage === 'dashboard') self.fetchStats(); }, 15000);
   }
