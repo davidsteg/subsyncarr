@@ -119,6 +119,8 @@ export class ProcessingEngine extends EventEmitter {
     stderr?: string;
     skipped?: boolean;
     duration: number;
+    shiftTooLarge?: boolean;
+    originalShiftMs?: number;
   }> {
     const startTime = Date.now();
     try {
@@ -299,9 +301,24 @@ export class ProcessingEngine extends EventEmitter {
       );
       if (!result.success) {
         this.log(`[${new Date().toISOString()}]   Error: ${result.message}`);
-        if (result.stderr) {
+        if (result.stderr && result.stderr.length > 0) {
           this.log(`[${new Date().toISOString()}]   Stderr: ${result.stderr.substring(0, 500)}`);
         }
+      }
+
+      // If this engine's output suggests the subtitle doesn't match the video
+      // (shiftTooLarge), skip remaining engines — no engine can fix a mismatch
+      if (result.shiftTooLarge) {
+        this.log(`[${new Date().toISOString()}] ⊘ Subtitle doesn't match video (${engine} shift too large), skipping remaining engines: ${fileName}`);
+        this.emit('file:engine_completed', {
+          srtPath,
+          engine,
+          result: { ...result },
+        });
+        // Still process the engine_completed event properly
+        // Emit not_fitting so coordinator tracks it
+        this.emit('file:not_fitting', { srtPath, engine, offsetMs: result.originalShiftMs ?? 0 });
+        return; // Exit processFileInner
       }
 
       if (result.success) {

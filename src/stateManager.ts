@@ -134,6 +134,8 @@ export class StateManager extends EventEmitter {
       skipped?: boolean;
       offsetMs?: number;
       notFitting?: boolean;
+      shiftTooLarge?: boolean;
+      originalShiftMs?: number;
     },
   ): void {
     const file = this.db.getFileResult(runId, filePath);
@@ -149,7 +151,8 @@ export class StateManager extends EventEmitter {
       // Update failure tracking
       if (result.skipped) {
         // Skipped engines don't affect failure count
-      } else if (result.success) {
+      } else if (result.success || result.shiftTooLarge) {
+        // Engine worked fine — shiftTooLarge means subtitle doesn't match video, not engine failure
         this.db.recordEngineSuccess(filePath, engine);
       } else {
         this.db.recordEngineFailure(filePath, engine);

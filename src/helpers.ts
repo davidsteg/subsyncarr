@@ -65,6 +65,10 @@ export interface ProcessingResult {
   offsetMs?: number;
   /** True when the subtitle doesn't fit the media (offset too large even after retry) */
   notFitting?: boolean;
+  /** True when the engine produced output but the shift was too large (subtitle mismatch, not engine failure) */
+  shiftTooLarge?: boolean;
+  /** The detected shift in ms (only set when shiftTooLarge) */
+  originalShiftMs?: number;
 }
 
 function getTimeoutMs(): number {

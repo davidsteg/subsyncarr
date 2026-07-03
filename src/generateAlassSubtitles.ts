@@ -1,63 +1,91 @@
-import { execPromise, ProcessingResult, getOutputPath, getSubtitleFormat, getEngineTimeoutMs } from './helpers';
-import { existsSync } from 'fs';
+import { execPromise, ProcessingResult, getEngineTimeoutMs } from './helpers';
+import { existsSync, readFileSync, copyFileSync, renameSync, unlinkSync } from 'fs';
+import { dirname, basename, join } from 'path';
 
-export async function generateAlassSubtitles(srtPath: string, videoPath: string, signal?: AbortSignal): Promise<ProcessingResult> {
-  const outputPath = getOutputPath(srtPath, 'alass');
-
-  if (getSubtitleFormat() !== 'overwrite') {
-    const exists = existsSync(outputPath);
-    if (exists) {
-      return {
-        success: true,
-        message: `Skipping ${outputPath} - already processed`,
-        skipped: true,
-      };
-    }
+function getFirstCueTimeMs(srtPath: string): number | null {
+  try {
+    const content = readFileSync(srtPath, 'utf-8');
+    const match = content.match(/^(\d{2}):(\d{2}):(\d{2}),(\d{3})\s*-->/m);
+    if (!match) return null;
+    const [, h, m, s, ms] = match;
+    return parseInt(h) * 3600000 + parseInt(m) * 60000 + parseInt(s) * 1000 + parseInt(ms);
+  } catch {
+    return null;
   }
+}
+
+function getMaxShiftMs(): number {
+  const envVal = process.env.MAX_SUBTITLE_SHIFT_MS;
+  if (envVal) {
+    const val = parseInt(envVal, 10);
+    if (!isNaN(val) && val > 0) return val;
+  }
+  return 30000;
+}
+
+export async function generateAlassSubtitles(
+  srtPath: string,
+  videoPath: string,
+  signal?: AbortSignal,
+): Promise<ProcessingResult> {
+  const directory = dirname(srtPath);
+  const srtBaseName = basename(srtPath, '.srt');
+  const tempPath = join(directory, `${srtBaseName}.alass-tmp.srt`);
+  const backupPath = srtPath + '.bak';
+  const originalFirstCueMs = getFirstCueTimeMs(srtPath);
 
   try {
-    const command = `alass "${videoPath}" "${srtPath}" "${outputPath}"`;
+    copyFileSync(srtPath, backupPath);
+    const command = `alass "${videoPath}" "${srtPath}" "${tempPath}"`;
     console.log(`${new Date().toLocaleString()} Processing: ${command}`);
-    const { stdout, stderr } = await execPromise(command, getEngineTimeoutMs('alass'), signal);
-    return {
-      success: true,
-      message: `Successfully processed: ${outputPath}`,
-      stdout: stdout || undefined,
-      stderr: stderr || undefined,
-    };
+
+    try {
+      const { stdout, stderr } = await execPromise(command, getEngineTimeoutMs('alass'), signal);
+      console.log(`${new Date().toLocaleString()} alass completed successfully for: ${basename(srtPath)}`);
+
+      if (!existsSync(tempPath)) {
+        renameSync(backupPath, srtPath);
+        return { success: false, message: `alass did not produce output file: ${tempPath}`, stdout: stdout || undefined, stderr: stderr || undefined };
+      }
+
+      if (originalFirstCueMs !== null) {
+        const newFirstCueMs = getFirstCueTimeMs(tempPath);
+        if (newFirstCueMs !== null) {
+          const shiftMs = Math.abs(newFirstCueMs - originalFirstCueMs);
+          const maxShiftMs = getMaxShiftMs();
+          console.log(`${new Date().toLocaleString()} Shift detected: ${shiftMs}ms (max allowed: ${maxShiftMs}ms) for: ${basename(srtPath)}`);
+
+          if (shiftMs > maxShiftMs) {
+            console.log(`${new Date().toLocaleString()} Shift too large (${shiftMs}ms > ${maxShiftMs}ms), restoring backup for: ${basename(srtPath)}`);
+            try { unlinkSync(tempPath); } catch { /* ignore */ }
+            renameSync(backupPath, srtPath);
+            return { success: false, message: `Shift too large: ${shiftMs}ms (max: ${maxShiftMs}ms). Subtitle likely does not match this video.`, stdout: stdout || undefined, stderr: stderr || undefined, shiftTooLarge: true, originalShiftMs: shiftMs };
+          }
+        }
+      } else {
+        console.log(`${new Date().toLocaleString()} Could not parse original SRT cue times, skipping shift check for: ${basename(srtPath)}`);
+      }
+
+      renameSync(tempPath, srtPath);
+      try { unlinkSync(backupPath); } catch { /* ignore */ }
+      return { success: true, message: `Successfully synced: ${basename(srtPath)}`, stdout: stdout || undefined, stderr: stderr || undefined };
+    } catch (error) {
+      const errorMessage = error instanceof Error ? error.message : String(error);
+      const isTimeout = errorMessage.includes('SIGTERM') || errorMessage.includes('timed out');
+      try { unlinkSync(tempPath); } catch { /* ignore */ }
+      renameSync(backupPath, srtPath);
+      const execError = error as { stdout?: string; stderr?: string };
+      const stdout = execError.stdout || '';
+      const stderr = execError.stderr || '';
+      if (isTimeout) {
+        return { success: false, message: `Timeout: alass took longer than allowed timeout for ${basename(srtPath)}`, stdout: stdout || undefined, stderr: stderr || undefined };
+      }
+      return { success: false, message: `Error processing ${basename(srtPath)}: ${errorMessage}${stderr ? ' -- stderr: ' + stderr.substring(0, 300) : ''}`, stdout: stdout || undefined, stderr: stderr || undefined };
+    }
   } catch (error) {
+    try { unlinkSync(tempPath); } catch { /* ignore */ }
+    try { unlinkSync(backupPath); } catch { /* ignore */ }
     const errorMessage = error instanceof Error ? error.message : String(error);
-    const isTimeout = errorMessage.includes('SIGTERM') || errorMessage.includes('timed out');
-    const isAborted = errorMessage.includes('Aborted');
-
-    // Extract stdout/stderr from error if available
-    const execError = error as { stdout?: string; stderr?: string };
-    const stdout = execError.stdout || '';
-    const stderr = execError.stderr || '';
-
-    if (isAborted) {
-      return {
-        success: false,
-        message: `Skipped: ${outputPath} was cancelled by user`,
-        stdout: stdout || undefined,
-        stderr: stderr || undefined,
-      };
-    }
-
-    if (isTimeout) {
-      return {
-        success: false,
-        message: `Timeout: ${outputPath} took longer than allowed timeout`,
-        stdout: stdout || undefined,
-        stderr: stderr || undefined,
-      };
-    }
-
-    return {
-      success: false,
-      message: `Error processing ${outputPath}: ${errorMessage}`,
-      stdout: stdout || undefined,
-      stderr: stderr || undefined,
-    };
+    return { success: false, message: `Fatal error processing ${basename(srtPath)}: ${errorMessage}` };
   }
 }

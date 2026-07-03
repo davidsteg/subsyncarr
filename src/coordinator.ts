@@ -66,6 +66,8 @@ export class ProcessingCoordinator {
           skipped?: boolean;
           offsetMs?: number;
           notFitting?: boolean;
+          shiftTooLarge?: boolean;
+          originalShiftMs?: number;
         };
       }) => {
         if (this.currentRunId) {
