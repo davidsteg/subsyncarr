@@ -68,6 +68,20 @@ export function getScanConfig(): ScanConfig {
   };
 }
 
+export interface EngineChainConfig {
+  /** Primary engine to use (default: alass) */
+  defaultEngine: string;
+  /** Fallback engine if default fails (default: ffsubsync) */
+  fallbackEngine: string;
+}
+
+export function getEngineChainConfig(): EngineChainConfig {
+  return {
+    defaultEngine: process.env.DEFAULT_ENGINE || 'alass',
+    fallbackEngine: process.env.FALLBACK_ENGINE || 'ffsubsync',
+  };
+}
+
 export interface DryRunConfig {
   enabled: boolean;
   confidenceThreshold: number;

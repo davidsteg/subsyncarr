@@ -378,8 +378,10 @@ export class SubsyncarrPlusServer {
       res.json({
         maxSubtitleShiftMs: parseInt(dbSettings['max_subtitle_shift_ms'] || process.env.MAX_SUBTITLE_SHIFT_MS || '30000', 10),
         syncRetryThresholdMs: parseInt(dbSettings['sync_retry_threshold_ms'] || process.env.SYNC_RETRY_THRESHOLD_MS || '5000', 10),
-        syncMaxRetries: parseInt(dbSettings['sync_max_retries'] || process.env.SYNC_MAX_RETRIES || '1', 10),
+        syncMaxRetries: parseInt(dbSettings['sync_max_retries'] || process.env.SYNC_MAX_RETRIES || '2', 10),
         confidenceThreshold: parseFloat(dbSettings['confidence_threshold'] || process.env.CONFIDENCE_THRESHOLD || '0.7'),
+        defaultEngine: process.env.DEFAULT_ENGINE || 'alass',
+        fallbackEngine: process.env.FALLBACK_ENGINE || 'ffsubsync',
         dryRun: (dbSettings['dry_run'] || process.env.DRY_RUN || 'false') === 'true',
         cronSchedule: process.env.CRON_SCHEDULE || '0 0 * * *',
         includeEngines: process.env.INCLUDE_ENGINES || 'alass,ffsubsync',
@@ -392,7 +394,7 @@ export class SubsyncarrPlusServer {
       const updates = req.body;
       const allowedKeys = [
         'max_subtitle_shift_ms', 'sync_retry_threshold_ms', 'sync_max_retries',
-        'confidence_threshold', 'dry_run', 'theme'
+        'confidence_threshold', 'default_engine', 'fallback_engine', 'dry_run', 'theme'
       ];
       for (const [key, value] of Object.entries(updates)) {
         if (allowedKeys.includes(key)) {

@@ -343,6 +343,8 @@ class SubsyncarrPlusClient {
       document.getElementById('setRetryThreshold').value = s.syncRetryThresholdMs;
       document.getElementById('setMaxRetries').value = s.syncMaxRetries;
       document.getElementById('setConfidence').value = s.confidenceThreshold;
+      document.getElementById('setDefaultEngine').value = s.defaultEngine || 'alass';
+      document.getElementById('setFallbackEngine').value = s.fallbackEngine || 'ffsubsync';
       document.getElementById('confidenceLabel').textContent = s.confidenceThreshold.toFixed(2);
       document.getElementById('setDryRun').checked = s.dryRun;
       document.getElementById('setTheme').value = s.theme;
@@ -356,6 +358,8 @@ class SubsyncarrPlusClient {
       sync_retry_threshold_ms: document.getElementById('setRetryThreshold').value,
       sync_max_retries: document.getElementById('setMaxRetries').value,
       confidence_threshold: document.getElementById('setConfidence').value,
+      default_engine: document.getElementById('setDefaultEngine').value,
+      fallback_engine: document.getElementById('setFallbackEngine').value,
       dry_run: document.getElementById('setDryRun').checked ? 'true' : 'false',
       theme: document.getElementById('setTheme').value,
     };

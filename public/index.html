@@ -102,6 +102,24 @@
           <span class="setting-hint" id="confidenceLabel">0.70</span>
         </div>
         <div class="setting-group">
+          <label>Default Engine</label>
+          <select id="setDefaultEngine">
+            <option value="alass">alass</option>
+            <option value="ffsubsync">ffsubsync</option>
+            <option value="autosubsync">autosubsync</option>
+          </select>
+          <span class="setting-hint">Primary engine tried first with retries</span>
+        </div>
+        <div class="setting-group">
+          <label>Fallback Engine</label>
+          <select id="setFallbackEngine">
+            <option value="ffsubsync">ffsubsync</option>
+            <option value="alass">alass</option>
+            <option value="autosubsync">autosubsync</option>
+          </select>
+          <span class="setting-hint">Fallback if default exhausts all retries</span>
+        </div>
+        <div class="setting-group">
           <label>Dry Run Mode</label>
           <label class="toggle-switch">
             <input type="checkbox" id="setDryRun" />
