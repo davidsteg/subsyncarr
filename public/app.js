@@ -1,7 +1,7 @@
 class SubsyncarrPlusClient {
   constructor() {
     this.ws = null;
-    this.state = { currentRun: null, files: [], isRunning: false, scanProgress: null, avgTimePerFile: 0, fileTimestamps: [], dryRun: false };
+    this.state = { currentRun: null, files: [], isRunning: false, scanProgress: null, avgTimePerFile: 0, fileTimestamps: [], dryRun: false }; this._scanPoll = null;
     this.historyCache = {};
     this.initialized = false;
     this.activePage = 'dashboard';
@@ -178,8 +178,14 @@ class SubsyncarrPlusClient {
     var container = document.getElementById('runContent');
     if (!run || run.id === 'pending') {
       if (run && run.id === 'pending') {
-        container.innerHTML = '<div class="run-progress"><div class="run-stats-row"><span>Starting scan...</span></div><div class="progress-bar"><div class="progress-fill" style="width:0%"></div></div><div class="text-sm text-muted">Waiting for file list...</div></div>';
-        document.getElementById('runStatusBadge').textContent = 'STARTING';
+        var sp = this.state.scanProgress;
+        if (sp && sp.total > 0) {
+          var pct = Math.round((sp.checked / sp.total) * 100);
+          container.innerHTML = '<div class="run-progress"><div class="run-stats-row"><span>Scanning files: ' + sp.checked.toLocaleString() + ' / ' + sp.total.toLocaleString() + '</span></div><div class="progress-bar"><div class="progress-fill" style="width:' + pct + '%"></div></div><div class="scan-stats" style="margin-top:8px"><span>' + sp.checked.toLocaleString() + ' checked</span><span>' + sp.needSync.toLocaleString() + ' need sync</span><span>' + sp.alreadySynced.toLocaleString() + ' synced</span></div></div>';
+        } else {
+          container.innerHTML = '<div class="run-progress"><div class="run-stats-row"><span>Starting scan...</span></div><div class="progress-bar"><div class="progress-fill" style="width:0%"></div></div><div class="text-sm text-muted">Waiting for file list...</div></div>';
+        }
+        document.getElementById('runStatusBadge').textContent = 'SCANNING';
         document.getElementById('runStatusBadge').className = 'status-badge running';
         return;
       }
@@ -321,7 +327,9 @@ class SubsyncarrPlusClient {
       this.state.currentRun = { status: 'running', total_files: 0, completed: 0, skipped: 0, failed: 0, not_fitting: 0, total_engines: 0, completed_engines: 0, start_time: Date.now(), id: 'pending' };
       this.navigate('run');
       this.render();
+      this._pollScanProgress();
       await fetch('/api/run/start', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify(payload) });
+      this._stopScanPoll();
     } catch(e) {
       this.state.isRunning = false;
       this.state.currentRun = null;
@@ -478,6 +486,25 @@ class SubsyncarrPlusClient {
     var ov = document.getElementById('sidebarOverlay');
     sb.classList.toggle('open');
     if (ov) ov.classList.toggle('show');
+  }
+  _pollScanProgress() {
+    var self = this;
+    this._stopScanPoll();
+    this._scanPoll = setInterval(function() {
+      if (!self.state.isRunning || (self.state.currentRun && self.state.currentRun.id !== 'pending')) {
+        self._stopScanPoll();
+        return;
+      }
+      fetch('/api/status?brief=true').then(function(r) { return r.json(); }).then(function(d) {
+        if (d.scanProgress) {
+          self.state.scanProgress = d.scanProgress;
+          self.renderRun();
+        }
+      }).catch(function() {});
+    }, 500);
+  }
+  _stopScanPoll() {
+    if (this._scanPoll) { clearInterval(this._scanPoll); this._scanPoll = null; }
   }
   setupEvents() {
     var self = this;
