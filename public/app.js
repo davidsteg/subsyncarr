@@ -1,7 +1,7 @@
 class SubsyncarrPlusClient {
   constructor() {
     this.ws = null;
-    this.state = { currentRun: null, files: [], isRunning: false, scanProgress: null, avgTimePerFile: 0, fileTimestamps: [], dryRun: false }; this._scanPoll = null;
+    this.state = { currentRun: null, files: [], isRunning: false, scanProgress: null, avgTimePerFile: 0, fileTimestamps: [], dryRun: false };
     this.historyCache = {};
     this.initialized = false;
     this.activePage = 'dashboard';
@@ -176,22 +176,24 @@ class SubsyncarrPlusClient {
   renderRun() {
     var run = this.state.currentRun;
     var container = document.getElementById('runContent');
-    if (!run || run.id === 'pending') {
-      if (run && run.id === 'pending') {
-        var sp = this.state.scanProgress;
-        if (sp && sp.total > 0) {
-          var pct = Math.round((sp.checked / sp.total) * 100);
-          container.innerHTML = '<div class="run-progress"><div class="run-stats-row"><span>Scanning files: ' + sp.checked.toLocaleString() + ' / ' + sp.total.toLocaleString() + '</span></div><div class="progress-bar"><div class="progress-fill" style="width:' + pct + '%"></div></div><div class="scan-stats" style="margin-top:8px"><span>' + sp.checked.toLocaleString() + ' checked</span><span>' + sp.needSync.toLocaleString() + ' need sync</span><span>' + sp.alreadySynced.toLocaleString() + ' synced</span></div></div>';
-        } else {
-          container.innerHTML = '<div class="run-progress"><div class="run-stats-row"><span>Starting scan...</span></div><div class="progress-bar"><div class="progress-fill" style="width:0%"></div></div><div class="text-sm text-muted">Waiting for file list...</div></div>';
-        }
-        document.getElementById('runStatusBadge').textContent = 'SCANNING';
-        document.getElementById('runStatusBadge').className = 'status-badge running';
-        return;
-      }
+    // No run at all
+    if (!run) {
       container.innerHTML = '<p class="text-muted text-sm">No run in progress.</p>';
       document.getElementById('runStatusBadge').textContent = 'IDLE';
       document.getElementById('runStatusBadge').className = 'status-badge'; return;
+    }
+    // Scanning phase: run exists but total_files hasn't been populated yet
+    if (run.total_files === 0) {
+      var sp = this.state.scanProgress;
+      if (sp && sp.total > 0) {
+        var pct = Math.round((sp.checked / sp.total) * 100);
+        container.innerHTML = '<div class="run-progress"><div class="run-stats-row"><span>Scanning files: ' + sp.checked.toLocaleString() + ' / ' + sp.total.toLocaleString() + '</span></div><div class="progress-bar"><div class="progress-fill" style="width:' + pct + '%"></div></div><div class="scan-stats" style="margin-top:8px"><span>' + sp.checked.toLocaleString() + ' checked</span><span>' + sp.needSync.toLocaleString() + ' need sync</span><span>' + sp.alreadySynced.toLocaleString() + ' synced</span></div></div>';
+      } else {
+        container.innerHTML = '<div class="run-progress"><div class="run-stats-row"><span>Starting scan...</span></div><div class="progress-bar"><div class="progress-fill" style="width:0%"></div></div><div class="text-sm text-muted">Waiting for file list...</div></div>';
+      }
+      document.getElementById('runStatusBadge').textContent = 'SCANNING';
+      document.getElementById('runStatusBadge').className = 'status-badge running';
+      return;
     }
     var pct = run.total_engines > 0 ? Math.round((run.completed_engines / run.total_engines) * 100) : 0;
     document.getElementById('runStatusBadge').textContent = run.status === 'running' ? 'RUNNING' : run.status.toUpperCase();
@@ -322,20 +324,14 @@ class SubsyncarrPlusClient {
       if (paths && paths.length > 0) payload.paths = paths;
       if (dryRun) payload.dryRun = true;
       this.state.dryRun = !!dryRun;
-      // Show placeholder immediately — WebSocket run:started will replace with real data.
-      // Fire-and-forget POST; WebSocket handles all updates. Polling auto-stops
-      // when the real run arrives (currentRun.id changes from 'pending').
+      // Show placeholder immediately — server creates run before scanning
+      // and WebSocket run:started fires with real data
       this.state.isRunning = true;
       this.state.currentRun = { status: 'running', total_files: 0, completed: 0, skipped: 0, failed: 0, not_fitting: 0, total_engines: 0, completed_engines: 0, start_time: Date.now(), id: 'pending' };
       this.navigate('run');
       this.render();
-      this._pollScanProgress();
-      fetch('/api/run/start', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify(payload) })
-        .catch(function(e) { console.error('Start run failed:', e); });
-    } catch(e) {
-      // WebSocket + polling handle state; fallback if POST itself throws
-      console.error('startRun error:', e);
-    }
+      await fetch('/api/run/start', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify(payload) });
+    } catch(e) { alert('Failed: ' + e.message); }
   }
   async stopRun() { if (!confirm('Stop run?')) return; try { await fetch('/api/run/stop', { method:'POST' }); } catch(e) {} }
   async skipFile(fp) { try { await fetch('/api/file/skip', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({filePath:fp}) }); } catch(e) {} }
@@ -504,7 +500,7 @@ class SubsyncarrPlusClient {
     }, 500);
   }
   _stopScanPoll() {
-    if (this._scanPoll) { clearInterval(this._scanPoll); this._scanPoll = null; }
+    if (this._scanPoll) { clearInterval(this._scanPoll); }
   }
   setupEvents() {
     var self = this;
