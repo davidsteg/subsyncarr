@@ -157,6 +157,7 @@ export class SubsyncarrPlusServer {
         files,
         totalFiles,
         isRunning: this.coordinator.isRunning(),
+        dryRun: this.coordinator.isDryRun(),
       });
     });
 
@@ -259,9 +260,9 @@ export class SubsyncarrPlusServer {
 
     // Start a new run
     this.app.post('/api/run/start', async (req, res) => {
-      const { paths } = req.body;
+      const { paths, dryRun } = req.body;
       console.log(
-        `[${new Date().toISOString()}] POST /api/run/start${paths ? ` (custom paths: ${paths.join(', ')})` : ' (default paths)'}`,
+        `[${new Date().toISOString()}] POST /api/run/start${paths ? ` (custom paths: ${paths.join(', ')})` : ' (default paths)'}${dryRun ? ' [DRY RUN]' : ''}`,
       );
 
       try {
@@ -272,7 +273,9 @@ export class SubsyncarrPlusServer {
 
         const config = paths ? { includePaths: paths, excludePaths: [] } : undefined;
 
-        const runId = await this.coordinator.startRun(config);
+        // Explicit dryRun:true forces a dry run; otherwise fall back to the
+        // saved setting / DRY_RUN env inside the coordinator.
+        const runId = await this.coordinator.startRun(config, { dryRun: dryRun === true ? true : undefined });
         res.json({ runId });
       } catch (error) {
         console.log(
@@ -434,6 +437,7 @@ export class SubsyncarrPlusServer {
           data: {
             currentRun,
             isRunning: this.coordinator.isRunning(),
+            dryRun: this.coordinator.isDryRun(),
           },
         }),
       );

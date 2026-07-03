@@ -107,6 +107,9 @@ td{padding:10px 12px;border-top:1px solid var(--border)}
 .status-badge.running{background:#dbeafe;color:#1e40af}
 .status-badge.completed{background:#d1fae5;color:#065f46}
 .status-badge.cancelled{background:#fef3c7;color:#92400e}
+.status-badge.dry-run{background:#ede9fe;color:#5b21b6;margin-left:8px}
+.dry-run-check{display:flex;align-items:center;gap:8px;margin:12px 0 4px;font-size:13px;color:var(--text-muted,#6b7280);cursor:pointer}
+.dry-run-check input{width:auto;margin:0}
 .stat-clickable{cursor:pointer;text-decoration:underline}
 .stat-clickable:hover{opacity:.8}
 .folder-list{display:flex;flex-direction:column;gap:6px}
