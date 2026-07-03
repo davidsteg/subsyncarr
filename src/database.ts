@@ -132,6 +132,19 @@ export class SubsyncarrPlusDatabase {
       this.db.exec(`ALTER TABLE runs ADD COLUMN not_fitting INTEGER DEFAULT 0`);
     }
 
+    // Migration: Create synced_files cache table — avoids re-scanning 183K SRT headers
+    const syncedFilesTable = this.db
+      .prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='synced_files'")
+      .all();
+    if (syncedFilesTable.length === 0) {
+      this.db.exec(`
+        CREATE TABLE synced_files (
+          file_path TEXT PRIMARY KEY,
+          synced_at INTEGER NOT NULL
+        )
+      `);
+    }
+
     // Migration: Create settings table for runtime configuration
     const settingsTable = this.db
       .prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='settings'")
@@ -192,6 +205,7 @@ export class SubsyncarrPlusDatabase {
    * Atomically increment a numeric column on a run.
    * Uses SQL `SET field = field + 1` to avoid read-then-write race and overhead.
    */
+  // v1.3.7 fix: removed updated_at
   incrementRunField(id: string, field: 'completed' | 'skipped' | 'failed' | 'not_fitting' | 'completed_engines'): void {
     this.db.prepare(`UPDATE runs SET ${field} = ${field} + 1 WHERE id = ?`).run(id);
   }
@@ -585,6 +599,18 @@ export class SubsyncarrPlusDatabase {
       .sort((a, b) => b.total - a.total);
 
     return result;
+  }
+
+  // === Synced files cache ===
+  // Speeds up findAllSrtFiles by skipping the header read for files we already know are synced.
+
+  isFileInSyncCache(filePath: string): boolean {
+    const row = this.db.prepare('SELECT 1 FROM synced_files WHERE file_path = ?').get(filePath);
+    return !!row;
+  }
+
+  addFileToSyncCache(filePath: string): void {
+    this.db.prepare('INSERT OR REPLACE INTO synced_files (file_path, synced_at) VALUES (?, ?)').run(filePath, Date.now());
   }
 
   // Settings methods

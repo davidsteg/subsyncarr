@@ -4,6 +4,7 @@ import { existsSync } from 'fs';
 import { ScanConfig } from './config';
 import { getOutputPath, getSubtitleFormat, isSyncedSrt } from './helpers';
 import { DirectoryCache, initDirectoryCache } from './findMatchingVideoFile';
+import { SubsyncarrPlusDatabase } from './database';
 
 const ALL_KNOWN_ENGINES = ['ffsubsync', 'autosubsync', 'alass'];
 
@@ -14,7 +15,7 @@ function isEngineOutput(filename: string): boolean {
 /** Concurrency limit for async file checks — pipelines I/O on network storage */
 const CHECK_CONCURRENCY = 20;
 
-export async function findAllSrtFiles(config: ScanConfig, onProgress?: (checked: number, total: number, needSync: number, alreadySynced: number) => void): Promise<{ files: string[]; directoryCache: DirectoryCache }> {
+export async function findAllSrtFiles(config: ScanConfig, db?: SubsyncarrPlusDatabase, onProgress?: (checked: number, total: number, needSync: number, alreadySynced: number) => void): Promise<{ files: string[]; directoryCache: DirectoryCache }> {
   const engines = process.env.INCLUDE_ENGINES?.split(',') || ['ffsubsync', 'autosubsync', 'alass'];
   const format = getSubtitleFormat();
 
@@ -69,8 +70,17 @@ export async function findAllSrtFiles(config: ScanConfig, onProgress?: (checked:
     let isSynced: boolean;
 
     if (format === 'overwrite') {
-      // Async header check — pipelines I/O on network storage
-      isSynced = await isSyncedSrt(srtPath);
+      // Check DB cache first — instant, no I/O
+      if (db && db.isFileInSyncCache(srtPath)) {
+        isSynced = true;
+      } else {
+        // Async header check — pipelines I/O on network storage
+        isSynced = await isSyncedSrt(srtPath);
+        // Cache result to avoid future header reads
+        if (isSynced && db) {
+          db.addFileToSyncCache(srtPath);
+        }
+      }
     } else {
       // Standard mode: check if engine output files exist
       isSynced = engines.every((engine) => {

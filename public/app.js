@@ -41,6 +41,7 @@ class SubsyncarrPlusClient {
     if (page === 'folders') this.fetchFolders();
     if (page === 'settings') this.fetchSettings();
     if (page === 'dashboard') { this.fetchStats(); this.fetchConfig(); }
+    if (page === 'run' && this.state.isRunning) { this.fetchRunFiles(); }
   }
   initWebSocket() {
     var self = this;
@@ -83,10 +84,19 @@ class SubsyncarrPlusClient {
     }
   }
   async fetchInitialState() {
-    var r = await fetch('/api/status'); var d = await r.json();
+    var r = await fetch('/api/status?brief=true'); var d = await r.json();
     this.state.currentRun = d.currentRun; this.state.isRunning = d.isRunning;
     this.state.files = d.files || []; this.state.scanProgress = d.scanProgress;
     this.initialized = true; this.render(); this.fetchHistory();
+  }
+  async fetchRunFiles() {
+    if (!this.state.currentRun) return;
+    try {
+      var r = await fetch('/api/status?limit=200');
+      var d = await r.json();
+      this.state.files = d.files || [];
+      this.render();
+    } catch(e) {}
   }
   async fetchHistory() {
     var r = await fetch('/api/history?include_files=true'); var data = await r.json();

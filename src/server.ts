@@ -135,16 +135,34 @@ export class SubsyncarrPlusServer {
     });
 
     this.app.get('/api/status', (req, res) => {
-      console.log(`[${new Date().toISOString()}] GET /api/status`);
+      const brief = req.query.brief === 'true';
+      if (!brief) console.log(`[${new Date().toISOString()}] GET /api/status`);
       const currentRun = this.stateManager.getCurrentRun();
       const scanProgress = this.coordinator.getScanProgress();
-      const limit = Math.min(parseInt(req.query.limit as string, 10) || 500, 5000);
-      const result = currentRun ? this.stateManager.getFileResultsPaginated(currentRun.id, limit, 0) : null;
+      let files: any[] = [];
+      let totalFiles = 0;
+      if (!brief && currentRun) {
+        const limit = Math.min(parseInt(req.query.limit as string, 10) || 100, 1000);
+        const result = this.stateManager.getFileResultsPaginated(currentRun.id, limit, 0);
+        files = result?.files || [];
+        totalFiles = result?.total || 0;
+      }
       res.json({
-        currentRun,
+        currentRun: brief && currentRun ? {
+          id: currentRun.id,
+          start_time: currentRun.start_time,
+          total_files: currentRun.total_files,
+          completed: currentRun.completed,
+          skipped: currentRun.skipped,
+          failed: currentRun.failed,
+          not_fitting: currentRun.not_fitting,
+          total_engines: currentRun.total_engines,
+          completed_engines: currentRun.completed_engines,
+          status: currentRun.status,
+        } : currentRun,
         scanProgress,
-        files: result?.files || [],
-        totalFiles: result?.total || 0,
+        files,
+        totalFiles,
         isRunning: this.coordinator.isRunning(),
       });
     });

@@ -66,7 +66,8 @@ export class ProcessingEngine extends EventEmitter {
     this.log(`[${new Date().toISOString()}] Scan paths: ${JSON.stringify(scanConfig.includePaths)}`);
 
     this.scanProgress = { checked: 0, total: 0, needSync: 0, alreadySynced: 0 };
-    const { files: srtFiles, directoryCache } = await findAllSrtFiles(scanConfig,
+    const db = this.stateManager?.getDatabase();
+    const { files: srtFiles, directoryCache } = await findAllSrtFiles(scanConfig, db,
       (checked, total, needSync, alreadySynced) => {
         this.scanProgress = { checked, total, needSync, alreadySynced };
       }
@@ -511,6 +512,10 @@ export class ProcessingEngine extends EventEmitter {
             // Fallback: read from srtPath (engines overwrite in-place)
             const content = readFileSync(srtPath, 'utf8');
             markSrtAsSynced(srtPath, engine, content);
+          }
+          // Cache sync status in DB to skip header checks on future scans
+          if (this.stateManager) {
+            try { this.stateManager.getDatabase().addFileToSyncCache(srtPath); } catch {}
           }
           // Clean up engine output file
           if (existsSync(engineOutputPath)) {

@@ -1,3 +1,10 @@
+## [1.3.8] — 2026-07-03
+
+### Changed
+- **Concurrency**: 2→6 parallel sync tasks (3× faster scans)
+- **Status API**: `?brief=true` returns only counters (0.1KB vs 5MB), dashboard uses it by default
+- **Sync cache**: new `synced_files` DB table avoids re-reading 183K SRT headers on every scan
+
 ## [1.3.7] — 2026-07-03
 
 ### Fixed
