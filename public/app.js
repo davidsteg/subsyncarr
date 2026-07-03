@@ -172,7 +172,13 @@ class SubsyncarrPlusClient {
   renderRun() {
     var run = this.state.currentRun;
     var container = document.getElementById('runContent');
-    if (!run) {
+    if (!run || run.id === 'pending') {
+      if (run && run.id === 'pending') {
+        container.innerHTML = '<div class="run-progress"><div class="run-stats-row"><span>Starting scan...</span></div><div class="progress-bar"><div class="progress-fill" style="width:0%"></div></div><div class="text-sm text-muted">Waiting for file list...</div></div>';
+        document.getElementById('runStatusBadge').textContent = 'STARTING';
+        document.getElementById('runStatusBadge').className = 'status-badge running';
+        return;
+      }
       container.innerHTML = '<p class="text-muted text-sm">No run in progress.</p>';
       document.getElementById('runStatusBadge').textContent = 'IDLE';
       document.getElementById('runStatusBadge').className = 'status-badge'; return;
@@ -295,9 +301,14 @@ class SubsyncarrPlusClient {
     }
   }
   async startRun(paths) {
-    try { var body = paths && paths.length > 0 ? JSON.stringify({ paths: paths }) : '{}';
-      await fetch('/api/run/start', { method: 'POST', headers: {'Content-Type':'application/json'}, body: body }); this.navigate('run'); }
-    catch(e) { alert('Failed: ' + e.message); }
+    try {
+      var body = paths && paths.length > 0 ? JSON.stringify({ paths: paths }) : '{}';
+      await fetch('/api/run/start', { method: 'POST', headers: {'Content-Type':'application/json'}, body: body });
+      this.state.isRunning = true;
+      this.state.currentRun = { status: 'running', total_files: 0, completed: 0, skipped: 0, failed: 0, not_fitting: 0, total_engines: 0, completed_engines: 0, start_time: Date.now(), id: 'pending' };
+      this.navigate('run');
+      this.render();
+    } catch(e) { alert('Failed: ' + e.message); }
   }
   async stopRun() { if (!confirm('Stop run?')) return; try { await fetch('/api/run/stop', { method:'POST' }); } catch(e) {} }
   async skipFile(fp) { try { await fetch('/api/file/skip', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({filePath:fp}) }); } catch(e) {} }
