@@ -1,7 +1,7 @@
 class SubsyncarrPlusClient {
   constructor() {
     this.ws = null;
-    this.state = { currentRun: null, files: [], isRunning: false, scanProgress: null, avgTimePerFile: 0, fileTimestamps: [], dryRun: false };
+    this.state = { currentRun: null, files: [], isRunning: false, scanProgress: null, avgTimePerFile: 0, fileTimestamps: [], dryRun: false }; this._scanPoll = null;
     this.historyCache = {};
     this.initialized = false;
     this.activePage = 'dashboard';
@@ -193,8 +193,10 @@ class SubsyncarrPlusClient {
       }
       document.getElementById('runStatusBadge').textContent = 'SCANNING';
       document.getElementById('runStatusBadge').className = 'status-badge running';
+      this._startScanPoll();
       return;
     }
+    this._stopScanPoll();
     var pct = run.total_engines > 0 ? Math.round((run.completed_engines / run.total_engines) * 100) : 0;
     document.getElementById('runStatusBadge').textContent = run.status === 'running' ? 'RUNNING' : run.status.toUpperCase();
     document.getElementById('runStatusBadge').className = 'status-badge ' + run.status;
@@ -501,6 +503,25 @@ class SubsyncarrPlusClient {
   }
   _stopScanPoll() {
     if (this._scanPoll) { clearInterval(this._scanPoll); }
+  }
+  _startScanPoll() {
+    if (this._scanPoll) return;
+    var self = this;
+    this._scanPoll = setInterval(function() {
+      if (!self.state.isRunning || !self.state.currentRun || self.state.currentRun.total_files > 0) {
+        self._stopScanPoll();
+        return;
+      }
+      fetch('/api/status?brief=true').then(function(r) { return r.json(); }).then(function(d) {
+        if (d.scanProgress) {
+          self.state.scanProgress = d.scanProgress;
+          self.renderRun();
+        }
+      }).catch(function() {});
+    }, 500);
+  }
+  _stopScanPoll() {
+    if (this._scanPoll) { clearInterval(this._scanPoll); this._scanPoll = null; }
   }
   setupEvents() {
     var self = this;
