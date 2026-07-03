@@ -19,7 +19,6 @@ RUN npm install --ignore-scripts && npm rebuild better-sqlite3
 
 # Copy source and build
 COPY . .
-RUN mkdir -p /home/node/.local/bin/ && cp bin/* /home/node/.local/bin/ && chown -R node:node /home/node/.local
 RUN npm run build
 
 # Install Python tools as node user
@@ -38,7 +37,7 @@ FROM node:22-slim
 ENV PUID=1000
 ENV PGID=1000
 ENV CRON_SCHEDULE="0 0 * * *"
-ENV NODE_OPTIONS="--max-old-space-size=512"
+ENV NODE_OPTIONS="--max-old-space-size=1024"
 ENV PATH="/home/node/.local/bin:$PATH"
 
 # Install runtime dependencies and gosu
@@ -62,9 +61,7 @@ COPY --from=builder --chown=node:node /app/dist ./dist
 COPY --from=builder --chown=node:node /app/public ./public
 COPY --from=builder --chown=node:node /app/node_modules ./node_modules
 COPY --from=builder --chown=node:node /app/package.json ./package.json
-
-# Copy alass binary
-COPY --from=builder --chown=node:node /home/node/.local/bin/alass /home/node/.local/bin/alass
+COPY --from=builder --chown=node:node /app/VERSION ./VERSION
 
 # Copy Python tools from builder
 COPY --from=builder --chown=node:node /home/node/.local /home/node/.local

@@ -29,7 +29,7 @@ export class StateManager extends EventEmitter {
       console.log(`[${new Date().toISOString()}] Found incomplete run from previous session: ${run.id}`);
       this.db.updateRun(run.id, {
         status: 'cancelled',
-        end_time: run.start_time, // Use start time since we don't know when it actually stopped
+        end_time: Date.now(),
       });
       console.log(`[${new Date().toISOString()}] Marked run ${run.id} as cancelled`);
     });
@@ -108,6 +108,15 @@ export class StateManager extends EventEmitter {
     this.emitFileUpdate(runId, filePath);
   }
 
+  addFileBatch(runId: string, files: Array<{ filePath: string; videoPath: string | null }>): void {
+    this.db.createFileResultsBatch(runId, files);
+    // Emit updates for first 200 files so the WebSocket gets initial state
+    const batchSize = Math.min(files.length, 200);
+    for (let i = 0; i < batchSize; i++) {
+      this.emitFileUpdate(runId, files[i].filePath);
+    }
+  }
+
   updateFileStatus(runId: string, filePath: string, status: FileResult['status'], currentEngine?: string | null): void {
     const updates: Partial<FileResult> = { status };
     if (currentEngine !== undefined) {
@@ -131,12 +140,13 @@ export class StateManager extends EventEmitter {
       skipped?: boolean;
     },
   ): void {
-    const files = this.db.getFileResults(runId);
-    const file = files.find((f) => f.file_path === filePath);
+    const file = this.db.getFileResult(runId, filePath);
 
     if (file) {
       const engines = JSON.parse(file.engines);
-      engines[engine] = result;
+      // Strip stdout/stderr to keep DB lean — message field already has the summary
+      const { stdout, stderr, ...leanResult } = result;
+      engines[engine] = leanResult;
 
       this.db.updateFileResult(runId, filePath, {
         engines: JSON.stringify(engines),
@@ -156,8 +166,7 @@ export class StateManager extends EventEmitter {
   }
 
   private emitFileUpdate(runId: string, filePath: string): void {
-    const files = this.db.getFileResults(runId);
-    const file = files.find((f) => f.file_path === filePath);
+    const file = this.db.getFileResult(runId, filePath);
     if (file) {
       const run = this.db.getRun(runId);
       this.emit('file:updated', { file, run });
@@ -169,12 +178,10 @@ export class StateManager extends EventEmitter {
       return;
     }
 
-    const files = this.db.getFileResults(this.currentRunId);
-    files.forEach((file) => {
-      if (['completed', 'skipped', 'error'].includes(file.status)) {
-        this.emit('file:cleared', file);
-      }
-    });
+    const deleted = this.db.deleteFileResultsByStatus(this.currentRunId, ['completed', 'skipped', 'error']);
+    if (deleted > 0) {
+      console.log(`[${new Date().toISOString()}] Cleared ${deleted} completed/skipped/error files from run ${this.currentRunId}`);
+    }
   }
 
   // Query methods
@@ -182,12 +189,28 @@ export class StateManager extends EventEmitter {
     return this.currentRunId ? this.db.getRun(this.currentRunId) : null;
   }
 
-  getRunHistory(limit?: number): Run[] {
-    return this.db.getRunHistory(limit);
+  getRunById(runId: string): Run | null {
+    return this.db.getRun(runId);
   }
 
-  getFileResults(runId: string): FileResult[] {
-    return this.db.getFileResults(runId);
+  getRunHistory(limit?: number, offset?: number): Run[] {
+    return this.db.getRunHistory(limit, offset);
+  }
+
+  getHistoryWithStats(limit?: number, offset?: number) {
+    return this.db.getHistoryWithStats(limit, offset);
+  }
+
+  getFileResults(runId: string, limit?: number, offset?: number): FileResult[] {
+    return this.db.getFileResults(runId, limit, offset);
+  }
+
+  getFileCount(runId: string): number {
+    return this.db.getFileCount(runId);
+  }
+
+  getEngineStats(runId: string) {
+    return this.db.getEngineStats(runId);
   }
 
   appendLog(runId: string, logMessage: string): void {

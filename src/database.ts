@@ -65,12 +65,13 @@ export class SubsyncarrPlusDatabase {
   }
 
   private initSchema() {
-    // Optimize SQLite for low memory usage
-    this.db.pragma('cache_size = -1000'); // 1MB cache (negative means KB)
-    this.db.pragma('mmap_size = 0'); // Disable memory-mapping
+    // Optimize SQLite for production workloads with large datasets (50k+ files)
+    this.db.pragma('cache_size = -64000'); // 64MB cache (negative means KB)
+    this.db.pragma('mmap_size = 268435456'); // 256MB memory-mapped I/O
     this.db.pragma('journal_mode = WAL'); // Better concurrency
     this.db.pragma('temp_store = MEMORY'); // Keep temp data in memory
     this.db.pragma('auto_vacuum = INCREMENTAL'); // Reclaim space gradually
+    this.db.pragma('synchronous = NORMAL'); // Faster WAL commits (safe with WAL)
 
     this.db.exec(`
       CREATE TABLE IF NOT EXISTS runs (
@@ -104,6 +105,8 @@ export class SubsyncarrPlusDatabase {
         ON file_results(run_id);
       CREATE INDEX IF NOT EXISTS idx_file_results_status
         ON file_results(status);
+      CREATE INDEX IF NOT EXISTS idx_file_results_run_file
+        ON file_results(run_id, file_path);
     `);
 
     // Migration: Add logs column if it doesn't exist
@@ -170,16 +173,14 @@ export class SubsyncarrPlusDatabase {
     return result ? (result as Run) : null;
   }
 
-  getRunHistory(limit: number = 50): Run[] {
-    return this.db
-      .prepare(
-        `
-      SELECT * FROM runs
-      ORDER BY start_time DESC
-      LIMIT ?
-    `,
-      )
-      .all(limit) as Run[];
+  getRunHistory(limit: number = 50, offset?: number): Run[] {
+    let query = `SELECT * FROM runs ORDER BY start_time DESC LIMIT ?`;
+    const params: unknown[] = [limit];
+    if (offset !== undefined) {
+      query += ` OFFSET ?`;
+      params.push(offset);
+    }
+    return this.db.prepare(query).all(...params) as Run[];
   }
 
   /**
@@ -251,6 +252,27 @@ export class SubsyncarrPlusDatabase {
     stmt.run(runId, filePath, videoPath, now, now);
   }
 
+  /**
+   * Batch insert file results inside a single transaction.
+   * Avoids N individual INSERT round-trips for large libraries.
+   */
+  createFileResultsBatch(runId: string, files: Array<{ filePath: string; videoPath: string | null }>): void {
+    const stmt = this.db.prepare(`
+      INSERT INTO file_results
+        (run_id, file_path, video_path, status, created_at, updated_at)
+      VALUES (?, ?, ?, 'pending', ?, ?)
+    `);
+    const now = Date.now();
+
+    const insertBatch = this.db.transaction((items: Array<{ filePath: string; videoPath: string | null }>) => {
+      for (const item of items) {
+        stmt.run(runId, item.filePath, item.videoPath, now, now);
+      }
+    });
+
+    insertBatch(files);
+  }
+
   updateFileResult(runId: string, filePath: string, updates: Partial<FileResult>): void {
     const updatesWithTimestamp = { ...updates, updated_at: Date.now() };
     const fields = Object.keys(updatesWithTimestamp)
@@ -268,16 +290,124 @@ export class SubsyncarrPlusDatabase {
       .run(...values, runId, filePath);
   }
 
-  getFileResults(runId: string): FileResult[] {
-    return this.db
+  getFileResults(runId: string, limit?: number, offset?: number): FileResult[] {
+    let query = `SELECT * FROM file_results WHERE run_id = ? ORDER BY created_at ASC`;
+    const params: unknown[] = [runId];
+
+    if (limit !== undefined) {
+      query += ` LIMIT ?`;
+      params.push(limit);
+      if (offset !== undefined) {
+        query += ` OFFSET ?`;
+        params.push(offset);
+      }
+    }
+
+    return this.db.prepare(query).all(...params) as FileResult[];
+  }
+
+  /**
+   * Fast count of files for a run — avoids loading all rows
+   */
+  getFileCount(runId: string): number {
+    const result = this.db
+      .prepare(`SELECT COUNT(*) as count FROM file_results WHERE run_id = ?`)
+      .get(runId) as { count: number };
+    return result.count;
+  }
+
+  /**
+   * Direct single-file lookup — avoids loading all file results into memory
+   */
+  getFileResult(runId: string, filePath: string): FileResult | null {
+    const result = this.db
+      .prepare(`SELECT * FROM file_results WHERE run_id = ? AND file_path = ?`)
+      .get(runId, filePath);
+    return result ? (result as FileResult) : null;
+  }
+
+  /**
+   * Calculate aggregate engine statistics for a run directly in SQL.
+   * Avoids loading all file rows into memory and transferring huge JSON.
+   */
+  getEngineStats(runId: string): Record<string, { pass: number; fail: number }> {
+    const engines = ['ffsubsync', 'autosubsync', 'alass'];
+    const stats: Record<string, { pass: number; fail: number }> = {};
+
+    for (const engine of engines) {
+      const result = this.db
+        .prepare(
+          `SELECT
+            COALESCE(SUM(CASE WHEN json_extract(engines, '$."${engine}".success') = 1 THEN 1 ELSE 0 END), 0) as pass,
+            COALESCE(SUM(CASE
+              WHEN json_extract(engines, '$."${engine}".success') = 0
+               AND (json_extract(engines, '$."${engine}".skipped') IS NULL OR json_extract(engines, '$."${engine}".skipped') = 0)
+              THEN 1 ELSE 0 END), 0) as fail
+          FROM file_results
+          WHERE run_id = ?`,
+        )
+        .get(runId) as { pass: number; fail: number };
+      stats[engine] = result;
+    }
+
+    return stats;
+  }
+
+  /**
+   * Get runs with pre-calculated engine statistics for the history view.
+   * Uses a single aggregated SQL query instead of N+1 per-run queries.
+   */
+  getHistoryWithStats(limit: number = 50, offset?: number): Array<Run & { engine_stats: Record<string, { pass: number; fail: number }> }> {
+    const runs = this.getRunHistory(limit, offset);
+    if (runs.length === 0) return [];
+
+    // Single-pass aggregated query for all returned runs
+    const runIds = runs.map((r) => r.id);
+    const placeholders = runIds.map(() => '?').join(',');
+    const aggRows = this.db
       .prepare(
-        `
-      SELECT * FROM file_results
-      WHERE run_id = ?
-      ORDER BY created_at ASC
-    `,
+        `SELECT
+          fr.run_id,
+          COALESCE(SUM(CASE WHEN json_extract(fr.engines, '$."ffsubsync".success') = 1 THEN 1 ELSE 0 END), 0) as ffsubsync_pass,
+          COALESCE(SUM(CASE WHEN json_extract(fr.engines, '$."ffsubsync".success') = 0
+            AND (json_extract(fr.engines, '$."ffsubsync".skipped') IS NULL OR json_extract(fr.engines, '$."ffsubsync".skipped') = 0)
+            THEN 1 ELSE 0 END), 0) as ffsubsync_fail,
+          COALESCE(SUM(CASE WHEN json_extract(fr.engines, '$."autosubsync".success') = 1 THEN 1 ELSE 0 END), 0) as autosubsync_pass,
+          COALESCE(SUM(CASE WHEN json_extract(fr.engines, '$."autosubsync".success') = 0
+            AND (json_extract(fr.engines, '$."autosubsync".skipped') IS NULL OR json_extract(fr.engines, '$."autosubsync".skipped') = 0)
+            THEN 1 ELSE 0 END), 0) as autosubsync_fail,
+          COALESCE(SUM(CASE WHEN json_extract(fr.engines, '$."alass".success') = 1 THEN 1 ELSE 0 END), 0) as alass_pass,
+          COALESCE(SUM(CASE WHEN json_extract(fr.engines, '$."alass".success') = 0
+            AND (json_extract(fr.engines, '$."alass".skipped') IS NULL OR json_extract(fr.engines, '$."alass".skipped') = 0)
+            THEN 1 ELSE 0 END), 0) as alass_fail
+        FROM file_results fr
+        WHERE fr.run_id IN (${placeholders})
+        GROUP BY fr.run_id`,
       )
-      .all(runId) as FileResult[];
+      .all(...runIds) as Array<{
+      run_id: string;
+      ffsubsync_pass: number;
+      ffsubsync_fail: number;
+      autosubsync_pass: number;
+      autosubsync_fail: number;
+      alass_pass: number;
+      alass_fail: number;
+    }>;
+
+    // Index by run_id for fast lookup
+    const statsByRunId: Record<string, Record<string, { pass: number; fail: number }>> = {};
+    for (const row of aggRows) {
+      statsByRunId[row.run_id] = {
+        ffsubsync: { pass: row.ffsubsync_pass, fail: row.ffsubsync_fail },
+        autosubsync: { pass: row.autosubsync_pass, fail: row.autosubsync_fail },
+        alass: { pass: row.alass_pass, fail: row.alass_fail },
+      };
+    }
+
+    return runs.map((run) => ({
+      ...run,
+      engine_stats: statsByRunId[run.id] ?? { ffsubsync: { pass: 0, fail: 0 }, autosubsync: { pass: 0, fail: 0 }, alass: { pass: 0, fail: 0 } },
+    }));
   }
 
   // Engine failure tracking methods
@@ -417,7 +547,38 @@ export class SubsyncarrPlusDatabase {
     return { totalSkipped: totalSkipped.count, skippedByEngine };
   }
 
+  /**
+   * Delete file results by status (e.g., completed/skipped/error) for a run.
+   * Used by clearCompletedFiles to actually remove files from the session.
+   */
+  deleteFileResultsByStatus(runId: string, statuses: string[]): number {
+    const placeholders = statuses.map(() => '?').join(',');
+    const result = this.db
+      .prepare(`DELETE FROM file_results WHERE run_id = ? AND status IN (${placeholders})`)
+      .run(runId, ...statuses);
+    return result.changes;
+  }
+
+
+  /**
+   * Check if a file has been successfully synced by at least one of the given engines.
+   * Uses engine_failure_tracking (last_success_time IS NOT NULL) — works regardless
+   * of whether the engine writes a separate output file or overwrites in-place.
+   */
+  isFileAlreadySynced(filePath: string, engines: string[]): boolean {
+    if (engines.length === 0) return false;
+    const placeholders = engines.map(() => '?').join(',');
+    const result = this.db
+      .prepare(
+        `SELECT COUNT(*) as count FROM engine_failure_tracking
+         WHERE file_path = ? AND engine IN (${placeholders}) AND last_success_time IS NOT NULL`,
+      )
+      .get(filePath, ...engines) as { count: number };
+    return result.count > 0;
+  }
+
   close() {
     this.db.close();
   }
 }
+

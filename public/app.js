@@ -3,12 +3,16 @@ class SubsyncarrPlusClient {
     this.ws = null;
     this.state = { currentRun: null, files: [], isRunning: false };
     this.reconnectInterval = 3000;
-    this.historyCache = {}; // Cache run data for file lookups
+    this.historyRuns = [];
+    this.historyPage = 0;
+    this.historyPageSize = 50;
+    this.allHistoryLoaded = false;
 
     this.initWebSocket();
     this.setupEventHandlers();
     this.fetchInitialState();
     this.fetchConfigStatus();
+    this.fetchVersion();
   }
 
   initWebSocket() {
@@ -82,35 +86,173 @@ class SubsyncarrPlusClient {
   }
 
   async fetchInitialState() {
+    this.showSkeleton('currentRunSkeleton', true);
     const response = await fetch('/api/status');
     const data = await response.json();
     this.state = data;
     this.render();
+    this.showSkeleton('currentRunSkeleton', false);
     this.fetchHistory();
   }
 
-  async fetchHistory() {
-    const response = await fetch('/api/history');
-    const history = await response.json();
+  // ── History (uses /api/history/stats to avoid N+1 fetches) ──
 
-    // Fetch file results for each run to calculate engine stats
-    const historyWithStats = await Promise.all(
-      history.map(async (run) => {
-        try {
-          const filesResponse = await fetch(`/api/runs/${run.id}`);
-          const data = await filesResponse.json();
-          const runWithFiles = { ...run, files: data.files || [] };
-          // Cache for file list lookups
-          this.historyCache[run.id] = runWithFiles;
-          return runWithFiles;
-        } catch (error) {
-          console.error(`Failed to fetch files for run ${run.id}:`, error);
-          return { ...run, files: [] };
+  async fetchHistory(reset = true) {
+    if (reset) {
+      this.historyPage = 0;
+      this.allHistoryLoaded = false;
+      this.historyRuns = [];
+    }
+
+    this.showSkeleton('historySkeleton', true);
+
+    const limit = this.historyPageSize;
+    try {
+      const response = await fetch(`/api/history/stats?limit=${limit}`);
+      const history = await response.json();
+
+      if (!history || history.length === 0) {
+        this.allHistoryLoaded = true;
+        this.renderHistory([]);
+        return;
+      }
+
+      // Detect if we've loaded all available runs
+      if (history.length < limit) {
+        this.allHistoryLoaded = true;
+      }
+
+      // Merge: on reset = replace, on load more = append
+      if (reset) {
+        this.historyRuns = history;
+      } else {
+        // Avoid duplicates by run ID
+        const existingIds = new Set(this.historyRuns.map((r) => r.id));
+        const newRuns = history.filter((r) => !existingIds.has(r.id));
+        this.historyRuns = [...this.historyRuns, ...newRuns];
+      }
+
+      this.renderHistory(this.historyRuns);
+    } catch (error) {
+      console.error('Failed to fetch history:', error);
+      this.showToast('Failed to load run history', 'error');
+    } finally {
+      this.showSkeleton('historySkeleton', false);
+    }
+  }
+
+  async loadMoreHistory() {
+    this.historyPage++;
+    // Multiply offset: each page loads a fresh batch from server
+    // Server limits by row count, so we need to pass an offset
+    const limit = this.historyPageSize;
+
+    this.showSkeleton('historySkeleton', true);
+    try {
+      const response = await fetch(`/api/history/stats?limit=${limit}&offset=${this.historyPage * this.historyPageSize}`);
+      const history = await response.json();
+
+      if (!history || history.length === 0) {
+        this.allHistoryLoaded = true;
+      } else {
+        if (history.length < limit) {
+          this.allHistoryLoaded = true;
         }
-      }),
-    );
+        const existingIds = new Set(this.historyRuns.map((r) => r.id));
+        const newRuns = history.filter((r) => !existingIds.has(r.id));
+        this.historyRuns = [...this.historyRuns, ...newRuns];
+        this.renderHistory(this.historyRuns);
+      }
+    } catch (error) {
+      console.error('Failed to load more history:', error);
+      this.showToast('Failed to load more history', 'error');
+    } finally {
+      this.showSkeleton('historySkeleton', false);
+    }
+  }
 
-    this.renderHistory(historyWithStats);
+  // ── Toast Notification System ──
+
+  showToast(message, type = 'info', duration = 4000) {
+    const container = document.getElementById('toastContainer');
+    if (!container) return;
+
+    const toast = document.createElement('div');
+    toast.className = `toast toast-${type}`;
+    toast.textContent = message;
+
+    const closeBtn = document.createElement('button');
+    closeBtn.className = 'toast-close';
+    closeBtn.innerHTML = '&times;';
+    closeBtn.onclick = () => toast.remove();
+    toast.appendChild(closeBtn);
+
+    container.appendChild(toast);
+
+    // Auto-remove after duration
+    setTimeout(() => {
+      if (toast.parentNode) {
+        toast.style.opacity = '0';
+        toast.style.transform = 'translateX(100%)';
+        setTimeout(() => toast.remove(), 300);
+      }
+    }, duration);
+  }
+
+  // ── Custom Confirm Modal ──
+
+  showConfirm(message) {
+    return new Promise((resolve) => {
+      const overlay = document.getElementById('confirmOverlay');
+      const textEl = document.getElementById('confirmText');
+      const yesBtn = document.getElementById('confirmYes');
+      const noBtn = document.getElementById('confirmNo');
+
+      if (!overlay || !textEl || !yesBtn || !noBtn) {
+        // Fallback if DOM elements are missing
+        resolve(confirm(message));
+        return;
+      }
+
+      textEl.textContent = message;
+      overlay.classList.remove('hidden');
+
+      const cleanup = () => {
+        overlay.classList.add('hidden');
+        yesBtn.removeEventListener('click', onYes);
+        noBtn.removeEventListener('click', onNo);
+      };
+
+      const onYes = () => { cleanup(); resolve(true); };
+      const onNo = () => { cleanup(); resolve(false); };
+
+      yesBtn.addEventListener('click', onYes);
+      noBtn.addEventListener('click', onNo);
+    });
+  }
+
+  // ── Skeleton Loading States ──
+
+  showSkeleton(id, show) {
+    const el = document.getElementById(id);
+    if (!el) return;
+    el.classList.toggle('hidden', !show);
+  }
+
+  // ── Config ──
+
+  async fetchVersion() {
+    try {
+      const response = await fetch('/api/version');
+      const data = await response.json();
+      const badge = document.getElementById('versionBadge');
+      if (badge) {
+        badge.textContent = 'v' + data.version;
+        badge.href = data.releaseUrl;
+      }
+    } catch (error) {
+      console.error('Failed to fetch version:', error);
+    }
   }
 
   async fetchConfigStatus() {
@@ -135,7 +277,7 @@ class SubsyncarrPlusClient {
       label.textContent = 'Watching Folders';
       const pathsList = config.paths.join(', ');
       paths.textContent = pathsList;
-      paths.title = pathsList; // Show full path on hover
+      paths.title = pathsList;
     } else {
       light.className = 'status-light inactive';
       label.textContent = 'No Paths Configured';
@@ -157,19 +299,16 @@ class SubsyncarrPlusClient {
         const nextRunDate = new Date(schedule.nextRun);
         const now = new Date();
         const diff = nextRunDate - now;
-
-        // Format time until next run
         const timeUntil = this.formatTimeUntil(diff);
         scheduleTime.textContent = `${nextRunDate.toLocaleString()} (${timeUntil})`;
         scheduleTime.title = `Schedule: ${schedule.description}`;
 
-        // Update countdown every minute
         if (this.scheduleUpdateTimer) {
           clearInterval(this.scheduleUpdateTimer);
         }
         this.scheduleUpdateTimer = setInterval(() => {
           this.fetchConfigStatus();
-        }, 60000); // Update every minute
+        }, 60000);
       } else {
         scheduleTime.textContent = schedule.description || schedule.cron;
       }
@@ -203,7 +342,7 @@ class SubsyncarrPlusClient {
 
     document.getElementById('startCustom').addEventListener('click', () => {
       document.getElementById('customPathModal').classList.remove('hidden');
-      document.getElementById('customPaths').value = ''; // Clear previous input
+      document.getElementById('customPaths').value = '';
     });
 
     document.getElementById('stopRun').addEventListener('click', () => {
@@ -262,7 +401,6 @@ class SubsyncarrPlusClient {
         }, 2000);
       } catch (err) {
         console.error('Failed to copy logs:', err);
-        // Fallback method for older browsers or permission issues
         const textArea = document.createElement('textarea');
         textArea.value = logsContent;
         textArea.style.position = 'fixed';
@@ -279,7 +417,7 @@ class SubsyncarrPlusClient {
           }, 2000);
         } catch (execErr) {
           console.error('Fallback copy also failed:', execErr);
-          alert('Failed to copy logs to clipboard');
+          this.showToast('Failed to copy logs to clipboard', 'error');
         }
         document.body.removeChild(textArea);
       }
@@ -312,6 +450,28 @@ class SubsyncarrPlusClient {
         document.getElementById('fileListModal').classList.add('hidden');
       }
     });
+
+    // Load more history
+    const loadMoreBtn = document.getElementById('loadMoreHistory');
+    if (loadMoreBtn) {
+      loadMoreBtn.addEventListener('click', () => this.loadMoreHistory());
+    }
+
+    // Dark mode toggle
+    const darkToggle = document.getElementById('darkModeToggle');
+    if (darkToggle) {
+      darkToggle.addEventListener('change', (e) => {
+        document.documentElement.setAttribute('data-theme', e.target.checked ? 'dark' : 'light');
+        localStorage.setItem('subsyncarr-theme', e.target.checked ? 'dark' : 'light');
+      });
+    }
+
+    // Restore saved theme
+    const savedTheme = localStorage.getItem('subsyncarr-theme');
+    if (savedTheme === 'dark') {
+      document.documentElement.setAttribute('data-theme', 'dark');
+      if (darkToggle) darkToggle.checked = true;
+    }
   }
 
   async startRun(paths = null) {
@@ -324,17 +484,18 @@ class SubsyncarrPlusClient {
 
       if (!response.ok) {
         const error = await response.json();
-        alert(`Failed to start run: ${error.error}`);
+        this.showToast(`Failed to start run: ${error.error}`, 'error');
+      } else {
+        this.showToast('Run started successfully', 'success');
       }
     } catch (error) {
-      alert(`Failed to start run: ${error.message}`);
+      this.showToast(`Failed to start run: ${error.message}`, 'error');
     }
   }
 
   async stopRun() {
-    if (!confirm('Are you sure you want to stop the current run? All processing will be halted.')) {
-      return;
-    }
+    const confirmed = await this.showConfirm('Are you sure you want to stop the current run? All processing will be halted.');
+    if (!confirmed) return;
 
     try {
       const response = await fetch('/api/run/stop', {
@@ -343,10 +504,12 @@ class SubsyncarrPlusClient {
 
       if (!response.ok) {
         const error = await response.json();
-        alert(`Failed to stop run: ${error.error}`);
+        this.showToast(`Failed to stop run: ${error.error}`, 'error');
+      } else {
+        this.showToast('Run stopped', 'info');
       }
     } catch (error) {
-      alert(`Failed to stop run: ${error.message}`);
+      this.showToast(`Failed to stop run: ${error.message}`, 'error');
     }
   }
 
@@ -371,14 +534,13 @@ class SubsyncarrPlusClient {
       document.getElementById('logsModal').classList.remove('hidden');
     } catch (error) {
       console.error('Failed to fetch logs:', error);
-      alert('Failed to load logs');
+      this.showToast('Failed to load logs', 'error');
     }
   }
 
   async clearCompleted() {
-    if (!confirm('Are you sure you want to clear all completed and skipped files?')) {
-      return;
-    }
+    const confirmed = await this.showConfirm('Are you sure you want to clear all completed and skipped files?');
+    if (!confirmed) return;
 
     try {
       const response = await fetch('/api/files/clear', {
@@ -389,10 +551,10 @@ class SubsyncarrPlusClient {
         throw new Error('Failed to clear files');
       }
 
-      // State will be updated via WebSocket message
+      this.showToast('Completed files cleared', 'success');
     } catch (error) {
       console.error('Failed to clear files:', error);
-      alert('Failed to clear files');
+      this.showToast('Failed to clear files', 'error');
     }
   }
 
@@ -429,7 +591,6 @@ class SubsyncarrPlusClient {
 
     section.classList.remove('hidden');
 
-    // Use engine-level progress for more granular updates
     const percent = currentRun.total_engines > 0 ? (currentRun.completed_engines / currentRun.total_engines) * 100 : 0;
     document.getElementById('progressFill').style.width = `${percent}%`;
     document.getElementById('progressText').textContent =
@@ -453,7 +614,7 @@ class SubsyncarrPlusClient {
             </button>
           </div>
           <div class="engine-status">
-            ${file.current_engine ? `⚙️ Working on ${file.current_engine}` : 'Starting...'}
+            ${file.current_engine ? `&#x2699;&#xFE0F; Working on ${file.current_engine}` : 'Starting...'}
           </div>
           ${this.renderEngineResults(engines)}
         </div>
@@ -483,7 +644,7 @@ class SubsyncarrPlusClient {
   renderEngineResults(engines) {
     return Object.entries(engines)
       .map(([name, result]) => {
-        const icon = result.success ? '✓' : '✗';
+        const icon = result.success ? '&#10003;' : '&#10007;';
         const className = result.success ? 'success' : 'error';
         const duration = (result.duration / 1000).toFixed(1);
 
@@ -495,33 +656,6 @@ class SubsyncarrPlusClient {
       `;
       })
       .join('');
-  }
-
-  calculateEngineStats(files) {
-    const stats = {
-      ffsubsync: { pass: 0, fail: 0 },
-      autosubsync: { pass: 0, fail: 0 },
-      alass: { pass: 0, fail: 0 },
-    };
-
-    files.forEach((file) => {
-      try {
-        const engines = JSON.parse(file.engines);
-        Object.entries(engines).forEach(([engineName, result]) => {
-          if (stats[engineName]) {
-            if (result.success) {
-              stats[engineName].pass++;
-            } else {
-              stats[engineName].fail++;
-            }
-          }
-        });
-      } catch (error) {
-        console.error('Error parsing engine data:', error);
-      }
-    });
-
-    return stats;
   }
 
   renderEngineCell(engineStats) {
@@ -540,11 +674,21 @@ class SubsyncarrPlusClient {
     return `<td class="engine-cell">${parts.join('/')}</td>`;
   }
 
+  // ── History Table ──
+
   renderHistory(runs) {
+    if (!runs || runs.length === 0) {
+      document.getElementById('historyBody').innerHTML =
+        '<tr><td colspan="11" class="no-data">No runs yet</td></tr>';
+      this.updateLoadMoreVisibility();
+      return;
+    }
+
     const html = runs
       .map((run) => {
         const duration = run.end_time ? ((run.end_time - run.start_time) / 1000).toFixed(0) + 's' : 'Running...';
-        const engineStats = this.calculateEngineStats(run.files || []);
+        // Use server-side engine_stats instead of client-side N+1 calculation
+        const engineStats = run.engine_stats || {};
 
         // Make stats clickable if there are files in that category
         const completedCell =
@@ -568,13 +712,13 @@ class SubsyncarrPlusClient {
           <td>${completedCell}</td>
           <td>${skippedCell}</td>
           <td>${failedCell}</td>
-          ${this.renderEngineCell(engineStats.ffsubsync)}
-          ${this.renderEngineCell(engineStats.autosubsync)}
-          ${this.renderEngineCell(engineStats.alass)}
+          ${this.renderEngineCell(engineStats.ffsubsync || { pass: 0, fail: 0 })}
+          ${this.renderEngineCell(engineStats.autosubsync || { pass: 0, fail: 0 })}
+          ${this.renderEngineCell(engineStats.alass || { pass: 0, fail: 0 })}
           <td>${duration}</td>
           <td>
             <button class="btn-view-logs" onclick="client.viewLogs('${run.id}')">
-              📄 View Logs
+              &#x1F4C4; View Logs
             </button>
           </td>
         </tr>
@@ -582,8 +726,14 @@ class SubsyncarrPlusClient {
       })
       .join('');
 
-    document.getElementById('historyBody').innerHTML =
-      html || '<tr><td colspan="11" class="no-data">No runs yet</td></tr>';
+    document.getElementById('historyBody').innerHTML = html;
+    this.updateLoadMoreVisibility();
+  }
+
+  updateLoadMoreVisibility() {
+    const btn = document.getElementById('loadMoreContainer');
+    if (!btn) return;
+    btn.classList.toggle('hidden', this.allHistoryLoaded);
   }
 
   basename(path) {
@@ -592,7 +742,6 @@ class SubsyncarrPlusClient {
 
   // Extract clean movie/show title from filename
   cleanFileName(filePath) {
-    // Get just the filename from the path
     let name = filePath.split('/').pop();
 
     // Remove file extension (.srt, .eng.srt, .eng.sdh.srt, etc.)
@@ -600,64 +749,70 @@ class SubsyncarrPlusClient {
     name = name.replace(/\.(srt|sub|ass|ssa|vtt)$/i, '');
 
     // Try to extract just the title with year
-    // Pattern: "Movie Title (Year)" followed by metadata in brackets
     const titleMatch = name.match(/^(.+?\s*\(\d{4}\))/);
     if (titleMatch) {
       return titleMatch[1].trim();
     }
 
     // Fallback: remove common metadata patterns
-    // Remove [imdbid-...], [Bluray-...], [AAC ...], [x265], etc.
     name = name.replace(/\s*\[.*?\]/g, '');
-    // Remove release group tags at the end like -DDR, -YTS.MX
     name = name.replace(/\s*-[A-Za-z0-9.]+$/, '');
-    // Clean up extra whitespace
     name = name.replace(/\s+/g, ' ').trim();
 
     return name || filePath.split('/').pop();
   }
 
-  // Show files in a category for a specific run
-  showFileList(runId, category) {
-    const run = this.historyCache[runId];
-    if (!run || !run.files) {
-      alert('File data not available for this run');
-      return;
+  // Async showFileList — fetches per-run file data on demand (no historyCache needed)
+  async showFileList(runId, category) {
+    try {
+      // Show skeleton in the modal
+      const content = document.getElementById('fileListContent');
+      content.innerHTML = '<div class="skeleton-line"></div><div class="skeleton-line"></div><div class="skeleton-line"></div>';
+      document.getElementById('fileListTitle').textContent = 'Loading...';
+      document.getElementById('fileListModal').classList.remove('hidden');
+
+      const response = await fetch(`/api/runs/${runId}?limit=500`);
+      if (!response.ok) {
+        throw new Error(`HTTP ${response.status}`);
+      }
+      const data = await response.json();
+      const files = data.files || [];
+
+      let filteredFiles = [];
+      let title = '';
+
+      switch (category) {
+        case 'completed':
+          filteredFiles = files.filter((f) => f.status === 'completed');
+          title = `Completed Files (${filteredFiles.length})`;
+          break;
+        case 'skipped':
+          filteredFiles = files.filter((f) => f.status === 'skipped');
+          title = `Skipped Files (${filteredFiles.length})`;
+          break;
+        case 'failed':
+          filteredFiles = files.filter((f) => f.status === 'error');
+          title = `Failed Files (${filteredFiles.length})`;
+          break;
+        default:
+          return;
+      }
+
+      document.getElementById('fileListTitle').textContent = title;
+
+      if (filteredFiles.length === 0) {
+        content.innerHTML = '<div class="file-list-empty">No files in this category</div>';
+      } else {
+        const html = filteredFiles
+          .map((file) => `<div class="file-list-item">${this.cleanFileName(file.file_path)}</div>`)
+          .join('');
+        content.innerHTML = html;
+      }
+    } catch (error) {
+      console.error('Failed to load file list:', error);
+      this.showToast('Failed to load file data', 'error');
+      document.getElementById('fileListModal').classList.add('hidden');
     }
-
-    let files = [];
-    let title = '';
-
-    switch (category) {
-      case 'completed':
-        files = run.files.filter((f) => f.status === 'completed');
-        title = `Completed Files (${files.length})`;
-        break;
-      case 'skipped':
-        files = run.files.filter((f) => f.status === 'skipped');
-        title = `Skipped Files (${files.length})`;
-        break;
-      case 'failed':
-        files = run.files.filter((f) => f.status === 'error');
-        title = `Failed Files (${files.length})`;
-        break;
-      default:
-        return;
-    }
-
-    document.getElementById('fileListTitle').textContent = title;
-
-    if (files.length === 0) {
-      document.getElementById('fileListContent').innerHTML =
-        '<div class="file-list-empty">No files in this category</div>';
-    } else {
-      const html = files
-        .map((file) => `<div class="file-list-item">${this.cleanFileName(file.file_path)}</div>`)
-        .join('');
-      document.getElementById('fileListContent').innerHTML = html;
-    }
-
-    document.getElementById('fileListModal').classList.remove('hidden');
   }
 }
 
@@ -668,6 +823,5 @@ if (document.readyState === 'loading') {
     client = new SubsyncarrPlusClient();
   });
 } else {
-  // eslint-disable-next-line @typescript-eslint/no-unused-vars
-  client = new SubsyncarrClient();
+  client = new SubsyncarrPlusClient();
 }

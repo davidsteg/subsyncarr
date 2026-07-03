@@ -33,11 +33,12 @@ export class ProcessingCoordinator {
     this.engine.on('run:files_found', (files: string[]) => {
       this.currentRunId = this.stateManager.startRun(files.length, this.enabledEngines);
 
-      // Add all files to database as pending
-      files.forEach((filePath) => {
-        const videoPath = findMatchingVideoFile(filePath);
-        this.stateManager.addFile(this.currentRunId!, filePath, videoPath);
-      });
+      // Batch-add all files inside a single transaction — avoids 196K individual INSERTs
+      const batchFiles = files.map((filePath) => ({
+        filePath,
+        videoPath: findMatchingVideoFile(filePath),
+      }));
+      this.stateManager.addFileBatch(this.currentRunId!, batchFiles);
     });
 
     this.engine.on('file:started', ({ srtPath }: { srtPath: string }) => {

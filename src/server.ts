@@ -4,6 +4,7 @@ import { createServer } from 'http';
 import { ProcessingCoordinator } from './coordinator';
 import { StateManager } from './stateManager';
 import { join } from 'path';
+import { readFileSync } from 'fs';
 import { getScanConfig } from './config';
 import cronstrue from 'cronstrue';
 import parseExpression from 'cron-parser';
@@ -64,22 +65,37 @@ export class SubsyncarrPlusServer {
       });
     });
 
+
+    // Get version info
+    this.app.get('/api/version', (_req, res) => {
+      try {
+        const version = readFileSync(join(__dirname, '..', 'VERSION'), 'utf-8').trim();
+        res.json({ version, releaseUrl: `https://github.com/davidsteg/subsyncarr/releases/tag/v${version}` });
+      } catch {
+        res.json({ version: 'dev', releaseUrl: 'https://github.com/davidsteg/subsyncarr/releases' });
+      }
+    });
+
+
     // Get current status
     this.app.get('/api/status', (req, res) => {
       console.log(`[${new Date().toISOString()}] GET /api/status`);
       const currentRun = this.stateManager.getCurrentRun();
+      const fileLimit = parseInt(req.query.limit as string, 10) || 200;
       res.json({
         currentRun,
-        files: currentRun ? this.stateManager.getFileResults(currentRun.id) : [],
+        files: currentRun ? this.stateManager.getFileResults(currentRun.id, fileLimit) : [],
         isRunning: this.coordinator.isRunning(),
+        totalFiles: currentRun ? this.stateManager.getFileCount(currentRun.id) : 0,
       });
     });
 
-    // Get run history
-    this.app.get('/api/history', (req, res) => {
+    // Get run history with pre-calculated engine stats (avoids N+1 file fetches)
+    this.app.get('/api/history/stats', (req, res) => {
       const limit = parseInt(req.query.limit as string, 10) || 50;
-      console.log(`[${new Date().toISOString()}] GET /api/history (limit: ${limit})`);
-      res.json(this.stateManager.getRunHistory(limit));
+      const offset = parseInt(req.query.offset as string, 10) || undefined;
+      console.log(`[${new Date().toISOString()}] GET /api/history/stats (limit: ${limit}, offset: ${offset ?? 'none'})`);
+      res.json(this.stateManager.getHistoryWithStats(limit, offset));
     });
 
     // Get specific run details
@@ -87,18 +103,20 @@ export class SubsyncarrPlusServer {
       console.log(`[${new Date().toISOString()}] GET /api/runs/${req.params.id}`);
       const currentRun = this.stateManager.getCurrentRun();
       const requestedId = req.params.id;
+      const fileLimit = parseInt(req.query.limit as string, 10) || 200;
+      const fileOffset = parseInt(req.query.offset as string, 10) || 0;
 
       // Check current run first
       if (currentRun && currentRun.id === requestedId) {
         return res.json({
           run: currentRun,
-          files: this.stateManager.getFileResults(currentRun.id),
+          files: this.stateManager.getFileResults(currentRun.id, fileLimit, fileOffset),
+          hasMore: this.stateManager.getFileCount(currentRun.id) > fileLimit + fileOffset,
         });
       }
 
-      // Check history
-      const history = this.stateManager.getRunHistory(1000);
-      const run = history.find((r) => r.id === requestedId);
+      // Check history (direct DB lookup instead of loading all history)
+      const run = this.stateManager.getRunById(requestedId);
 
       if (!run) {
         return res.status(404).json({ error: 'Run not found' });
@@ -106,7 +124,8 @@ export class SubsyncarrPlusServer {
 
       res.json({
         run,
-        files: this.stateManager.getFileResults(run.id),
+        files: this.stateManager.getFileResults(run.id, fileLimit, fileOffset),
+        hasMore: this.stateManager.getFileCount(run.id) > fileLimit + fileOffset,
       });
     });
 
@@ -115,10 +134,11 @@ export class SubsyncarrPlusServer {
       console.log(`[${new Date().toISOString()}] GET /api/runs/${req.params.id}/logs`);
       const requestedId = req.params.id;
 
-      // Check if run exists (current or historical)
+      // Check if run exists (current or historical) — direct DB lookup
       const currentRun = this.stateManager.getCurrentRun();
-      const history = this.stateManager.getRunHistory(1000);
-      const run = currentRun?.id === requestedId ? currentRun : history.find((r) => r.id === requestedId);
+      const run = currentRun?.id === requestedId
+        ? currentRun
+        : this.stateManager.getRunById(requestedId);
 
       if (!run) {
         return res.status(404).json({ error: 'Run not found' });
@@ -198,8 +218,9 @@ export class SubsyncarrPlusServer {
         data: {
           currentRun,
           files: currentRun
-            ? this.stateManager.getFileResults(currentRun.id).filter((f) => f.status === 'processing')
+            ? this.stateManager.getFileResults(currentRun.id, 200)
             : [],
+          totalFiles: currentRun ? this.stateManager.getFileCount(currentRun.id) : 0,
         },
       });
 
@@ -244,14 +265,15 @@ export class SubsyncarrPlusServer {
       console.log(`[${new Date().toISOString()}] WebSocket client connected (total: ${this.clients.size + 1})`);
       this.clients.add(ws);
 
-      // Send initial state
+      // Send initial state (limited to latest 200 files)
       const currentRun = this.stateManager.getCurrentRun();
       ws.send(
         JSON.stringify({
           type: 'state',
           data: {
             currentRun,
-            files: currentRun ? this.stateManager.getFileResults(currentRun.id) : [],
+            files: currentRun ? this.stateManager.getFileResults(currentRun.id, 200) : [],
+            totalFiles: currentRun ? this.stateManager.getFileCount(currentRun.id) : 0,
             isRunning: this.coordinator.isRunning(),
           },
         }),

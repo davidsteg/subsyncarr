@@ -6,6 +6,8 @@ export interface ProcessingResult {
   stdout?: string;
   stderr?: string;
   skipped?: boolean;
+  shiftTooLarge?: boolean;
+  originalShiftMs?: number;
 }
 
 function getTimeoutMs(): number {

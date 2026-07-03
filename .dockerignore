@@ -1,11 +1,7 @@
-# .dockerignore
 node_modules
-vendor
+data
+dist
 .git
-test-srts
-*.log
-CODEBASE_REFERENCE.md
-docker-compose.dev.yaml
-subsyncarr-plus.db
-builds
-testlogs
+.github
+.gitignore
+*.md

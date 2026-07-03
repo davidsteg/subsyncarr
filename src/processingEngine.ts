@@ -3,8 +3,8 @@ import { ScanConfig, getScanConfig } from './config';
 import { findAllSrtFiles } from './findAllSrtFiles';
 import { findMatchingVideoFile } from './findMatchingVideoFile';
 import { generateFfsubsyncSubtitles } from './generateFfsubsyncSubtitles';
-import { generateAutosubsyncSubtitles } from './generateAutosubsyncSubtitles';
 import { generateAlassSubtitles } from './generateAlassSubtitles';
+import { generateAutosubsyncSubtitles } from './generateAutosubsyncSubtitles';
 import { StateManager } from './stateManager';
 
 export class ProcessingEngine extends EventEmitter {
@@ -47,24 +47,61 @@ export class ProcessingEngine extends EventEmitter {
     this.log(`[${new Date().toISOString()}] Scanning for subtitle files...`);
     this.log(`[${new Date().toISOString()}] Scan paths: ${JSON.stringify(scanConfig.includePaths)}`);
 
-    const srtFiles = await findAllSrtFiles(scanConfig);
+    // Build DB-backed isAlreadySynced checker using the enabled engines
+    const enabledEngines = this.enabledEngines;
+    const isAlreadySynced = this.stateManager
+      ? (filePath: string) => this.stateManager!.getDatabase().isFileAlreadySynced(filePath, enabledEngines)
+      : undefined;
+
+    const srtFiles = await findAllSrtFiles(scanConfig, isAlreadySynced);
     this.log(`[${new Date().toISOString()}] Found ${srtFiles.length} subtitle files`);
 
     this.emit('run:files_found', srtFiles);
 
-    // Process in batches
+    // Process with dynamic worker pool instead of fixed batches
     this.log(`[${new Date().toISOString()}] Processing with concurrency: ${this.maxConcurrent}`);
     this.log(`[${new Date().toISOString()}] Enabled engines: ${this.enabledEngines.join(', ')}`);
 
-    for (let i = 0; i < srtFiles.length; i += this.maxConcurrent) {
-      const batch = srtFiles.slice(i, i + this.maxConcurrent);
-      this.log(
-        `[${new Date().toISOString()}] Processing batch ${Math.floor(i / this.maxConcurrent) + 1}/${Math.ceil(srtFiles.length / this.maxConcurrent)} (${batch.length} files)`,
-      );
-      await Promise.all(batch.map((file) => this.processFile(file)));
-    }
+    const startTime = Date.now();
+    let processedCount = 0;
+    const totalFiles = srtFiles.length;
+    const fileQueue = [...srtFiles]; // copy so shift() doesn't mutate the original
 
-    this.log(`[${new Date().toISOString()}] All files processed`);
+    const processNext = async (): Promise<void> => {
+      while (fileQueue.length > 0) {
+        const srtPath = fileQueue.shift()!;
+        if (this.cancelledFiles.has(srtPath)) continue;
+        await this.processFile(srtPath);
+        processedCount++;
+
+        // Yield to event loop every 5 files to prevent Express starvation
+        if (processedCount % 5 === 0) {
+          await new Promise<void>((resolve) => setImmediate(resolve));
+        }
+
+        // Progress log every 100 files
+        if (processedCount % 100 === 0) {
+          const elapsed = ((Date.now() - startTime) / 1000 / 60).toFixed(1);
+          const rate = processedCount / Math.max(1, (Date.now() - startTime) / 1000);
+          const remaining =
+            rate > 0
+              ? ((totalFiles - processedCount) / rate / 60).toFixed(1)
+              : '?';
+          this.log(
+            `[${new Date().toISOString()}] Progress: ${processedCount}/${totalFiles} files (${elapsed}min elapsed, ~${remaining}min remaining, ${rate.toFixed(2)}/s)`,
+          );
+        }
+      }
+    };
+
+    // Spawn N workers that pull from the queue — dynamic, not batched
+    const workers = Array.from({ length: this.maxConcurrent }, () => processNext());
+    await Promise.all(workers);
+
+    const totalElapsed = ((Date.now() - startTime) / 1000 / 60).toFixed(1);
+    this.log(
+      `[${new Date().toISOString()}] All files processed: ${processedCount}/${totalFiles} files in ${totalElapsed}min`,
+    );
   }
 
   private async processFile(srtPath: string): Promise<void> {
@@ -168,6 +205,13 @@ export class ProcessingEngine extends EventEmitter {
 
         if (result.success) {
           anyEngineSucceeded = true;
+          this.emit('file:engine_completed', {
+            srtPath,
+            engine,
+            result: { ...result, duration },
+          });
+          // Early exit: engine succeeded, skip remaining fallback engines
+          break;
         }
 
         this.emit('file:engine_completed', {
