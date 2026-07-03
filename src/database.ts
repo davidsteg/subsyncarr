@@ -132,6 +132,20 @@ export class SubsyncarrPlusDatabase {
       this.db.exec(`ALTER TABLE runs ADD COLUMN not_fitting INTEGER DEFAULT 0`);
     }
 
+    // Migration: Create settings table for runtime configuration
+    const settingsTable = this.db
+      .prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='settings'")
+      .all();
+    if (settingsTable.length === 0) {
+      this.db.exec(`
+        CREATE TABLE settings (
+          key TEXT PRIMARY KEY,
+          value TEXT NOT NULL,
+          updated_at INTEGER NOT NULL
+        )
+      `);
+    }
+
     // Migration: Create engine_failure_tracking table
     const tables = this.db
       .prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='engine_failure_tracking'")
@@ -512,16 +526,21 @@ export class SubsyncarrPlusDatabase {
 
   // Folder tree with progress stats — accepts optional sub-path for drill-down
   getFolderStats(parentPath?: string) {
-    const rows = this.db
-      .prepare(
-        `SELECT 
+    // Get all distinct folder paths with their file counts and sync stats
+    let query = `SELECT 
         file_path,
         CASE WHEN last_success_time IS NOT NULL THEN 1 ELSE 0 END as synced,
         CASE WHEN is_skipped = 1 THEN 1 ELSE 0 END as skipped
-       FROM engine_failure_tracking`,
-      )
-      .all() as Array<{ file_path: string; synced: number; skipped: number }>;
-
+       FROM engine_failure_tracking`;
+    const params: string[] = [];
+    
+    if (parentPath) {
+      query += ` WHERE file_path LIKE ?`;
+      params.push(parentPath + '/%');
+    }
+    
+    const rows = this.db.prepare(query).all(...params) as Array<{ file_path: string; synced: number; skipped: number }>;
+    
     interface FolderNode {
       total: number;
       synced: number;
@@ -533,22 +552,12 @@ export class SubsyncarrPlusDatabase {
     const folders: Record<string, FolderNode> = {};
 
     for (const row of rows) {
-      const parts = row.file_path.split('/').filter(Boolean);
-
-      // If parentPath is set, only consider paths under that prefix
-      if (parentPath) {
-        const prefixParts = parentPath.split('/').filter(Boolean);
-        let match = true;
-        for (let i = 0; i < prefixParts.length; i++) {
-          if (i >= parts.length || parts[i] !== prefixParts[i]) {
-            match = false;
-            break;
-          }
-        }
-        if (!match) continue;
-        if (parts.length <= prefixParts.length) continue;
+      let relativePath = row.file_path;
+      if (parentPath && relativePath.startsWith(parentPath + '/')) {
+        relativePath = relativePath.substring(parentPath.length + 1);
       }
-
+      const parts = relativePath.split('/');
+      // Skip empty first part and filename
       let current = folders;
       for (let i = 0; i < parts.length - 1; i++) {
         const part = parts[i];
@@ -561,46 +570,81 @@ export class SubsyncarrPlusDatabase {
         current = current[part].children;
       }
     }
-
-    // If parentPath is set, navigate into the tree to find the right level
-    if (parentPath) {
-      const prefixParts = parentPath.split('/').filter(Boolean);
-      let children: Record<string, FolderNode> = folders;
-      for (const part of prefixParts) {
-        if (children[part]) {
-          children = children[part].children;
-        } else {
-          return [];
-        }
-      }
-      const result = Object.entries(children)
-        .map(([name, data]) => ({
-          name,
-          total: data.total,
-          synced: data.synced,
-          skipped: data.skipped,
-          pending: data.total - data.synced - data.skipped,
-          progress: data.total > 0 ? Math.round((data.synced / data.total) * 100) : 0,
-          hasSubdirs: Object.keys(data.children).length > 0,
-        }))
-        .sort((a, b) => b.total - a.total);
-      return result;
-    }
-
-    // Top-level: return immediate children
+    // Convert to sorted array
     const result = Object.entries(folders)
       .map(([name, data]) => ({
         name,
+        fullPath: parentPath ? parentPath + '/' + name : '/' + name,
         total: data.total,
         synced: data.synced,
         skipped: data.skipped,
         pending: data.total - data.synced - data.skipped,
         progress: data.total > 0 ? Math.round((data.synced / data.total) * 100) : 0,
-        hasSubdirs: Object.keys(data.children).length > 0,
+        hasChildren: Object.keys(data.children).length > 0,
       }))
       .sort((a, b) => b.total - a.total);
 
     return result;
+  }
+
+  // Settings methods
+  getSetting(key: string): string | null {
+    const row = this.db.prepare('SELECT value FROM settings WHERE key = ?').get(key) as { value: string } | undefined;
+    return row ? row.value : null;
+  }
+
+  setSetting(key: string, value: string): void {
+    const now = Date.now();
+    this.db.prepare(
+      'INSERT INTO settings (key, value, updated_at) VALUES (?, ?, ?) ON CONFLICT(key) DO UPDATE SET value = ?, updated_at = ?'
+    ).run(key, value, now, value, now);
+  }
+
+  getAllSettings(): Record<string, string> {
+    const rows = this.db.prepare('SELECT key, value FROM settings ORDER BY key').all() as Array<{ key: string; value: string }>;
+    const result: Record<string, string> = {};
+    for (const row of rows) {
+      result[row.key] = row.value;
+    }
+    return result;
+  }
+
+  // Get detailed info for a specific media file
+  getMediaDetail(filePath: string) {
+    // Engine failure tracking for this file
+    const failureTracking = this.db.prepare(
+      'SELECT * FROM engine_failure_tracking WHERE file_path = ?'
+    ).all(filePath) as EngineFailureTracking[];
+
+    // Recent file_results across runs for this file
+    const fileResults = this.db.prepare(
+      `SELECT fr.*, r.start_time as run_start_time, r.status as run_status
+       FROM file_results fr
+       JOIN runs r ON fr.run_id = r.id
+       WHERE fr.file_path = ?
+       ORDER BY r.start_time DESC
+       LIMIT 20`
+    ).all(filePath) as Array<FileResult & { run_start_time: number; run_status: string }>;
+
+    // Parse engines JSON for each result to extract shift/offset info
+    const syncHistory = fileResults.map(fr => {
+      let engines: Record<string, any> = {};
+      try { engines = JSON.parse(fr.engines); } catch(e) {}
+      return {
+        runId: fr.run_id,
+        runStartTime: fr.run_start_time,
+        runStatus: fr.run_status,
+        fileStatus: fr.status,
+        engines,
+        updatedAt: fr.updated_at,
+      };
+    });
+
+    return {
+      filePath,
+      failureTracking,
+      syncHistory,
+    };
   }
 
   close() {

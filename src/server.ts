@@ -21,6 +21,10 @@ export class SubsyncarrPlusServer {
   private broadcastTimer: ReturnType<typeof setTimeout> | null = null;
   private static readonly BROADCAST_INTERVAL_MS = 100;
 
+  // Stats cache to avoid expensive DB queries on every dashboard load
+  private statsCache: { data: unknown; timestamp: number } | null = null;
+  private static readonly STATS_CACHE_TTL_MS = 30_000;
+
   constructor(
     private coordinator: ProcessingCoordinator,
     private stateManager: StateManager,
@@ -112,15 +116,21 @@ export class SubsyncarrPlusServer {
       });
     });
 
-    // Media stats
+    // Media stats (cached, 30s TTL)
     this.app.get('/api/stats', (req, res) => {
+      const now = Date.now();
+      if (this.statsCache && (now - this.statsCache.timestamp) < SubsyncarrPlusServer.STATS_CACHE_TTL_MS) {
+        return res.json(this.statsCache.data);
+      }
       const stats = this.stateManager.getDatabase().getMediaStats();
+      this.statsCache = { data: stats, timestamp: now };
       res.json(stats);
     });
 
-    // Folder tree with progress
+    // Folder tree with progress (optional ?parent= path for drill-down)
     this.app.get('/api/folders', (req, res) => {
-      const folders = this.stateManager.getDatabase().getFolderStats();
+      const parent = req.query.parent as string | undefined;
+      const folders = this.stateManager.getDatabase().getFolderStats(parent || undefined);
       res.json(folders);
     });
 
@@ -335,6 +345,46 @@ export class SubsyncarrPlusServer {
       );
 
       this.stateManager.resetSkipStatus(filePath, engine);
+      res.json({ success: true });
+    });
+
+    // Media detail — full sync history for a specific file
+    this.app.get('/api/media/:filePath(*)', (req, res) => {
+      const filePath = decodeURIComponent(req.params.filePath);
+      console.log(`[${new Date().toISOString()}] GET /api/media/${filePath.split('/').pop()}`);
+      const detail = this.stateManager.getDatabase().getMediaDetail(filePath);
+      res.json(detail);
+    });
+
+    // Settings API
+    this.app.get('/api/settings', (req, res) => {
+      const dbSettings = this.stateManager.getDatabase().getAllSettings();
+      res.json({
+        maxSubtitleShiftMs: parseInt(dbSettings['max_subtitle_shift_ms'] || process.env.MAX_SUBTITLE_SHIFT_MS || '30000', 10),
+        syncRetryThresholdMs: parseInt(dbSettings['sync_retry_threshold_ms'] || process.env.SYNC_RETRY_THRESHOLD_MS || '5000', 10),
+        syncMaxRetries: parseInt(dbSettings['sync_max_retries'] || process.env.SYNC_MAX_RETRIES || '1', 10),
+        confidenceThreshold: parseFloat(dbSettings['confidence_threshold'] || process.env.CONFIDENCE_THRESHOLD || '0.7'),
+        dryRun: (dbSettings['dry_run'] || process.env.DRY_RUN || 'false') === 'true',
+        cronSchedule: process.env.CRON_SCHEDULE || '0 0 * * *',
+        includeEngines: process.env.INCLUDE_ENGINES || 'alass,ffsubsync',
+        theme: dbSettings['theme'] || 'light',
+      });
+    });
+
+    this.app.post('/api/settings', (req, res) => {
+      const db = this.stateManager.getDatabase();
+      const updates = req.body;
+      const allowedKeys = [
+        'max_subtitle_shift_ms', 'sync_retry_threshold_ms', 'sync_max_retries',
+        'confidence_threshold', 'dry_run', 'theme'
+      ];
+      for (const [key, value] of Object.entries(updates)) {
+        if (allowedKeys.includes(key)) {
+          db.setSetting(key, String(value));
+        }
+      }
+      // Invalidate stats cache when settings change
+      this.statsCache = null;
       res.json({ success: true });
     });
   }

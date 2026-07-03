@@ -6,6 +6,7 @@ class SubsyncarrPlusClient {
     this.initialized = false;
     this.activePage = 'dashboard';
     this.config = null;
+    this.folderPath = null;  // current folder drill-down path
     this.initTheme();
     this.initWebSocket();
     this.setupEvents();
@@ -28,15 +29,17 @@ class SubsyncarrPlusClient {
   updateThemeButton() {
     var btn = document.getElementById('themeToggle');
     var isDark = document.documentElement.getAttribute('data-theme') === 'dark';
-    btn.textContent = isDark ? '\u2600\uFE0F Light' : '\uD83C\uDF19 Dark';
+    btn.textContent = isDark ? 'Light' : 'Dark';
   }
   navigate(page) {
     this.activePage = page;
     document.querySelectorAll('.nav-item').forEach(function(n) { n.classList.remove('active'); });
-    document.querySelector('[data-page="' + page + '"]').classList.add('active');
+    var target = document.querySelector('[data-page="' + page + '"]');
+    if (target) target.classList.add('active');
     document.querySelectorAll('.page').forEach(function(p) { p.classList.remove('active'); });
     document.getElementById('page-' + page).classList.add('active');
     if (page === 'folders') this.fetchFolders();
+    if (page === 'settings') this.fetchSettings();
     if (page === 'dashboard') { this.fetchStats(); this.fetchConfig(); }
   }
   initWebSocket() {
@@ -99,7 +102,14 @@ class SubsyncarrPlusClient {
       document.getElementById('releaseLink').href = d.releaseUrl; } catch(e) {}
   }
   async fetchStats() { try { var r = await fetch('/api/stats'); this.renderStats(await r.json()); } catch(e) {} }
-  async fetchFolders() { try { var r = await fetch('/api/folders'); this.renderFolders(await r.json()); } catch(e) {} }
+  async fetchFolders(parent) {
+    try {
+      var url = '/api/folders';
+      if (parent) url += '?parent=' + encodeURIComponent(parent);
+      var r = await fetch(url);
+      this.renderFolders(await r.json(), parent);
+    } catch(e) {}
+  }
   renderConfig() {
     var c = this.config;
     var dot = document.getElementById('dashStatusDot');
@@ -108,9 +118,9 @@ class SubsyncarrPlusClient {
     var sidebar = document.getElementById('sidebarStatus');
     if (c && c.isConfigured) {
       dot.className = 'status-dot'; if (this.state.isRunning) dot.classList.add('running');
-      txt.textContent = 'Watching: ' + c.paths.join(', '); sidebar.textContent = '\u25CF Active';
+      txt.textContent = 'Watching: ' + c.paths.join(', '); sidebar.textContent = 'Active'; sidebar.className = 'status-indicator active';
     } else {
-      dot.className = 'status-dot off'; txt.textContent = 'No paths configured'; sidebar.textContent = '\u25CB Idle';
+      dot.className = 'status-dot off'; txt.textContent = 'No paths configured'; sidebar.textContent = 'Idle'; sidebar.className = 'status-indicator idle';
     }
     if (c && c.schedule && c.schedule.enabled) {
       sch.textContent = c.schedule.nextRun ? 'Next: ' + new Date(c.schedule.nextRun).toLocaleTimeString() : (c.schedule.description || c.schedule.cron || 'Scheduled');
@@ -161,13 +171,13 @@ class SubsyncarrPlusClient {
         var badges = Object.entries(engines).map(function(e) {
           var name = e[0], r = e[1];
           var cls = r.success ? 'pass' : (r.skipped ? 'skip' : 'fail');
-          var icon = r.success ? '\u2713' : (r.skipped ? '\u2298' : '\u2717');
+          var label = r.success ? 'OK' : (r.skipped ? 'SK' : 'FAIL');
           var dur = r.duration ? ' ' + (r.duration/1000).toFixed(1) + 's' : '';
-          return '<span class="engine-badge ' + cls + '">' + icon + ' ' + name + dur + '</span>';
+          return '<span class="engine-badge ' + cls + '">' + label + ' ' + name + dur + '</span>';
         }).join('');
-        var label = f.status === 'not_fitting' ? '\u26A0' : f.status === 'error' ? '\u2717' : f.status === 'skipped' ? '\u2298' : '\u2713';
+        var statusLabel = f.status === 'not_fitting' ? 'NF' : f.status === 'error' ? 'FAIL' : f.status === 'skipped' ? 'SK' : 'OK';
         var skipBtn = showSkip ? '<button class="btn btn-sm btn-danger" onclick="client.skipFile(\'' + f.file_path.replace(/'/g,'\\\'') + '\')">Skip</button>' : '';
-        return '<div class="file-card ' + f.status + '"><div class="file-header"><div class="file-name">' + label + ' ' + f.file_path.split('/').pop() + '</div>' + skipBtn + '</div><div class="engine-badges">' + badges + '</div></div>';
+        return '<div class="file-card ' + f.status + '"><div class="file-header"><div class="file-name"><span class="status-tag ' + f.status + '">' + statusLabel + '</span> ' + f.file_path.split('/').pop() + '</div>' + skipBtn + '</div><div class="engine-badges">' + badges + '</div></div>';
       }).join('');
     }
     container.innerHTML =
@@ -203,17 +213,53 @@ class SubsyncarrPlusClient {
     }).join('');
     document.getElementById('historyBody').innerHTML = html || '<tr><td colspan="12" class="text-muted">No runs yet</td></tr>';
   }
-  renderFolders(folders) {
-    if (!folders || folders.length === 0) { document.getElementById('folderList').innerHTML = '<p class="text-muted">No folder data yet.</p>'; return; }
-    document.getElementById('folderList').innerHTML = folders.map(function(f) {
-      return '<div class="folder-row"><span style="font-size:18px">F</span><span class="folder-name">' + f.name + '</span><div class="folder-bar"><div class="folder-bar-fill" style="width:' + f.progress + '%"></div></div><div class="folder-numbers"><span>OK ' + f.synced.toLocaleString() + '</span><span>Pend ' + f.pending.toLocaleString() + '</span></div></div>';
+  renderFolders(folders, parent) {
+    var self = this;
+    var container = document.getElementById('folderList');
+    if (!folders || folders.length === 0) {
+      container.innerHTML = '<p class="text-muted">No folder data yet.</p>';
+      return;
+    }
+    // Breadcrumb
+    var breadcrumb = '';
+    if (parent) {
+      var parts = parent.split('/').filter(function(p) { return p; });
+      var path = '';
+      breadcrumb = '<div class="folder-breadcrumb"><span class="breadcrumb-item" onclick="client.navigateFolder(null)">Root</span>';
+      for (var i = 0; i < parts.length; i++) {
+        path += '/' + parts[i];
+        breadcrumb += ' <span class="breadcrumb-sep">/</span> <span class="breadcrumb-item" onclick="client.navigateFolder('' + path + '')">' + parts[i] + '</span>';
+      }
+      breadcrumb += '</div>';
+    }
+    container.innerHTML = breadcrumb + folders.map(function(f) {
+      var clickable = f.hasChildren ? ' onclick="client.navigateFolder('' + f.fullPath.replace(/'/g, '\\'') + '')"' : '';
+      return '<div class="folder-row"' + clickable + '><span class="folder-icon"></span><span class="folder-name">' + f.name + '</span><div class="folder-bar"><div class="folder-bar-fill" style="width:' + f.progress + '%"></div></div><div class="folder-numbers"><span>OK ' + f.synced.toLocaleString() + '</span><span>Pend ' + f.pending.toLocaleString() + '</span></div></div>';
     }).join('');
   }
-  render() { this.renderConfig(); if (this.activePage === 'dashboard' || this.activePage === 'run') this.renderRun(); this.updateButtons(); }
+  navigateFolder(path) {
+    this.folderPath = path;
+    this.fetchFolders(path);
+  }
+  render() {
+    this.renderConfig();
+    if (this.activePage === 'dashboard' || this.activePage === 'run') this.renderRun();
+    this.updateButtons();
+    this.updateNavVisibility();
+  }
   updateButtons() {
     var stop = document.getElementById('stopRun'), start = document.getElementById('startRun'), custom = document.getElementById('startCustom');
     if (this.state.isRunning) { stop.classList.remove('hidden'); start.classList.add('hidden'); custom.classList.add('hidden'); }
     else { stop.classList.add('hidden'); start.classList.remove('hidden'); custom.classList.remove('hidden'); }
+  }
+  updateNavVisibility() {
+    var navRun = document.getElementById('navRun');
+    if (this.state.isRunning) {
+      navRun.classList.remove('hidden');
+    } else {
+      navRun.classList.add('hidden');
+      if (this.activePage === 'run') this.navigate('dashboard');
+    }
   }
   async startRun(paths) {
     try { var body = paths && paths.length > 0 ? JSON.stringify({ paths: paths }) : '{}';
@@ -232,8 +278,109 @@ class SubsyncarrPlusClient {
     var map = { completed: 'completed', skipped: 'skipped', failed: 'error', not_fitting: 'not_fitting' };
     var files = run.files.filter(function(f) { return f.status === map[cat]; });
     document.getElementById('fileListTitle').textContent = cat + ' (' + files.length + ')';
-    document.getElementById('fileListContent').innerHTML = files.length === 0 ? '<p class="text-muted">None</p>' : files.map(function(f) { return '<div style="padding:4px 0;font-size:13px;border-bottom:1px solid var(--border)">' + f.file_path.split('/').pop() + '</div>'; }).join('');
+    document.getElementById('fileListContent').innerHTML = files.length === 0 ? '<p class="text-muted">None</p>' : files.map(function(f) { return '<div style="padding:4px 0;font-size:13px;border-bottom:1px solid var(--border);cursor:pointer" onclick="client.viewMediaDetail('' + f.file_path.replace(/'/g,'\\\'') + '')">' + f.file_path.split('/').pop() + '</div>'; }).join('');
     document.getElementById('fileListModal').classList.remove('hidden');
+  }
+  async fetchSettings() {
+    try {
+      var r = await fetch('/api/settings'); var s = await r.json();
+      document.getElementById('setMaxShift').value = s.maxSubtitleShiftMs;
+      document.getElementById('setRetryThreshold').value = s.syncRetryThresholdMs;
+      document.getElementById('setMaxRetries').value = s.syncMaxRetries;
+      document.getElementById('setConfidence').value = s.confidenceThreshold;
+      document.getElementById('confidenceLabel').textContent = s.confidenceThreshold.toFixed(2);
+      document.getElementById('setDryRun').checked = s.dryRun;
+      document.getElementById('setTheme').value = s.theme;
+      document.getElementById('setCron').value = s.cronSchedule;
+      document.getElementById('setEngines').value = s.includeEngines;
+    } catch(e) {}
+  }
+  async saveSettings() {
+    var data = {
+      max_subtitle_shift_ms: document.getElementById('setMaxShift').value,
+      sync_retry_threshold_ms: document.getElementById('setRetryThreshold').value,
+      sync_max_retries: document.getElementById('setMaxRetries').value,
+      confidence_threshold: document.getElementById('setConfidence').value,
+      dry_run: document.getElementById('setDryRun').checked ? 'true' : 'false',
+      theme: document.getElementById('setTheme').value,
+    };
+    try {
+      await fetch('/api/settings', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify(data) });
+      var el = document.getElementById('settingsSaved'); el.classList.remove('hidden');
+      setTimeout(function(){ el.classList.add('hidden'); }, 2000);
+      if (data.theme !== document.documentElement.getAttribute('data-theme')) {
+        document.documentElement.setAttribute('data-theme', data.theme);
+        localStorage.setItem('subsyncarr-theme', data.theme);
+        this.updateThemeButton();
+      }
+    } catch(e) { alert('Failed to save: ' + e.message); }
+  }
+  async viewMediaDetail(filePath) {
+    try {
+      var r = await fetch('/api/media/' + encodeURIComponent(filePath));
+      var d = await r.json();
+      var html = '<div class="media-detail-section"><h4>File</h4><p class="media-path">' + d.filePath + '</p></div>';
+
+      // Failure tracking
+      if (d.failureTracking && d.failureTracking.length > 0) {
+        html += '<div class="media-detail-section"><h4>Engine Status</h4>';
+        html += d.failureTracking.map(function(ft) {
+          var status = ft.last_success_time ? '<span class="status-badge completed">OK</span>' : (ft.is_skipped ? '<span class="status-badge cancelled">SKIPPED</span>' : '<span class="status-badge running">PENDING</span>');
+          var lastSuccess = ft.last_success_time ? new Date(ft.last_success_time).toLocaleString() : 'Never';
+          var lastFailure = ft.last_failure_time ? new Date(ft.last_failure_time).toLocaleString() : 'Never';
+          return '<div class="engine-detail-row"><span class="engine-name">' + ft.engine + '</span> ' + status +
+            '<div class="engine-detail-meta">Failures: ' + ft.consecutive_failures + ' | Last OK: ' + lastSuccess + ' | Last Fail: ' + lastFailure + '</div></div>';
+        }).join('');
+        html += '</div>';
+      }
+
+      // Sync history
+      if (d.syncHistory && d.syncHistory.length > 0) {
+        html += '<div class="media-detail-section"><h4>Sync History</h4>';
+        html += '<div class="sync-timeline">';
+        html += d.syncHistory.map(function(sh) {
+          var date = new Date(sh.runStartTime).toLocaleString();
+          var statusCls = sh.fileStatus === 'completed' ? 'completed' : sh.fileStatus === 'error' ? 'error' : sh.fileStatus;
+          var engineDetails = Object.entries(sh.engines).map(function(e) {
+            var name = e[0], r = e[1];
+            var offset = r.offsetMs !== undefined ? ' (offset: ' + r.offsetMs + 'ms)' : '';
+            var dur = r.duration ? ' ' + (r.duration/1000).toFixed(1) + 's' : '';
+            var cls = r.success ? 'pass' : 'fail';
+            return '<span class="engine-badge ' + cls + '">' + name + ': ' + (r.success ? 'OK' : 'FAIL') + offset + dur + '</span>';
+          }).join(' ');
+          return '<div class="timeline-entry"><div class="timeline-date">' + date + '</div><div class="timeline-status"><span class="status-badge ' + statusCls + '">' + sh.fileStatus + '</span></div><div class="timeline-engines">' + engineDetails + '</div></div>';
+        }).join('');
+        html += '</div></div>';
+      }
+
+      // Waveform placeholder (visual representation of sync offsets)
+      if (d.syncHistory && d.syncHistory.length > 0) {
+        html += '<div class="media-detail-section"><h4>Offset Visualization</h4>';
+        html += '<div class="offset-chart">';
+        var offsets = [];
+        d.syncHistory.forEach(function(sh) {
+          Object.entries(sh.engines).forEach(function(e) {
+            if (e[1].offsetMs !== undefined) offsets.push({ engine: e[0], offset: e[1].offsetMs, date: new Date(sh.runStartTime).toLocaleDateString() });
+          });
+        });
+        if (offsets.length > 0) {
+          var maxAbs = Math.max.apply(null, offsets.map(function(o) { return Math.abs(o.offset); }));
+          html += offsets.map(function(o) {
+            var pct = maxAbs > 0 ? Math.min(100, Math.abs(o.offset) / maxAbs * 100) : 0;
+            var dir = o.offset >= 0 ? 'right' : 'left';
+            var color = Math.abs(o.offset) > 30000 ? 'var(--error)' : Math.abs(o.offset) > 5000 ? 'var(--warning)' : 'var(--success)';
+            return '<div class="offset-bar-row"><span class="offset-label">' + o.engine + ' ' + o.date + '</span><div class="offset-bar-track"><div class="offset-bar ' + dir + '" style="width:' + pct + '%;background:' + color + '"></div></div><span class="offset-value">' + (o.offset/1000).toFixed(1) + 's</span></div>';
+          }).join('');
+        } else {
+          html += '<p class="text-muted">No offset data available</p>';
+        }
+        html += '</div></div>';
+      }
+
+      document.getElementById('mediaDetailTitle').textContent = d.filePath.split('/').pop();
+      document.getElementById('mediaDetailContent').innerHTML = html || '<p class="text-muted">No data</p>';
+      document.getElementById('mediaDetailModal').classList.remove('hidden');
+    } catch(e) { alert('Failed to load: ' + e.message); }
   }
   setupEvents() {
     var self = this;
@@ -259,6 +406,13 @@ class SubsyncarrPlusClient {
     ['customPathModal','logsModal','fileListModal'].forEach(function(id) {
       document.getElementById(id).addEventListener('click', function(e) { if (e.target.id === id) document.getElementById(id).classList.add('hidden'); });
     });
+    document.getElementById('saveSettings').addEventListener('click', function() { self.saveSettings(); });
+    document.getElementById('setConfidence').addEventListener('input', function() {
+      document.getElementById('confidenceLabel').textContent = parseFloat(this.value).toFixed(2);
+    });
+    document.getElementById('closeMediaDetailModal').addEventListener('click', function() { document.getElementById('mediaDetailModal').classList.add('hidden'); });
+    document.getElementById('closeMediaDetailButton').addEventListener('click', function() { document.getElementById('mediaDetailModal').classList.add('hidden'); });
+    document.getElementById('mediaDetailModal').addEventListener('click', function(e) { if (e.target.id === 'mediaDetailModal') document.getElementById('mediaDetailModal').classList.add('hidden'); });
     setInterval(function() { if (self.activePage === 'dashboard') self.fetchStats(); }, 15000);
   }
 }

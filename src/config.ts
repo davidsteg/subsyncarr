@@ -68,6 +68,18 @@ export function getScanConfig(): ScanConfig {
   };
 }
 
+export interface DryRunConfig {
+  enabled: boolean;
+  confidenceThreshold: number;
+}
+
+export function getDryRunConfig(): DryRunConfig {
+  return {
+    enabled: (process.env.DRY_RUN || 'false') === 'true',
+    confidenceThreshold: parseFloat(process.env.CONFIDENCE_THRESHOLD || '0.7'),
+  };
+}
+
 export function getRetentionConfig(): RetentionConfig {
   return {
     keepRunsDays: parseInt(process.env.RETENTION_KEEP_RUNS_DAYS || '30', 10),

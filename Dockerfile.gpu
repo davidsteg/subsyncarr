@@ -1,0 +1,60 @@
+# === GPU-Accelerated Build ===
+# Uses CUDA for ffsubsync GPU acceleration (CuPy backend)
+# Build: docker build -f Dockerfile.gpu -t misc-subsyncarr-gpu:1.3.6 .
+# Run: docker run --gpus all -v /media:/media:ro -v ./data:/app/data misc-subsyncarr-gpu:1.3.6
+
+FROM nvidia/cuda:12.4-runtime-ubuntu22.04 AS gpu-base
+
+# Install Node.js 22
+RUN apt-get update && apt-get install -y --no-install-recommends     curl     ca-certificates     gnupg     && curl -fsSL https://deb.nodesource.com/setup_22.x | bash -     && apt-get install -y nodejs     && rm -rf /var/lib/apt/lists/*
+
+# Install Python + build tools
+RUN apt-get update && apt-get install -y --no-install-recommends     python3     python3-pip     python3-venv     pipx     build-essential     ffmpeg     cron     && rm -rf /var/lib/apt/lists/*
+
+# Install gosu
+RUN dpkgArch="$(dpkg --print-architecture)"     && curl -fsSL "https://github.com/tianon/gosu/releases/download/1.17/gosu-$dpkgArch" -o /usr/local/bin/gosu     && chmod +x /usr/local/bin/gosu
+
+# Install alass
+RUN curl -fsSL "https://github.com/kaegi/alass/releases/download/v2.0.0/alass-linux64" -o /usr/local/bin/alass     && chmod +x /usr/local/bin/alass
+
+# Create node user
+RUN useradd -m -s /bin/bash node
+
+WORKDIR /app
+
+# Install Node.js dependencies
+COPY package*.json ./
+ENV HUSKY=0
+RUN npm install --ignore-scripts && npm rebuild better-sqlite3
+
+# Copy source and build
+COPY . .
+RUN npm run build
+
+# Install Python tools with GPU support
+USER node
+ENV PATH="/home/node/.local/bin:$PATH"
+
+# Install CuPy for GPU-accelerated ffsubsync
+RUN pip3 install --user cupy-cuda12x     && pipx install ffsubsync     && pipx inject ffsubsync 'setuptools<82'     && pipx install autosubsync     && pipx inject autosubsync 'setuptools<82'     && find /home/node/.local -type f -name "*.pyc" -delete 2>/dev/null || true     && find /home/node/.local -type d -name "__pycache__" -delete 2>/dev/null || true
+
+USER root
+
+# Runtime config
+ENV PUID=1000
+ENV PGID=1000
+ENV CRON_SCHEDULE="0 0 * * *"
+ENV NODE_OPTIONS="--max-old-space-size=2048"
+ENV PATH="/home/node/.local/bin:$PATH"
+
+# Create data directory
+RUN mkdir -p /app/data && chown node:node /app/data
+
+# Copy entrypoint
+COPY entrypoint.sh /entrypoint.sh
+RUN chmod +x /entrypoint.sh
+
+EXPOSE 3000
+
+ENTRYPOINT ["/entrypoint.sh"]
+CMD ["node", "dist/index-server.js"]

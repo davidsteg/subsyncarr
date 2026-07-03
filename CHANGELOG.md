@@ -1,3 +1,20 @@
+## [1.3.6] — 2026-07-03
+
+### Added
+- **Settings page**: max shift, retry threshold, max retries, confidence threshold, dry-run toggle, theme selector
+- **Dry-Run mode**: simulates sync without writing files (DRY_RUN env var)
+- **Confidence scoring**: shift-based confidence threshold skips low-confidence matches
+- **Media detail page**: per-file sync history, engine status, offset visualization bars
+- **Wrong subs detection**: 6 heuristics (cue density, language mismatch, timing anomalies, etc.)
+- **GPU Docker image**: CUDA-accelerated ffsubsync via Dockerfile.gpu
+- **Folder drill-down**: clickable folder rows with breadcrumb navigation
+
+### Changed
+- **Emoji-free UI**: all emojis replaced with CSS SVG icons and text labels
+- **Current Run nav**: hidden when idle, auto-navigates to dashboard on completion
+- **Dashboard cache**: 30s TTL on /api/stats to reduce DB load
+- **History table headers**: OK/SK/FAIL/NF/FF/AU/AL text labels
+
 ## [1.3.5] — 2026-07-03
 
 ### Added

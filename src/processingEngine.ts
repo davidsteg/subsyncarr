@@ -1,5 +1,5 @@
 import EventEmitter from 'events';
-import { ScanConfig, getScanConfig, getSyncRetryConfig } from './config';
+import { ScanConfig, getScanConfig, getSyncRetryConfig, getDryRunConfig } from './config';
 import { findAllSrtFiles } from './findAllSrtFiles';
 import { findMatchingVideoFile, DirectoryCache, clearDirectoryCache } from './findMatchingVideoFile';
 import { generateFfsubsyncSubtitles } from './generateFfsubsyncSubtitles';
@@ -9,6 +9,7 @@ import { StateManager } from './stateManager';
 import { readFileSync, writeFileSync, unlinkSync, existsSync } from 'fs';
 import { getSubtitleFormat, getOutputPath, markSrtAsSynced, isSyncedSrt } from './helpers';
 import { calculateSubtitleOffset } from './subtitleOffsetCalculator';
+import { validateSubtitleMatch } from './subtitleValidator';
 import { basename, dirname, join } from 'path';
 
 export class ProcessingEngine extends EventEmitter {
@@ -20,6 +21,8 @@ export class ProcessingEngine extends EventEmitter {
   private maxLogBufferSize: number;
   private directoryCache: DirectoryCache | null = null;
   public stateManager?: StateManager;
+  private dryRun: boolean = false;
+  private confidenceThreshold: number = 0.7;
   /** Scan progress during file discovery phase (null when not scanning) */
   public scanProgress: { checked: number; total: number; needSync: number; alreadySynced: number } | null = null;
 
@@ -28,6 +31,9 @@ export class ProcessingEngine extends EventEmitter {
     this.maxConcurrent = parseInt(process.env.MAX_CONCURRENT_SYNC_TASKS || '1', 10);
     this.enabledEngines = process.env.INCLUDE_ENGINES?.split(',') || ['ffsubsync', 'autosubsync', 'alass'];
     this.maxLogBufferSize = parseInt(process.env.LOG_BUFFER_SIZE || '1000', 10);
+    const dryRunConfig = getDryRunConfig();
+    this.dryRun = dryRunConfig.enabled;
+    this.confidenceThreshold = dryRunConfig.confidenceThreshold;
   }
 
   private get subtitleFormat(): string {
@@ -74,6 +80,10 @@ export class ProcessingEngine extends EventEmitter {
     // so a single hanging process doesn't block other slots
     this.log(`[${new Date().toISOString()}] Processing with concurrency: ${this.maxConcurrent}`);
     this.log(`[${new Date().toISOString()}] Enabled engines: ${this.enabledEngines.join(', ')}`);
+    if (this.dryRun) {
+      this.log(`[${new Date().toISOString()}] DRY RUN MODE — no files will be written`);
+    }
+    this.log(`[${new Date().toISOString()}] Confidence threshold: ${this.confidenceThreshold}`);
 
     const retryConfig = getSyncRetryConfig();
     this.log(
@@ -232,6 +242,14 @@ export class ProcessingEngine extends EventEmitter {
 
     this.emit('file:started', { srtPath, videoPath });
 
+    // Validate subtitle match before processing
+    const validation = validateSubtitleMatch(srtPath, videoPath);
+    if (validation.isSuspicious) {
+      this.log(`[${new Date().toISOString()}] Suspicious subtitle detected (${(validation.probability * 100).toFixed(0)}%): ${fileName}`);
+      validation.reasons.forEach(r => this.log(`[${new Date().toISOString()}]   Reason: ${r}`));
+      this.emit('file:suspicious', { srtPath, validation });
+    }
+
     if (!videoPath) {
       this.log(`[${new Date().toISOString()}] No matching video found for: ${fileName}`);
       this.emit('file:no_video', { srtPath });
@@ -347,10 +365,22 @@ export class ProcessingEngine extends EventEmitter {
               `[${new Date().toISOString()}]   Offset: ${offsetMs}ms (threshold: ${retryConfig.thresholdMs}ms)`,
             );
 
-            if (Math.abs(offsetMs) > retryConfig.thresholdMs) {
+            // Calculate confidence score from shift magnitude
+            const maxShift = parseInt(process.env.MAX_SUBTITLE_SHIFT_MS || '30000', 10);
+            const confidence = maxShift > 0 ? Math.max(0, 1 - (Math.abs(offsetMs) / maxShift)) : 1;
+            this.log(
+              `[${new Date().toISOString()}]   Confidence: ${(confidence * 100).toFixed(1)}% (threshold: ${(this.confidenceThreshold * 100).toFixed(0)}%)`,
+            );
+
+            if (confidence < this.confidenceThreshold) {
+              this.log(
+                `[${new Date().toISOString()}]   Confidence below threshold — marking as not_fitting`,
+              );
+              notFitting = true;
+            } else if (Math.abs(offsetMs) > retryConfig.thresholdMs) {
               // Offset too large — retry with the synced subtitle as input
               this.log(
-                `[${new Date().toISOString()}]   ⚠ Offset exceeds threshold, retrying ${engine} (attempt 2/${retryConfig.maxRetries + 1})...`,
+                `[${new Date().toISOString()}]   Offset exceeds threshold, retrying ${engine} (attempt 2/${retryConfig.maxRetries + 1})...`,
               );
               this.emit('file:retry_needed', { srtPath, engine, offsetMs, attempt: 1 });
 
@@ -460,6 +490,20 @@ export class ProcessingEngine extends EventEmitter {
         anyEngineSucceeded = true;
 
         if (this.subtitleFormat === 'overwrite') {
+          if (this.dryRun) {
+            // Dry run: log what would happen, don't write
+            this.log(`[${new Date().toISOString()}] [DRY RUN] Would sync (header-marked): ${fileName} (offset: ${offsetMs ?? 'unknown'}ms)`);
+            // Clean up engine output file
+            if (existsSync(engineOutputPath)) {
+              try { unlinkSync(engineOutputPath); } catch { /* ignore */ }
+            }
+            this.emit('file:engine_completed', {
+              srtPath,
+              engine,
+              result: { ...result, offsetMs: offsetMs ?? undefined, dryRun: true },
+            });
+            break;
+          }
           if (finalContent) {
             markSrtAsSynced(srtPath, engine, finalContent);
           } else {
@@ -475,7 +519,7 @@ export class ProcessingEngine extends EventEmitter {
               // Ignore cleanup errors
             }
           }
-          this.log(`[${new Date().toISOString()}] ✓ Synced (header-marked): ${fileName}`);
+          this.log(`[${new Date().toISOString()}] Synced (header-marked): ${fileName}`);
           this.emit('file:engine_completed', {
             srtPath,
             engine,
