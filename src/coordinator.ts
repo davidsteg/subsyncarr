@@ -73,6 +73,7 @@ export class ProcessingCoordinator {
         if (this.currentRunId) {
           this.stateManager.updateFileEngine(this.currentRunId, srtPath, engine, result);
           this.stateManager.incrementCompletedEngines(this.currentRunId);
+          this.stateManager.incrementEngineStat(this.currentRunId, engine, result.success);
         }
       },
     );

@@ -15,6 +15,7 @@ export interface Run {
   completed_engines: number;
   status: 'running' | 'completed' | 'cancelled';
   logs: string;
+  engine_stats: string;
 }
 
 export interface FileResult {
@@ -87,7 +88,8 @@ export class SubsyncarrPlusDatabase {
         total_engines INTEGER DEFAULT 0,
         completed_engines INTEGER DEFAULT 0,
         status TEXT NOT NULL,
-        logs TEXT DEFAULT ''
+        logs TEXT DEFAULT '',
+        engine_stats TEXT DEFAULT '{}'
       );
 
       CREATE TABLE IF NOT EXISTS file_results (
@@ -130,6 +132,12 @@ export class SubsyncarrPlusDatabase {
     const hasNotFittingColumn = columns.some((col) => col.name === 'not_fitting');
     if (!hasNotFittingColumn) {
       this.db.exec(`ALTER TABLE runs ADD COLUMN not_fitting INTEGER DEFAULT 0`);
+    }
+
+    // Migration: Add engine_stats column if it doesn't exist
+    const hasEngineStatsColumn = columns.some((col) => col.name === 'engine_stats');
+    if (!hasEngineStatsColumn) {
+      this.db.exec(`ALTER TABLE runs ADD COLUMN engine_stats TEXT DEFAULT '{}'`);
     }
 
     // Migration: Create synced_files cache table — avoids re-scanning 183K SRT headers
@@ -206,6 +214,11 @@ export class SubsyncarrPlusDatabase {
    * Uses SQL `SET field = field + 1` to avoid read-then-write race and overhead.
    */
   // v1.3.7 fix: removed updated_at
+
+  updateEngineStats(runId: string, engineStats: string): void {
+    this.db.prepare('UPDATE runs SET engine_stats = ? WHERE id = ?').run(engineStats, runId);
+  }
+
   incrementRunField(id: string, field: 'completed' | 'skipped' | 'failed' | 'not_fitting' | 'completed_engines'): void {
     this.db.prepare(`UPDATE runs SET ${field} = ${field} + 1 WHERE id = ?`).run(id);
   }

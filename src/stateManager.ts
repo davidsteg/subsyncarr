@@ -96,6 +96,16 @@ export class StateManager extends EventEmitter {
     this.db.incrementRunField(runId, 'completed_engines');
   }
 
+  incrementEngineStat(runId: string, engine: string, success: boolean): void {
+    const run = this.db.getRun(runId);
+    if (!run) return;
+    let stats: Record<string, { pass: number; fail: number }> = {};
+    try { stats = JSON.parse(run.engine_stats || '{}'); } catch {}
+    if (!stats[engine]) stats[engine] = { pass: 0, fail: 0 };
+    if (success) stats[engine].pass++; else stats[engine].fail++;
+    this.db.updateEngineStats(runId, JSON.stringify(stats));
+  }
+
   // File management
   addFile(runId: string, filePath: string, videoPath: string | null): void {
     this.db.createFileResult(runId, filePath, videoPath);

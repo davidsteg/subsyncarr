@@ -106,7 +106,7 @@ class SubsyncarrPlusClient {
     } catch(e) {}
   }
   async fetchHistory() {
-    var r = await fetch('/api/history?include_files=true'); var data = await r.json();
+    var r = await fetch('/api/history'); var data = await r.json();
     var self = this; data.forEach(function(run) { self.historyCache[run.id] = run; });
     this.renderHistory(data);
   }
@@ -222,9 +222,12 @@ class SubsyncarrPlusClient {
     var html = runs.map(function(run) {
       var dur = run.end_time ? Math.round((run.end_time - run.start_time)/1000) + 's' : '-';
       var stats = { ffsubsync:{pass:0,fail:0}, autosubsync:{pass:0,fail:0}, alass:{pass:0,fail:0} };
-      (run.files || []).forEach(function(f) {
-        try { var e = JSON.parse(f.engines); Object.entries(e).forEach(function(x) { if (stats[x[0]]) x[1].success ? stats[x[0]].pass++ : stats[x[0]].fail++; }); } catch(er) {}
-      });
+      try {
+        var es = JSON.parse(run.engine_stats || '{}');
+        Object.keys(stats).forEach(function(k) {
+          if (es[k]) { stats[k].pass = es[k].pass || 0; stats[k].fail = es[k].fail || 0; }
+        });
+      } catch(er) {}
       function engCell(s) {
         if (s.pass + s.fail === 0) return '<td>-</td>';
         return '<td>' + (s.pass>0?'<span style="color:#10b981">'+s.pass+'</span>':'') + (s.pass>0&&s.fail>0?'/':'') + (s.fail>0?'<span style="color:#ef4444">'+s.fail+'</span>':'') + '</td>';
@@ -312,13 +315,15 @@ class SubsyncarrPlusClient {
         String(r.total_files||0).indexOf(q) >= 0;
     });
   }
-  showFileList(runId, cat) {
-    var run = this.historyCache[runId]; if (!run || !run.files) return;
+  async showFileList(runId, cat) {
     var map = { completed: 'completed', skipped: 'skipped', failed: 'error', not_fitting: 'not_fitting' };
-    var files = run.files.filter(function(f) { return f.status === map[cat]; });
-    document.getElementById('fileListTitle').textContent = cat + ' (' + files.length + ')';
-    document.getElementById('fileListContent').innerHTML = files.length === 0 ? '<p class="text-muted">None</p>' : files.map(function(f) { return '<div style="padding:4px 0;font-size:13px;border-bottom:1px solid var(--border);cursor:pointer" data-file="' + f.file_path + '">' + f.file_path.split('/').pop() + '</div>'; }).join('');
-    document.getElementById('fileListModal').classList.remove('hidden');
+    try {
+      var r = await fetch('/api/runs/' + runId + '/files?status=' + map[cat]);
+      var d = await r.json();
+      document.getElementById('fileListTitle').textContent = cat + ' (' + d.total + ')';
+      document.getElementById('fileListContent').innerHTML = d.files.length === 0 ? '<p class="text-muted">None</p>' : d.files.map(function(f) { return '<div style="padding:4px 0;font-size:13px;border-bottom:1px solid var(--border);cursor:pointer" data-file="' + f.file_path + '">' + f.file_path.split('/').pop() + '</div>'; }).join('');
+      document.getElementById('fileListModal').classList.remove('hidden');
+    } catch(e) {}
   }
   async fetchSettings() {
     try {

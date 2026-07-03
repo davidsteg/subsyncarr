@@ -1,3 +1,11 @@
+## [1.3.10] — 2026-07-03
+
+### Fixed
+- **72MB history payload**: removed `include_files=true` from initial load, added lazy `/api/runs/:id/files` endpoint (4s → 10ms)
+- **engine_stats**: pre-computed per-run engine stats stored in DB instead of parsing from heavy file arrays
+- **config endpoint**: was queued behind 72MB history request, now instant
+
+
 ## [1.3.9] — 2026-07-03
 
 ### Added

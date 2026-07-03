@@ -163,22 +163,27 @@ export class SubsyncarrPlusServer {
     // Get run history
     this.app.get('/api/history', (req, res) => {
       const limit = parseInt(req.query.limit as string, 10) || 50;
-      const includeFiles = req.query.include_files === 'true';
-      console.log(`[${new Date().toISOString()}] GET /api/history (limit: ${limit}, include_files: ${includeFiles})`);
+      console.log(`[${new Date().toISOString()}] GET /api/history (limit: ${limit})`);
 
       const runs = this.stateManager.getRunHistory(limit);
+      res.json(runs);
+    });
 
-      if (includeFiles) {
-        // Include file results for each run to avoid N+1 queries from the frontend
-        const runsWithFiles = runs.map((run) => {
-          const fileLimit = 500;
-          const result = this.stateManager.getFileResultsPaginated(run.id, fileLimit, 0);
-          return { ...run, files: result.files };
-        });
-        res.json(runsWithFiles);
-      } else {
-        res.json(runs);
+    // Get files for a specific run (lazy-loaded, filtered by status)
+    this.app.get('/api/runs/:id/files', (req, res) => {
+      const { id } = req.params;
+      const status = req.query.status as string || '';
+      const limit = parseInt(req.query.limit as string, 10) || 500;
+      const offset = parseInt(req.query.offset as string, 10) || 0;
+
+      const result = this.stateManager.getFileResultsPaginated(id, limit, offset);
+      let files = result.files;
+      if (status && ['completed','skipped','error','not_fitting'].includes(status)) {
+        const mappedStatus = status === 'error' ? 'error' : status;
+        files = files.filter(f => f.status === mappedStatus);
       }
+
+      res.json({ files, total: files.length });
     });
 
     // Get specific run details (latest files only — use paginated endpoint for full list)
