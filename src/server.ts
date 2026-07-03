@@ -71,13 +71,42 @@ export class SubsyncarrPlusServer {
     });
 
     // Get current status
+    // API version info
+    this.app.get('/api/version', (req, res) => {
+      const fs = require('fs');
+      const path = require('path');
+      let version = 'unknown';
+      try {
+        version = fs.readFileSync(path.join(__dirname, '..', 'VERSION'), 'utf8').trim();
+      } catch {}
+      res.json({
+        version,
+        repo: 'davidsteg/subsyncarr',
+        releaseUrl: `https://github.com/davidsteg/subsyncarr/releases/tag/${version}`,
+      });
+    });
+
+    // Media stats
+    this.app.get('/api/stats', (req, res) => {
+      const stats = this.stateManager.getDatabase().getMediaStats();
+      res.json(stats);
+    });
+
+    // Folder tree with progress
+    this.app.get('/api/folders', (req, res) => {
+      const folders = this.stateManager.getDatabase().getFolderStats();
+      res.json(folders);
+    });
+
     this.app.get('/api/status', (req, res) => {
       console.log(`[${new Date().toISOString()}] GET /api/status`);
       const currentRun = this.stateManager.getCurrentRun();
+      const scanProgress = this.coordinator.getScanProgress();
       const limit = Math.min(parseInt(req.query.limit as string, 10) || 500, 5000);
       const result = currentRun ? this.stateManager.getFileResultsPaginated(currentRun.id, limit, 0) : null;
       res.json({
         currentRun,
+        scanProgress,
         files: result?.files || [],
         totalFiles: result?.total || 0,
         isRunning: this.coordinator.isRunning(),

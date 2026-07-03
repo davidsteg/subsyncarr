@@ -14,7 +14,7 @@ function isEngineOutput(filename: string): boolean {
 /** Concurrency limit for async file checks — pipelines I/O on network storage */
 const CHECK_CONCURRENCY = 20;
 
-export async function findAllSrtFiles(config: ScanConfig): Promise<{ files: string[]; directoryCache: DirectoryCache }> {
+export async function findAllSrtFiles(config: ScanConfig, onProgress?: (checked: number, total: number, needSync: number, alreadySynced: number) => void): Promise<{ files: string[]; directoryCache: DirectoryCache }> {
   const engines = process.env.INCLUDE_ENGINES?.split(',') || ['ffsubsync', 'autosubsync', 'alass'];
   const format = getSubtitleFormat();
 
@@ -86,7 +86,10 @@ export async function findAllSrtFiles(config: ScanConfig): Promise<{ files: stri
       files.push(srtPath);
     }
 
-    // Log progress every 10K files
+    // Report progress via callback (every 1K for UI) + console log (every 10K)
+    if (onProgress && completedCount % 1000 === 0) {
+      onProgress(completedCount, srtPaths.length, files.length, skippedCount);
+    }
     if (completedCount % 10000 === 0) {
       console.log(
         `${new Date().toLocaleString()} Scan progress: ${completedCount}/${srtPaths.length} checked, ${files.length} need sync, ${skippedCount} already synced`,

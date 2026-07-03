@@ -20,6 +20,8 @@ export class ProcessingEngine extends EventEmitter {
   private maxLogBufferSize: number;
   private directoryCache: DirectoryCache | null = null;
   public stateManager?: StateManager;
+  /** Scan progress during file discovery phase (null when not scanning) */
+  public scanProgress: { checked: number; total: number; needSync: number; alreadySynced: number } | null = null;
 
   constructor() {
     super();
@@ -57,7 +59,13 @@ export class ProcessingEngine extends EventEmitter {
     this.log(`[${new Date().toISOString()}] Scanning for subtitle files...`);
     this.log(`[${new Date().toISOString()}] Scan paths: ${JSON.stringify(scanConfig.includePaths)}`);
 
-    const { files: srtFiles, directoryCache } = await findAllSrtFiles(scanConfig);
+    this.scanProgress = { checked: 0, total: 0, needSync: 0, alreadySynced: 0 };
+    const { files: srtFiles, directoryCache } = await findAllSrtFiles(scanConfig,
+      (checked, total, needSync, alreadySynced) => {
+        this.scanProgress = { checked, total, needSync, alreadySynced };
+      }
+    );
+    this.scanProgress = null;
     this.directoryCache = directoryCache;
     this.log(`[${new Date().toISOString()}] Found ${srtFiles.length} subtitle files`);
     this.emit('run:files_found', srtFiles);

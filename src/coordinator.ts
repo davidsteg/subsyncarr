@@ -208,6 +208,10 @@ export class ProcessingCoordinator {
     this.stateManager.cancelRun(run.id);
   }
 
+  getScanProgress(): { checked: number; total: number; needSync: number; alreadySynced: number } | null {
+    return this.engine.scanProgress;
+  }
+
   isRunning(): boolean {
     return this.processingPromise !== null;
   }

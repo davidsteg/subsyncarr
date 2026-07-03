@@ -469,6 +469,89 @@ export class SubsyncarrPlusDatabase {
     return { totalSkipped: totalSkipped.count, skippedByEngine };
   }
 
+  // Media stats queries
+  getMediaStats() {
+    const totalFiles = this.db.prepare(
+      'SELECT COUNT(*) as count FROM engine_failure_tracking'
+    ).get() as { count: number };
+    
+    const syncedFiles = this.db.prepare(
+      'SELECT COUNT(*) as count FROM engine_failure_tracking WHERE last_success_time IS NOT NULL'
+    ).get() as { count: number };
+    
+    const skippedCount = this.db.prepare(
+      'SELECT COUNT(*) as count FROM engine_failure_tracking WHERE is_skipped = 1'
+    ).get() as { count: number };
+    
+    // File counts by engine success
+    const engineStats = this.db.prepare(
+      'SELECT engine, COUNT(*) as total, SUM(CASE WHEN last_success_time IS NOT NULL THEN 1 ELSE 0 END) as synced FROM engine_failure_tracking GROUP BY engine'
+    ).all() as Array<{ engine: string; total: number; synced: number }>;
+    
+    // Language distribution (parse from filename: .en.srt, .ger.srt, etc.)
+    const langStats = this.db.prepare(
+      "SELECT SUBSTR(file_path, -7, 2) as lang, COUNT(*) as count FROM engine_failure_tracking WHERE file_path LIKE '%.__srt' OR file_path LIKE '%.___.srt' OR file_path LIKE '%.____.srt' GROUP BY lang ORDER BY count DESC LIMIT 20"
+    ).all() as Array<{ lang: string; count: number }>;
+    
+    // Filter to only real language codes (2 lowercase letters)
+    const realLangs = langStats.filter(l => /^[a-z]{2}$/.test(l.lang));
+    
+    return {
+      totalFiles: totalFiles.count,
+      syncedFiles: syncedFiles.count,
+      skippedFiles: skippedCount.count,
+      syncRate: totalFiles.count > 0 ? Math.round((syncedFiles.count / totalFiles.count) * 100) : 0,
+      engines: engineStats.map(e => ({ ...e, rate: e.total > 0 ? Math.round((e.synced / e.total) * 100) : 0 })),
+      languages: realLangs.slice(0, 10),
+    };
+  }
+
+  // Folder tree with progress stats
+  getFolderStats() {
+    // Get all distinct folder paths with their file counts and sync stats
+    const rows = this.db.prepare(
+      `SELECT 
+        file_path,
+        CASE WHEN last_success_time IS NOT NULL THEN 1 ELSE 0 END as synced,
+        CASE WHEN is_skipped = 1 THEN 1 ELSE 0 END as skipped
+       FROM engine_failure_tracking`
+    ).all() as Array<{ file_path: string; synced: number; skipped: number }>;
+    
+    // Build folder tree from file paths
+    const folders: Record<string, { total: number; synced: number; skipped: number; children: Record<string, any> }> = {};
+    
+    for (const row of rows) {
+      const parts = row.file_path.split('/');
+      // Skip empty first part and filename
+      let current = folders;
+      for (let i = 0; i < parts.length - 1; i++) {
+        const part = parts[i];
+        if (!part) continue;
+        if (!current[part]) {
+          current[part] = { total: 0, synced: 0, skipped: 0, children: {} };
+        }
+        current[part].total++;
+        current[part].synced += row.synced;
+        current[part].skipped += row.skipped;
+        current = current[part].children as any;
+      }
+    }
+    
+    // Convert to sorted array (top-level only for performance)
+    const result = Object.entries(folders)
+      .map(([name, data]) => ({
+        name,
+        total: data.total,
+        synced: data.synced,
+        skipped: data.skipped,
+        pending: data.total - data.synced - data.skipped,
+        progress: data.total > 0 ? Math.round((data.synced / data.total) * 100) : 0,
+      }))
+      .sort((a, b) => b.total - a.total);
+    
+    return result;
+  }
+
   close() {
     this.db.close();
   }

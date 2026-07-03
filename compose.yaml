@@ -2,7 +2,7 @@ name: subsyncarr-dev
 
 services:
   subsyncarr-dev:
-    image: misc-subsyncarr:1.3.4
+    image: misc-subsyncarr:1.3.5
     build: .
     container_name: subsyncarr
     ports:

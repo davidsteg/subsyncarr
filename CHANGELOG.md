@@ -1,13 +1,20 @@
-## [1.3.4] — 2026-07-03
+## [1.3.5] — 2026-07-03
 
-### Fixed
-- **Shift-too-large no longer triggers engine failure cascade**: subtitle/video mismatches now reset the failure counter instead of incrementing it, preventing subsequent files from being skipped
-- **Stderr included in engine error messages**: alass/ffsubsync parse errors are now visible in logs instead of silent "Command failed"
-- **Skip remaining engines on mismatch**: when one engine detects the subtitle doesn't match the video, remaining engines are skipped instead of wasting 6-12s per file
+### Added
+- **Dark/light mode** toggle with localStorage persistence
+- **Version display** in sidebar with GitHub release link
+- **Media stats dashboard**: total/synced/skipped/pending, engine breakdown, language distribution
+- **Folder navigation** with per-folder sync progress bars
+- **Multi-page layout**: Dashboard, Current Run, History, Folders
+- **Scan progress bar** during file discovery phase
+- `/api/version`, `/api/stats`, `/api/folders` endpoints
 
 ### Changed
-- Synced TS source with built JS: backup/restore + first-cue shift detection now in source (not just compiled output)
-- `shiftTooLarge` and `originalShiftMs` fields added to `ProcessingResult` type
+- Complete UI rewrite: sidebar navigation, cards, clean typography
+- Responsive layout with mobile-friendly breakpoints
+- Real-time scan progress in dashboard banner
 
-## [1.3.3] — 2026-07-03
-- Fixed alass binary missing from Docker image
+## [1.3.4] — 2026-07-03
+- shiftTooLarge no longer cascades engine failures
+- Stderr in engine error messages
+- Skip remaining engines on mismatch
