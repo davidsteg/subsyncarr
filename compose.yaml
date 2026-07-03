@@ -1,0 +1,41 @@
+name: subsyncarr-dev
+
+services:
+  subsyncarr-dev:
+    image: misc-subsyncarr:1.3.3
+    build: .
+    container_name: subsyncarr
+    ports:
+      - "30200:3000" # Web UI
+    volumes:
+      # Mount the media library (read-write for subtitle syncing)
+      - /mnt/venus/media:/media:rw
+      # Persist SQLite database across restarts
+      - ./data:/app/data
+    restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          memory: 1.5G
+        reservations:
+          memory: 256M
+    environment:
+      # Match media UID (files owned by 3000:0 on /mnt/venus/media)
+      - PUID=3000
+      - PGID=0
+      - TZ=Europe/Berlin
+      # Scan entire media library
+      - SCAN_PATHS=/media
+      - EXCLUDE_PATHS=/media/Download
+      - MAX_CONCURRENT_SYNC_TASKS=2
+      # alass primär, ffsubsync als Fallback bei zu großer Abweichung
+      - INCLUDE_ENGINES=alass,ffsubsync
+      # Maximale erlaubte Subtitle-Verschiebung in ms (30s = Sub passt nicht zum Video)
+      - MAX_SUBTITLE_SHIFT_MS=30000
+      # Run every hour
+      - CRON_SCHEDULE=0 * * * *
+      # 10 min timeout per engine call (down from 30 min default)
+      - SYNC_ENGINE_TIMEOUT_MS=600000
+      # Set database to read-ahead mode for faster bulk processing
+      - DB_JOURNAL_MODE=WAL
+      - DB_CACHE_SIZE=-32000 # 32MB SQLite cache

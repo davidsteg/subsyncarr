@@ -51,6 +51,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && dpkgArch="$(dpkg --print-architecture)" \
     && curl -fsSL "https://github.com/tianon/gosu/releases/download/1.17/gosu-$dpkgArch" -o /usr/local/bin/gosu \
     && chmod +x /usr/local/bin/gosu \
+    && curl -fsSL "https://github.com/kaegi/alass/releases/download/v2.0.0/alass-linux64" -o /usr/local/bin/alass \
+    && chmod +x /usr/local/bin/alass \
     && apt-get purge -y curl \
     && apt-get autoremove -y \
     && rm -rf /var/lib/apt/lists/*
