@@ -5,6 +5,7 @@ import { ProcessingCoordinator } from './coordinator';
 import { StateManager } from './stateManager';
 import { Run } from './database';
 import { join } from 'path';
+import { readFileSync } from 'fs';
 import { getScanConfig } from './config';
 import cronstrue from 'cronstrue';
 import parseExpression from 'cron-parser';
@@ -70,6 +71,31 @@ export class SubsyncarrPlusServer {
       });
     });
 
+    // API version info
+    this.app.get('/api/version', (_req, res) => {
+      let version = 'unknown';
+      try {
+        version = readFileSync(join(__dirname, '..', 'VERSION'), 'utf8').trim();
+      } catch {}
+      res.json({
+        version,
+        releaseUrl: `https://github.com/davidsteg/subsyncarr/releases/tag/${version}`,
+      });
+    });
+
+    // Media stats
+    this.app.get('/api/stats', (_req, res) => {
+      const stats = this.stateManager.getDatabase().getMediaStats();
+      res.json(stats);
+    });
+
+    // Folder tree with optional sub-path drill-down
+    this.app.get('/api/folders', (req, res) => {
+      const subPath = req.query.path as string | undefined;
+      const folders = this.stateManager.getDatabase().getFolderStats(subPath);
+      res.json(folders);
+    });
+
     // Get current status
     // API version info
     this.app.get('/api/version', (req, res) => {
@@ -124,8 +150,6 @@ export class SubsyncarrPlusServer {
       if (includeFiles) {
         // Include file results for each run to avoid N+1 queries from the frontend
         const runsWithFiles = runs.map((run) => {
-          const currentRun = this.stateManager.getCurrentRun();
-          const isCurrentRun = currentRun && currentRun.id === run.id;
           const fileLimit = 500;
           const result = this.stateManager.getFileResultsPaginated(run.id, fileLimit, 0);
           return { ...run, files: result.files };
