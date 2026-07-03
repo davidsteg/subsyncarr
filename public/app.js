@@ -332,6 +332,10 @@ class SubsyncarrPlusClient {
       this._pollScanProgress();
       fetch('/api/run/start', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify(payload) })
         .catch(function(e) { console.error('Start run failed:', e); });
+    } catch(e) {
+      // WebSocket + polling handle state; fallback if POST itself throws
+      console.error('startRun error:', e);
+    }
   }
   async stopRun() { if (!confirm('Stop run?')) return; try { await fetch('/api/run/stop', { method:'POST' }); } catch(e) {} }
   async skipFile(fp) { try { await fetch('/api/file/skip', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({filePath:fp}) }); } catch(e) {} }
