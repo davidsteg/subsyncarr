@@ -1,3 +1,25 @@
+## [1.3.12] — 2026-07-03
+
+### Changed
+- **Delete decision now uses two-engine agreement**: both engines run independently on the original subtitle and their aligned outputs are compared by median time-diff. If they agree within `ENGINE_AGREEMENT_THRESHOLD_MS` the subtitle is kept (default engine's alignment); if they disagree — or neither can align it — it is deleted as not fitting the video. Deletion now requires **both** engines to fail to agree.
+- Replaced the shift-from-original "confidence" metric, which measured how far a subtitle was moved rather than how well it fit — it deleted large-but-correctly-synced subtitles. A correctly-fixed, badly-out-of-sync subtitle is now kept.
+
+### Fixed
+- **Retries now work**: each engine re-runs on its own output until the alignment converges. Previously the retry read from a non-existent `.retry.<engine>.srt` path and always no-op'd.
+- **Duplicate run stats**: a deleted file counted 2–3× (emitted `not_fitting` twice and `failed` once). It now emits `file:not_fitting` exactly once.
+- **Dry-run is truly non-destructive**: since engines overwrite in place, `DRY_RUN=true` now restores the original after processing so nothing is written or deleted.
+
+### Added
+- `ENGINE_AGREEMENT_THRESHOLD_MS` (default `5000`) — max ms the two engines' alignments may differ and still count as a match; surfaced in `/api/settings`.
+
+### Docs
+- Corrected the inaccurate "Non Destructive" claim: the tool syncs in place (with a `# synced:` header marker) and deletes subtitles neither engine can align. Added a backup/dry-run warning and documented `DEFAULT_ENGINE`, `FALLBACK_ENGINE`, `ENGINE_AGREEMENT_THRESHOLD_MS`.
+
+## [1.3.11] — 2026-07-03
+
+### Added
+- **Engine chain**: configurable default → fallback engine order (`DEFAULT_ENGINE`, `FALLBACK_ENGINE`) with per-engine retries before falling back, then delete.
+
 ## [1.3.10] — 2026-07-03
 
 ### Fixed

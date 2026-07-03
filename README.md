@@ -13,11 +13,13 @@ An automated subtitle synchronization tool that runs as a Docker container. It c
 - **Scheduled Processing** - Runs on a configurable cron schedule (default: daily at midnight) and on container startup
 - **Parallel Processing** - Configure concurrent subtitle processing for faster library syncing
 - **Skip Already Synced Files** - Avoids re-processing files that already have synchronized subtitles or where an engine repeatedly fails.
+- **Two-Engine Agreement Check** - Runs both engines independently and keeps the subtitle only when they agree on the alignment (within a configurable threshold). Subtitles both engines fail to agree on are treated as not matching the video and **deleted**.
 - **Processing History** - View past runs with detailed statistics, results, and logs
 - **Configuration Dashboard** - View current settings, monitored paths, and schedule status
 - **Configurable Timeouts** - Set per-engine timeout limits to prevent hung processes
 - **Log Management** - Configurable retention policies with automatic trimming and deletion
-- **Non Destructive** - Creates new files for each engine so no original files are altered. Allows easy switching between engines while watching content.
+
+> **Note:** This tool syncs subtitles **in place** (overwriting the original `.srt`, with a `# synced:` header marker) and **deletes** subtitles that neither engine can align. Keep a backup of subtitles you can't easily re-download, and use `DRY_RUN=true` first to preview what would be changed or deleted.
 
 ## Quick Start
 
@@ -106,6 +108,9 @@ docker run -d \
 | `CRON_SCHEDULE`             | `0 0 * * *`                   | Cron expression for sync schedule (daily at midnight), or `disabled` to turn off |
 | `MAX_CONCURRENT_SYNC_TASKS` | `1`                           | Number of subtitle files to process in parallel (higher = faster but more CPU)   |
 | `INCLUDE_ENGINES`           | `ffsubsync,autosubsync,alass` | Which sync engines to use (comma-separated)                                      |
+| `DEFAULT_ENGINE`            | `alass`                       | Primary engine; its alignment is kept when both engines agree                    |
+| `FALLBACK_ENGINE`           | `ffsubsync`                   | Second engine run for the agreement check                                        |
+| `ENGINE_AGREEMENT_THRESHOLD_MS` | `5000`                    | Max ms the two engines' alignments may differ and still count as a match. Beyond this, the subtitle is deleted as not fitting the video |
 | `SYNC_TIMEOUT`              | _(none)_                      | Timeout in seconds per sync operation (overrides SYNC_ENGINE_TIMEOUT_MS)         |
 | `SYNC_ENGINE_TIMEOUT_MS`    | `300000`                      | Timeout for each sync engine in milliseconds (5 min default)                     |
 | `ALASS_TIMEOUT_MS`          | _(none)_                      | Override timeout for alass only (takes precedence over SYNC_ENGINE_TIMEOUT_MS)   |
