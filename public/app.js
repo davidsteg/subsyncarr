@@ -322,20 +322,16 @@ class SubsyncarrPlusClient {
       if (paths && paths.length > 0) payload.paths = paths;
       if (dryRun) payload.dryRun = true;
       this.state.dryRun = !!dryRun;
-      // Show placeholder immediately — WebSocket run:started will replace with real data
+      // Show placeholder immediately — WebSocket run:started will replace with real data.
+      // Fire-and-forget POST; WebSocket handles all updates. Polling auto-stops
+      // when the real run arrives (currentRun.id changes from 'pending').
       this.state.isRunning = true;
       this.state.currentRun = { status: 'running', total_files: 0, completed: 0, skipped: 0, failed: 0, not_fitting: 0, total_engines: 0, completed_engines: 0, start_time: Date.now(), id: 'pending' };
       this.navigate('run');
       this.render();
       this._pollScanProgress();
-      await fetch('/api/run/start', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify(payload) });
-      this._stopScanPoll();
-    } catch(e) {
-      this.state.isRunning = false;
-      this.state.currentRun = null;
-      this.render();
-      alert('Failed: ' + e.message);
-    }
+      fetch('/api/run/start', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify(payload) })
+        .catch(function(e) { console.error('Start run failed:', e); });
   }
   async stopRun() { if (!confirm('Stop run?')) return; try { await fetch('/api/run/stop', { method:'POST' }); } catch(e) {} }
   async skipFile(fp) { try { await fetch('/api/file/skip', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({filePath:fp}) }); } catch(e) {} }
