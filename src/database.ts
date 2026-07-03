@@ -234,6 +234,22 @@ export class SubsyncarrPlusDatabase {
         CREATE INDEX idx_failure_tracking_skipped ON engine_failure_tracking(is_skipped);
       `);
     }
+
+    // Migration: Create not_fitting_tracking table — consecutive-run strikes
+    // before a subtitle both engines can't agree on is actually deleted.
+    const notFittingTable = this.db
+      .prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='not_fitting_tracking'")
+      .all();
+    if (notFittingTable.length === 0) {
+      this.db.exec(`
+        CREATE TABLE not_fitting_tracking (
+          file_path TEXT PRIMARY KEY,
+          consecutive_strikes INTEGER NOT NULL DEFAULT 0,
+          last_strike_time INTEGER,
+          updated_at INTEGER NOT NULL
+        );
+      `);
+    }
   }
 
   // Run methods
@@ -552,6 +568,42 @@ export class SubsyncarrPlusDatabase {
     });
 
     return { totalSkipped: totalSkipped.count, skippedByEngine };
+  }
+
+  // === Not-fitting strike tracking ===
+  // Tracks consecutive runs (not attempts within one run) where both engines
+  // failed to agree on a file's alignment. Deletion only happens once the
+  // configurable threshold is reached, so a one-off transient failure (a
+  // half-downloaded video, a network hiccup, an engine crash) doesn't delete
+  // a subtitle that would have synced fine on a later run.
+
+  /** Record a strike for this file and return the new consecutive-strike count. */
+  recordNotFittingStrike(filePath: string): number {
+    const now = Date.now();
+    const existing = this.db
+      .prepare('SELECT consecutive_strikes FROM not_fitting_tracking WHERE file_path = ?')
+      .get(filePath) as { consecutive_strikes: number } | undefined;
+    const newCount = (existing?.consecutive_strikes || 0) + 1;
+    this.db
+      .prepare(
+        `INSERT INTO not_fitting_tracking (file_path, consecutive_strikes, last_strike_time, updated_at)
+         VALUES (?, ?, ?, ?)
+         ON CONFLICT(file_path) DO UPDATE SET consecutive_strikes = ?, last_strike_time = ?, updated_at = ?`,
+      )
+      .run(filePath, newCount, now, now, newCount, now, now);
+    return newCount;
+  }
+
+  /** Clear strikes — called when a file syncs successfully, breaking the streak. */
+  resetNotFittingStrikes(filePath: string): void {
+    this.db.prepare('DELETE FROM not_fitting_tracking WHERE file_path = ?').run(filePath);
+  }
+
+  getNotFittingStrikes(filePath: string): number {
+    const row = this.db
+      .prepare('SELECT consecutive_strikes FROM not_fitting_tracking WHERE file_path = ?')
+      .get(filePath) as { consecutive_strikes: number } | undefined;
+    return row?.consecutive_strikes || 0;
   }
 
   // Media stats queries

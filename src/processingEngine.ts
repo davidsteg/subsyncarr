@@ -1,5 +1,5 @@
 import EventEmitter from 'events';
-import { ScanConfig, getScanConfig, getSyncRetryConfig, getDryRunConfig, getEngineChainConfig, getEngineAgreementThresholdMs } from './config';
+import { ScanConfig, getScanConfig, getSyncRetryConfig, getDryRunConfig, getEngineChainConfig, getEngineAgreementThresholdMs, getNotFittingDeleteThreshold } from './config';
 import { findAllSrtFiles } from './findAllSrtFiles';
 import { findMatchingVideoFile, DirectoryCache, clearDirectoryCache } from './findMatchingVideoFile';
 import { generateFfsubsyncSubtitles } from './generateFfsubsyncSubtitles';
@@ -359,9 +359,9 @@ export class ProcessingEngine extends EventEmitter {
 
     // --- Keep vs. delete decision ---
     if (alignments.length === 0) {
-      // Neither engine produced a usable alignment → subtitle doesn't fit.
-      this.log(`[${new Date().toISOString()}] ✗ No engine could sync — deleting: ${fileName}`);
-      await this.deleteSubtitleFile(srtPath, fileName, 'none', 0, originalContent);
+      // Neither engine produced a usable alignment → subtitle doesn't fit (this run).
+      this.log(`[${new Date().toISOString()}] ✗ No engine could sync: ${fileName}`);
+      await this.handleNotFitting(srtPath, fileName, 'none', 0, originalContent);
       return;
     }
 
@@ -389,9 +389,9 @@ export class ProcessingEngine extends EventEmitter {
       this.log(`[${new Date().toISOString()}] ✓ Engines agree — subtitle fits: ${fileName}`);
       this.commitSync(srtPath, fileName, first.engine, first.content, first.shiftMs, originalContent);
     } else {
-      // Engines disagree → the subtitle doesn't fit this video → delete.
+      // Engines disagree → the subtitle doesn't fit this video (this run).
       this.log(`[${new Date().toISOString()}] ✗ Engines disagree — subtitle doesn't fit: ${fileName}`);
-      await this.deleteSubtitleFile(srtPath, fileName, `${first.engine}/${second.engine}`, disagreementMs, originalContent);
+      await this.handleNotFitting(srtPath, fileName, `${first.engine}/${second.engine}`, disagreementMs, originalContent);
     }
   }
 
@@ -493,36 +493,65 @@ export class ProcessingEngine extends EventEmitter {
         writeFileSync(srtPath, content, 'utf8');
       }
       this.log(`[${new Date().toISOString()}] ✓ Synced (${engine}, shift ${shiftMs}ms): ${fileName}`);
+      // Break any not-fitting streak — the file synced fine this run.
+      if (this.stateManager) {
+        try { this.stateManager.getDatabase().resetNotFittingStrikes(srtPath); } catch {}
+      }
     } catch {
       this.log(`[${new Date().toISOString()}] Failed to write synced subtitle: ${fileName}`);
     }
     this.emit('file:completed', { srtPath });
   }
 
-  /** Delete a subtitle that both engines agree does not fit the video. */
-  private async deleteSubtitleFile(
+  /**
+   * Handle a subtitle that didn't fit this run (both engines disagree, or
+   * neither could align it). Doesn't delete immediately — tracks consecutive
+   * not-fitting strikes per file across runs, only deleting once the
+   * configurable threshold is reached, so a one-off transient failure (a
+   * half-downloaded video, a network hiccup, an engine crash) doesn't delete
+   * a subtitle that might sync fine on a later run.
+   */
+  private async handleNotFitting(
     srtPath: string,
     fileName: string,
     lastEngine: string,
     offsetMs: number,
     originalContent: string | null,
   ): Promise<void> {
+    const threshold = getNotFittingDeleteThreshold();
+
     if (this.dryRun) {
-      // Restore the original the engines overwrote; don't actually delete in dry-run.
+      // Restore the original the engines overwrote; dry-run touches nothing, including strike counts.
       if (originalContent !== null) {
         try { writeFileSync(srtPath, originalContent, 'utf8'); } catch {}
       }
-      this.log(`[${new Date().toISOString()}] [DRY RUN] Would delete unsyncable subtitle: ${fileName}`);
-    } else {
+      this.log(`[${new Date().toISOString()}] [DRY RUN] Would record not-fitting strike (threshold: ${threshold}): ${fileName}`);
+      this.emit('file:not_fitting', { srtPath, engine: lastEngine, offsetMs });
+      return;
+    }
+
+    const strikes = this.stateManager?.getDatabase().recordNotFittingStrike(srtPath) ?? 1;
+
+    if (strikes >= threshold) {
       try {
         if (existsSync(srtPath)) {
           unlinkSync(srtPath);
-          this.log(`[${new Date().toISOString()}] 🗑 Deleted unsyncable subtitle: ${fileName}`);
+          this.log(`[${new Date().toISOString()}] 🗑 Deleted after ${strikes} consecutive not-fitting run(s): ${fileName}`);
         }
       } catch {
         this.log(`[${new Date().toISOString()}] Failed to delete subtitle: ${fileName}`);
       }
+      if (this.stateManager) {
+        try { this.stateManager.getDatabase().resetNotFittingStrikes(srtPath); } catch {}
+      }
+    } else {
+      // Not enough strikes yet — restore the original and retry on the next run.
+      if (originalContent !== null) {
+        try { writeFileSync(srtPath, originalContent, 'utf8'); } catch {}
+      }
+      this.log(`[${new Date().toISOString()}] ⚠ Not fitting (strike ${strikes}/${threshold}) — keeping subtitle, will retry next run: ${fileName}`);
     }
+
     this.emit('file:not_fitting', { srtPath, engine: lastEngine, offsetMs });
   }
 

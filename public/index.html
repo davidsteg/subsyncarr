@@ -91,7 +91,12 @@
         <div class="setting-group">
           <label>Engine Agreement Threshold (ms)</label>
           <input type="number" id="setAgreementThreshold" min="500" max="60000" step="500" />
-          <span class="setting-hint">Max disagreement between engines before deleting subtitle (default: 5000)</span>
+          <span class="setting-hint">Max disagreement between engines before a subtitle counts as not fitting (default: 5000)</span>
+        </div>
+        <div class="setting-group">
+          <label>Not-Fitting Delete Threshold (runs)</label>
+          <input type="number" id="setNotFittingThreshold" min="1" max="10" step="1" />
+          <span class="setting-hint">Consecutive runs a subtitle must fail to fit before it's deleted — protects against a one-off transient failure (default: 3)</span>
         </div>
         <div class="setting-group">
           <label>Sync Retry Threshold (ms)</label>

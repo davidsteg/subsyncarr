@@ -100,6 +100,25 @@ export function getEngineAgreementThresholdMs(): number {
   return 5000;
 }
 
+/**
+ * Number of consecutive runs a subtitle must fail to fit (both engines
+ * disagree, or neither can align it) before it's actually deleted. Protects
+ * against deleting a subtitle over a one-off transient failure — a
+ * half-downloaded video, a network hiccup, an engine crash unrelated to
+ * actual fit. Default: 3, matching the existing per-engine failure-skip
+ * convention.
+ */
+export function getNotFittingDeleteThreshold(): number {
+  try {
+    const { getRuntimeCfg } = require('./engineRuntime');
+    const cfg = getRuntimeCfg();
+    if (cfg.notFittingDeleteThreshold > 0) return cfg.notFittingDeleteThreshold;
+  } catch {}
+  const val = parseInt(process.env.NOT_FITTING_DELETE_THRESHOLD || '', 10);
+  if (!isNaN(val) && val > 0) return val;
+  return 3;
+}
+
 export interface DryRunConfig {
   enabled: boolean;
 }

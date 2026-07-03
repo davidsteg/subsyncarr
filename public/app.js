@@ -366,6 +366,7 @@ class SubsyncarrPlusClient {
       var r = await fetch('/api/settings'); var s = await r.json();
       document.getElementById('setMaxShift').value = s.maxSubtitleShiftMs;
       document.getElementById('setAgreementThreshold').value = s.engineAgreementThresholdMs || 5000;
+      document.getElementById('setNotFittingThreshold').value = s.notFittingDeleteThreshold || 3;
       document.getElementById('setRetryThreshold').value = s.syncRetryThresholdMs;
       document.getElementById('setMaxRetries').value = s.syncMaxRetries;
       document.getElementById('setDefaultEngine').value = s.defaultEngine || 'alass';
@@ -393,6 +394,7 @@ class SubsyncarrPlusClient {
       engine_timeout_autosubsync: document.getElementById('setAutosubsyncTimeout').value,
       max_concurrent_tasks: document.getElementById('setMaxWorkers').value,
       engine_agreement_threshold_ms: document.getElementById('setAgreementThreshold').value,
+      not_fitting_delete_threshold: document.getElementById('setNotFittingThreshold').value,
       theme: document.getElementById('setTheme').value,
     };
     try {
