@@ -382,7 +382,6 @@ export class SubsyncarrPlusServer {
         maxSubtitleShiftMs: parseInt(dbSettings['max_subtitle_shift_ms'] || process.env.MAX_SUBTITLE_SHIFT_MS || '30000', 10),
         syncRetryThresholdMs: parseInt(dbSettings['sync_retry_threshold_ms'] || process.env.SYNC_RETRY_THRESHOLD_MS || '5000', 10),
         syncMaxRetries: parseInt(dbSettings['sync_max_retries'] || process.env.SYNC_MAX_RETRIES || '2', 10),
-        confidenceThreshold: parseFloat(dbSettings['confidence_threshold'] || process.env.CONFIDENCE_THRESHOLD || '0.7'),
         engineAgreementThresholdMs: parseInt(dbSettings['engine_agreement_threshold_ms'] || process.env.ENGINE_AGREEMENT_THRESHOLD_MS || '5000', 10),
         engineTimeouts: {
           alass: parseInt(dbSettings['engine_timeout_alass'] || process.env.ALASS_TIMEOUT_MS || '300000', 10),
@@ -404,7 +403,7 @@ export class SubsyncarrPlusServer {
       const updates_raw = req.body;
       const allowedKeys = [
         'max_subtitle_shift_ms', 'sync_retry_threshold_ms', 'sync_max_retries',
-        'confidence_threshold', 'default_engine', 'fallback_engine', 'dry_run', 'theme',
+        'default_engine', 'fallback_engine', 'dry_run', 'theme',
         'engine_timeout_alass', 'engine_timeout_ffsubsync', 'engine_timeout_autosubsync',
         'max_concurrent_tasks', 'engine_agreement_threshold_ms'
       ];

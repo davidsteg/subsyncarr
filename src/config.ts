@@ -102,13 +102,11 @@ export function getEngineAgreementThresholdMs(): number {
 
 export interface DryRunConfig {
   enabled: boolean;
-  confidenceThreshold: number;
 }
 
 export function getDryRunConfig(): DryRunConfig {
   return {
     enabled: (process.env.DRY_RUN || 'false') === 'true',
-    confidenceThreshold: parseFloat(process.env.CONFIDENCE_THRESHOLD || '0.7'),
   };
 }
 
