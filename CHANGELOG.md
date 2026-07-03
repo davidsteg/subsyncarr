@@ -1,3 +1,13 @@
+## [1.3.15] — 2026-07-03
+
+### Fixed
+- **Folders page showed inflated/wrong sync counts**: `getFolderStats` summed one row per `(file, engine)` pair with no dedup, so a file tracked by 2 engines counted twice toward a folder's total, and its "synced" count depended on how many engines happened to succeed rather than a clean yes/no. Same class of bug as the 1.3.13 dashboard fix, in a separate query that wasn't caught then. Now groups by file first (synced if any engine succeeded, skipped only if flagged skipped and never synced), matching the dashboard's numbers.
+
+## [1.3.14] — 2026-07-03
+
+### Changed
+- **Logo**: replaced the 🧬 emoji (browser tab icon and sidebar brand) with an SVG logo, removing the blue background box.
+
 ## [1.3.13] — 2026-07-03
 
 ### Added
