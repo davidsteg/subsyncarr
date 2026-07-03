@@ -30,6 +30,8 @@ services:
       - MAX_CONCURRENT_SYNC_TASKS=2
       # alass primär, ffsubsync als Fallback bei zu großer Abweichung
       - INCLUDE_ENGINES=alass,ffsubsync
+      # Überschreibt SRTs in-place + prüft via Sync-Marker-Header, ob schon synchronisiert
+      - SUBTITLE_FORMAT=overwrite
       # Maximale erlaubte Subtitle-Verschiebung in ms (30s = Sub passt nicht zum Video)
       - MAX_SUBTITLE_SHIFT_MS=30000
       # Run every hour
