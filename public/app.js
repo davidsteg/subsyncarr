@@ -228,12 +228,12 @@ class SubsyncarrPlusClient {
       breadcrumb = '<div class="folder-breadcrumb"><span class="breadcrumb-item" onclick="client.navigateFolder(null)">Root</span>';
       for (var i = 0; i < parts.length; i++) {
         path += '/' + parts[i];
-        breadcrumb += ' <span class="breadcrumb-sep">/</span> <span class="breadcrumb-item" onclick="client.navigateFolder('' + path + '')">' + parts[i] + '</span>';
+        breadcrumb += ' <span class="breadcrumb-sep">/</span> <span class="breadcrumb-item" data-folder="' + path + '">' + parts[i] + '</span>';
       }
       breadcrumb += '</div>';
     }
     container.innerHTML = breadcrumb + folders.map(function(f) {
-      var clickable = f.hasChildren ? ' onclick="client.navigateFolder('' + f.fullPath.replace(/'/g, '\\'') + '')"' : '';
+      var clickable = f.hasChildren ? ' class="folder-clickable" data-folder="' + f.fullPath + '"' : '';
       return '<div class="folder-row"' + clickable + '><span class="folder-icon"></span><span class="folder-name">' + f.name + '</span><div class="folder-bar"><div class="folder-bar-fill" style="width:' + f.progress + '%"></div></div><div class="folder-numbers"><span>OK ' + f.synced.toLocaleString() + '</span><span>Pend ' + f.pending.toLocaleString() + '</span></div></div>';
     }).join('');
   }
@@ -278,7 +278,7 @@ class SubsyncarrPlusClient {
     var map = { completed: 'completed', skipped: 'skipped', failed: 'error', not_fitting: 'not_fitting' };
     var files = run.files.filter(function(f) { return f.status === map[cat]; });
     document.getElementById('fileListTitle').textContent = cat + ' (' + files.length + ')';
-    document.getElementById('fileListContent').innerHTML = files.length === 0 ? '<p class="text-muted">None</p>' : files.map(function(f) { return '<div style="padding:4px 0;font-size:13px;border-bottom:1px solid var(--border);cursor:pointer" onclick="client.viewMediaDetail('' + f.file_path.replace(/'/g,'\\\'') + '')">' + f.file_path.split('/').pop() + '</div>'; }).join('');
+    document.getElementById('fileListContent').innerHTML = files.length === 0 ? '<p class="text-muted">None</p>' : files.map(function(f) { return '<div style="padding:4px 0;font-size:13px;border-bottom:1px solid var(--border);cursor:pointer" data-file="' + f.file_path + '">' + f.file_path.split('/').pop() + '</div>'; }).join('');
     document.getElementById('fileListModal').classList.remove('hidden');
   }
   async fetchSettings() {
@@ -413,6 +413,15 @@ class SubsyncarrPlusClient {
     document.getElementById('closeMediaDetailModal').addEventListener('click', function() { document.getElementById('mediaDetailModal').classList.add('hidden'); });
     document.getElementById('closeMediaDetailButton').addEventListener('click', function() { document.getElementById('mediaDetailModal').classList.add('hidden'); });
     document.getElementById('mediaDetailModal').addEventListener('click', function(e) { if (e.target.id === 'mediaDetailModal') document.getElementById('mediaDetailModal').classList.add('hidden'); });
+    // Delegated click handlers for dynamically created elements
+    document.getElementById('folderList').addEventListener('click', function(e) {
+      var el = e.target.closest('[data-folder]');
+      if (el) { self.navigateFolder(el.getAttribute('data-folder')); }
+    });
+    document.getElementById('fileListContent').addEventListener('click', function(e) {
+      var el = e.target.closest('[data-file]');
+      if (el) { self.viewMediaDetail(el.getAttribute('data-file')); }
+    });
     setInterval(function() { if (self.activePage === 'dashboard') self.fetchStats(); }, 15000);
   }
 }
