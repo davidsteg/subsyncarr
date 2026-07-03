@@ -383,7 +383,13 @@ export class SubsyncarrPlusServer {
         syncRetryThresholdMs: parseInt(dbSettings['sync_retry_threshold_ms'] || process.env.SYNC_RETRY_THRESHOLD_MS || '5000', 10),
         syncMaxRetries: parseInt(dbSettings['sync_max_retries'] || process.env.SYNC_MAX_RETRIES || '2', 10),
         confidenceThreshold: parseFloat(dbSettings['confidence_threshold'] || process.env.CONFIDENCE_THRESHOLD || '0.7'),
-        engineAgreementThresholdMs: parseInt(process.env.ENGINE_AGREEMENT_THRESHOLD_MS || '5000', 10),
+        engineAgreementThresholdMs: parseInt(dbSettings['engine_agreement_threshold_ms'] || process.env.ENGINE_AGREEMENT_THRESHOLD_MS || '5000', 10),
+        engineTimeouts: {
+          alass: parseInt(dbSettings['engine_timeout_alass'] || process.env.ALASS_TIMEOUT_MS || '300000', 10),
+          ffsubsync: parseInt(dbSettings['engine_timeout_ffsubsync'] || process.env.FFSUBSYNC_TIMEOUT_MS || '300000', 10),
+          autosubsync: parseInt(dbSettings['engine_timeout_autosubsync'] || process.env.AUTOSUBSYNC_TIMEOUT_MS || '300000', 10),
+        },
+        maxConcurrentTasks: parseInt(dbSettings['max_concurrent_tasks'] || process.env.MAX_CONCURRENT_SYNC_TASKS || '1', 10),
         defaultEngine: process.env.DEFAULT_ENGINE || 'alass',
         fallbackEngine: process.env.FALLBACK_ENGINE || 'ffsubsync',
         dryRun: (dbSettings['dry_run'] || process.env.DRY_RUN || 'false') === 'true',
@@ -395,16 +401,31 @@ export class SubsyncarrPlusServer {
 
     this.app.post('/api/settings', (req, res) => {
       const db = this.stateManager.getDatabase();
-      const updates = req.body;
+      const updates_raw = req.body;
       const allowedKeys = [
         'max_subtitle_shift_ms', 'sync_retry_threshold_ms', 'sync_max_retries',
-        'confidence_threshold', 'default_engine', 'fallback_engine', 'dry_run', 'theme'
+        'confidence_threshold', 'default_engine', 'fallback_engine', 'dry_run', 'theme',
+        'engine_timeout_alass', 'engine_timeout_ffsubsync', 'engine_timeout_autosubsync',
+        'max_concurrent_tasks', 'engine_agreement_threshold_ms'
       ];
-      for (const [key, value] of Object.entries(updates)) {
+      for (const [key, value] of Object.entries(updates_raw)) {
         if (allowedKeys.includes(key)) {
           db.setSetting(key, String(value));
         }
       }
+      // Update runtime config for engine code (timeouts, concurrency)
+      try {
+        const { updateRuntimeCfg } = require('./engineRuntime');
+        const updates: any = {};
+        if (updates_raw['max_concurrent_tasks']) updates.maxConcurrentTasks = parseInt(updates_raw['max_concurrent_tasks'], 10);
+        if (updates_raw['engine_agreement_threshold_ms']) updates.engineAgreementThresholdMs = parseInt(updates_raw['engine_agreement_threshold_ms'], 10);
+        const timeouts: any = {};
+        if (updates_raw['engine_timeout_alass']) timeouts.alass = parseInt(updates_raw['engine_timeout_alass'], 10);
+        if (updates_raw['engine_timeout_ffsubsync']) timeouts.ffsubsync = parseInt(updates_raw['engine_timeout_ffsubsync'], 10);
+        if (updates_raw['engine_timeout_autosubsync']) timeouts.autosubsync = parseInt(updates_raw['engine_timeout_autosubsync'], 10);
+        if (Object.keys(timeouts).length > 0) updates.engineTimeouts = timeouts;
+        if (Object.keys(updates).length > 0) updateRuntimeCfg(updates);
+      } catch (e) { console.error('Failed to update runtime config:', e); }
       // Invalidate stats cache when settings change
       this.statsCache = null;
       res.json({ success: true });

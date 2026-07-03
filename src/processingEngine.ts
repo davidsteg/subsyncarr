@@ -41,6 +41,12 @@ export class ProcessingEngine extends EventEmitter {
   constructor() {
     super();
     this.maxConcurrent = parseInt(process.env.MAX_CONCURRENT_SYNC_TASKS || '1', 10);
+    // Override from runtime config if set via UI
+    try {
+      const { getRuntimeCfg } = require('./engineRuntime');
+      const cfg = getRuntimeCfg();
+      if (cfg.maxConcurrentTasks > 0) this.maxConcurrent = cfg.maxConcurrentTasks;
+    } catch {}
     this.enabledEngines = process.env.INCLUDE_ENGINES?.split(',') || ['ffsubsync', 'autosubsync', 'alass'];
     this.maxLogBufferSize = parseInt(process.env.LOG_BUFFER_SIZE || '1000', 10);
     const dryRunConfig = getDryRunConfig();
