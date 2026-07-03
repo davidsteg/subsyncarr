@@ -64,6 +64,7 @@ COPY --from=builder --chown=node:node /app/dist ./dist
 COPY --from=builder --chown=node:node /app/public ./public
 COPY --from=builder --chown=node:node /app/node_modules ./node_modules
 COPY --from=builder --chown=node:node /app/package.json ./package.json
+COPY --from=builder --chown=node:node /app/VERSION ./VERSION
 
 # Copy alass binary
 COPY --from=builder --chown=node:node /home/node/.local/bin/alass /home/node/.local/bin/alass
