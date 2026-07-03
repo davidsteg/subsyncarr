@@ -316,12 +316,18 @@ class SubsyncarrPlusClient {
       if (paths && paths.length > 0) payload.paths = paths;
       if (dryRun) payload.dryRun = true;
       this.state.dryRun = !!dryRun;
-      await fetch('/api/run/start', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify(payload) });
+      // Show placeholder immediately — WebSocket run:started will replace with real data
       this.state.isRunning = true;
       this.state.currentRun = { status: 'running', total_files: 0, completed: 0, skipped: 0, failed: 0, not_fitting: 0, total_engines: 0, completed_engines: 0, start_time: Date.now(), id: 'pending' };
       this.navigate('run');
       this.render();
-    } catch(e) { alert('Failed: ' + e.message); }
+      await fetch('/api/run/start', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify(payload) });
+    } catch(e) {
+      this.state.isRunning = false;
+      this.state.currentRun = null;
+      this.render();
+      alert('Failed: ' + e.message);
+    }
   }
   async stopRun() { if (!confirm('Stop run?')) return; try { await fetch('/api/run/stop', { method:'POST' }); } catch(e) {} }
   async skipFile(fp) { try { await fetch('/api/file/skip', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({filePath:fp}) }); } catch(e) {} }
