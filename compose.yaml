@@ -29,7 +29,13 @@ services:
       # Scan entire media library
       - SCAN_PATHS=/media
       - EXCLUDE_PATHS=/media/Download
-      - MAX_CONCURRENT_SYNC_TASKS=6
+      # Lowered from 6 after an OOM-kill (exit 137) at file 132/181K on
+      # 2026-07-04 — ffsubsync/alass/autosubsync run as child processes
+      # sharing this container's memory limit, so 6 concurrent audio/video
+      # decodes could spike past it. Fewer concurrent engines = lower peak
+      # memory, at some cost to throughput on files that actually need
+      # engine processing (most of the 181K are fast already-synced skips).
+      - MAX_CONCURRENT_SYNC_TASKS=3
       # alass primär, ffsubsync als Fallback bei zu großer Abweichung
       - INCLUDE_ENGINES=alass,ffsubsync
       # Überschreibt SRTs in-place + prüft via Sync-Marker-Header, ob schon synchronisiert
