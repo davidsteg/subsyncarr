@@ -1,15 +1,20 @@
 name: Build and Publish Docker Image
 
-# Builds and pushes to Docker Hub whenever a version tag is pushed (the same
-# tags already created for each release, e.g. 1.3.22 — no "v" prefix).
-# Does NOT auto-generate its own version or GitHub Release; both are already
-# handled manually as part of the normal release process. Deliberately has no
-# manual/workflow_dispatch trigger — only real version tags should ever be
-# pushed to Docker Hub, no "test" or ad-hoc tags.
+# Builds and pushes to Docker Hub, then publishes a GitHub Release, whenever a
+# version tag is pushed (the same tags already created for each release, e.g.
+# 1.3.22 — no "v" prefix). Release notes are pulled straight from the matching
+# ## [<version>] section of CHANGELOG.md — keep that up to date when tagging.
+# Does NOT auto-generate its own version; that's still decided manually as
+# part of the normal release process. Deliberately has no manual/
+# workflow_dispatch trigger — only real version tags should ever be pushed to
+# Docker Hub, no "test" or ad-hoc tags.
 on:
   push:
     tags:
       - '[0-9]+.[0-9]+.[0-9]+'
+
+permissions:
+  contents: write # needed to create the GitHub Release below
 
 jobs:
   docker:
@@ -49,3 +54,30 @@ jobs:
           labels: ${{ steps.meta.outputs.labels }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
+
+      - name: Extract changelog section for this version
+        run: |
+          VERSION="${{ github.ref_name }}"
+          awk -v target="## [$VERSION]" '
+            index($0, "## [") == 1 {
+              if (found) exit
+              if (index($0, target) == 1) { found=1; next }
+              next
+            }
+            found { print }
+          ' CHANGELOG.md > release_notes.md
+          echo "--- extracted release notes ---"
+          cat release_notes.md
+
+      - name: Create GitHub Release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          if gh release view "${{ github.ref_name }}" >/dev/null 2>&1; then
+            echo "Release ${{ github.ref_name }} already exists, skipping creation"
+          else
+            gh release create "${{ github.ref_name }}" \
+              --title "${{ github.ref_name }}" \
+              --notes-file release_notes.md \
+              --latest
+          fi
