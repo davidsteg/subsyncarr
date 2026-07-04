@@ -41,7 +41,7 @@ export class ProcessingEngine extends EventEmitter {
    * after the user has already asked to stop. Checked at the top of
    * processFile so nothing gets written or deleted once a stop is pending.
    */
-  private stopRequested: boolean = false;
+  private stopRequested: boolean = false; // v1.3.19: reset in reset()
   /** Scan progress during file discovery phase (null when not scanning) */
   public scanProgress: { checked: number; total: number; needSync: number; alreadySynced: number } | null = null;
 
