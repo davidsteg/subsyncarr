@@ -74,6 +74,10 @@ class SubsyncarrPlusClient {
       case 'run:completed': case 'run:cancelled':
         this.state.currentRun = msg.data; this.state.isRunning = false;
         this.render(); this.fetchHistory();
+        // Refresh dashboard media stats now instead of waiting for the next
+        // 15s poll — otherwise the stat cards keep showing mid-run numbers
+        // for up to that long after the run actually finished.
+        if (this.activePage === 'dashboard') this.fetchStats();
         break;
       case 'file:updated':
         if (msg.data.run) this.state.currentRun = msg.data.run;

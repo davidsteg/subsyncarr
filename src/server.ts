@@ -21,9 +21,12 @@ export class SubsyncarrPlusServer {
   private broadcastTimer: ReturnType<typeof setTimeout> | null = null;
   private static readonly BROADCAST_INTERVAL_MS = 100;
 
-  // Stats cache to avoid expensive DB queries on every dashboard load
+  // Stats cache to avoid expensive DB queries on every dashboard load.
+  // Kept below the client's 15s dashboard poll interval (app.js) so every
+  // poll actually surfaces fresh data instead of roughly half of them
+  // hitting a still-stale cache entry.
   private statsCache: { data: unknown; timestamp: number } | null = null;
-  private static readonly STATS_CACHE_TTL_MS = 30_000;
+  private static readonly STATS_CACHE_TTL_MS = 12_000;
 
   constructor(
     private coordinator: ProcessingCoordinator,
@@ -478,11 +481,16 @@ export class SubsyncarrPlusServer {
 
     this.stateManager.on('run:completed', (run) => {
       console.log(`[${new Date().toISOString()}] Broadcasting run:completed to ${this.clients.size} clients`);
+      // Dashboard media stats (synced/skipped/pending counts) are cached for
+      // 30s — without this, they'd keep showing mid-run numbers for up to
+      // that long after the run actually finished.
+      this.statsCache = null;
       this.broadcast({ type: 'run:completed', data: run });
     });
 
     this.stateManager.on('run:cancelled', (run) => {
       console.log(`[${new Date().toISOString()}] Broadcasting run:cancelled to ${this.clients.size} clients`);
+      this.statsCache = null;
       this.broadcast({ type: 'run:cancelled', data: run });
     });
 
