@@ -80,38 +80,44 @@ export class ProcessingCoordinator {
         };
       }) => {
         if (this.currentRunId) {
-          this.stateManager.updateFileEngine(this.currentRunId, srtPath, engine, result);
+          // Increment counters BEFORE updateFileEngine — it's the one that
+          // reads the run row and broadcasts it as `file:updated`. Doing it
+          // in the old order meant every live push reflected the run's state
+          // from just before this event's own increment, so the UI always
+          // showed a stale/lagging count until the next event (or the final
+          // run:completed snapshot) caught it up.
           this.stateManager.incrementCompletedEngines(this.currentRunId);
           this.stateManager.incrementEngineStat(this.currentRunId, engine, result.success);
+          this.stateManager.updateFileEngine(this.currentRunId, srtPath, engine, result);
         }
       },
     );
 
     this.engine.on('file:completed', ({ srtPath }: { srtPath: string }) => {
       if (this.currentRunId) {
-        this.stateManager.updateFileStatus(this.currentRunId, srtPath, 'completed', null);
         this.stateManager.incrementRunCounter(this.currentRunId, 'completed');
+        this.stateManager.updateFileStatus(this.currentRunId, srtPath, 'completed', null);
       }
     });
 
     this.engine.on('file:skipped', ({ srtPath }: { srtPath: string }) => {
       if (this.currentRunId) {
-        this.stateManager.updateFileStatus(this.currentRunId, srtPath, 'skipped', null);
         this.stateManager.incrementRunCounter(this.currentRunId, 'skipped');
+        this.stateManager.updateFileStatus(this.currentRunId, srtPath, 'skipped', null);
       }
     });
 
     this.engine.on('file:no_video', ({ srtPath }: { srtPath: string }) => {
       if (this.currentRunId) {
-        this.stateManager.updateFileStatus(this.currentRunId, srtPath, 'error', null);
         this.stateManager.incrementRunCounter(this.currentRunId, 'failed');
+        this.stateManager.updateFileStatus(this.currentRunId, srtPath, 'error', null);
       }
     });
 
     this.engine.on('file:failed', ({ srtPath }: { srtPath: string }) => {
       if (this.currentRunId) {
-        this.stateManager.updateFileStatus(this.currentRunId, srtPath, 'error', null);
         this.stateManager.incrementRunCounter(this.currentRunId, 'failed');
+        this.stateManager.updateFileStatus(this.currentRunId, srtPath, 'error', null);
       }
     });
 
@@ -119,8 +125,8 @@ export class ProcessingCoordinator {
       'file:not_fitting',
       ({ srtPath }: { srtPath: string; engine: string; offsetMs: number }) => {
         if (this.currentRunId) {
-          this.stateManager.updateFileStatus(this.currentRunId, srtPath, 'not_fitting', null);
           this.stateManager.incrementRunCounter(this.currentRunId, 'not_fitting');
+          this.stateManager.updateFileStatus(this.currentRunId, srtPath, 'not_fitting', null);
         }
       },
     );

@@ -1,3 +1,10 @@
+## [1.3.21] — 2026-07-03
+
+### Fixed
+- **Current Run progress/counts always lagged one event behind live.** Every per-file event handler in the coordinator called `updateFileStatus`/`updateFileEngine` (which reads the run row and broadcasts it as `file:updated`) *before* incrementing that same event's counter (`completed`/`skipped`/`failed`/`not_fitting`/`completed_engines`). So every live push reflected the run's state from just before its own increment — the UI always showed a stale count until the next event arrived (or the final `run:completed` snapshot caught it up). Reordered so counters increment first in all five handlers.
+- **Dashboard media stats (Synced/Skipped/Pending, engine cards) didn't refresh when a run finished.** The 30s server-side stats cache wasn't invalidated on `run:completed`/`run:cancelled`, so the dashboard could keep showing mid-run numbers for up to 30s after a run actually ended — long enough that it looked like it needed a page reload to update. Now invalidates the cache on run completion/cancellation, and the client fetches stats immediately on those events instead of waiting for the next poll.
+- **Stats cache/poll mismatch**: the server cached `/api/stats` for 30s while the client polled it every 15s, so roughly half of those polls returned already-stale cached data. Reduced the cache TTL to 12s so every client poll gets genuinely fresh data.
+
 ## [1.3.20] — 2026-07-03
 
 ### Changed
