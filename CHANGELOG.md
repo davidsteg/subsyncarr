@@ -1,3 +1,8 @@
+## [1.3.27] — 2026-07-04
+
+### Docs
+- Added explicit fork attribution: README now states this is a fork of [johnpc/subsyncarr](https://github.com/johnpc/subsyncarr); `package.json` gained a matching `description` and `repository` field. `package.json`'s `name`/`version` are left as-is for now (still `@johnpc/subsyncarr-plus` / `0.1.0`, unused by the app itself — it reads the `VERSION` file, not `package.json`, for `/api/version`).
+
 ## [1.3.26] — 2026-07-04
 
 ### Removed
