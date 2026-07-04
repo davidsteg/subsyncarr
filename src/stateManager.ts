@@ -189,19 +189,6 @@ export class StateManager extends EventEmitter {
     this.emit('file:updated', { runId, filePath, run });
   }
 
-  clearCompletedFiles(): void {
-    if (!this.currentRunId) {
-      return;
-    }
-
-    const files = this.db.getFileResults(this.currentRunId);
-    files.forEach((file) => {
-      if (['completed', 'skipped', 'error', 'not_fitting'].includes(file.status)) {
-        this.emit('file:cleared', file);
-      }
-    });
-  }
-
   // Query methods
   getCurrentRun(): Run | null {
     return this.currentRunId ? this.db.getRun(this.currentRunId) : null;

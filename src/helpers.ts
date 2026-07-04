@@ -1,9 +1,32 @@
 import { exec } from 'child_process';
 import { basename, dirname, join } from 'path';
-import { writeFileSync, openSync, readSync, closeSync } from 'fs';
+import { writeFileSync, openSync, readSync, closeSync, readFileSync } from 'fs';
 import { open } from 'fs/promises';
 
 export type SubtitleFormat = 'standard' | 'overwrite';
+
+/** Parse the start time of an SRT's first cue, in ms. Returns null if unparseable. */
+export function getFirstCueTimeMs(srtPath: string): number | null {
+  try {
+    const content = readFileSync(srtPath, 'utf-8');
+    const match = content.match(/^(\d{2}):(\d{2}):(\d{2}),(\d{3})\s*-->/m);
+    if (!match) return null;
+    const [, h, m, s, ms] = match;
+    return parseInt(h) * 3600000 + parseInt(m) * 60000 + parseInt(s) * 1000 + parseInt(ms);
+  } catch {
+    return null;
+  }
+}
+
+/** Max allowed shift (ms) between an engine's output and the original before it's judged a mismatch. */
+export function getMaxShiftMs(): number {
+  const envVal = process.env.MAX_SUBTITLE_SHIFT_MS;
+  if (envVal) {
+    const val = parseInt(envVal, 10);
+    if (!isNaN(val) && val > 0) return val;
+  }
+  return 30000;
+}
 
 export function getSubtitleFormat(): SubtitleFormat {
   const format = process.env.SUBTITLE_FORMAT || 'standard';

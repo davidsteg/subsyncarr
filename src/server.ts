@@ -316,7 +316,6 @@ export class SubsyncarrPlusServer {
     // Clear completed files
     this.app.post('/api/files/clear', (req, res) => {
       console.log(`[${new Date().toISOString()}] POST /api/files/clear`);
-      this.stateManager.clearCompletedFiles();
 
       // Broadcast updated state to all clients
       const currentRun = this.stateManager.getCurrentRun();
