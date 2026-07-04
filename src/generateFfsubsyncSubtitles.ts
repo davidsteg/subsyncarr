@@ -1,27 +1,6 @@
-import { execPromise, ProcessingResult, getEngineTimeoutMs } from './helpers';
-import { existsSync, readFileSync, copyFileSync, renameSync, unlinkSync } from 'fs';
+import { execPromise, ProcessingResult, getEngineTimeoutMs, getFirstCueTimeMs, getMaxShiftMs } from './helpers';
+import { existsSync, copyFileSync, renameSync, unlinkSync } from 'fs';
 import { dirname, basename, join } from 'path';
-
-function getFirstCueTimeMs(srtPath: string): number | null {
-  try {
-    const content = readFileSync(srtPath, 'utf-8');
-    const match = content.match(/^(\d{2}):(\d{2}):(\d{2}),(\d{3})\s*-->/m);
-    if (!match) return null;
-    const [, h, m, s, ms] = match;
-    return parseInt(h) * 3600000 + parseInt(m) * 60000 + parseInt(s) * 1000 + parseInt(ms);
-  } catch {
-    return null;
-  }
-}
-
-function getMaxShiftMs(): number {
-  const envVal = process.env.MAX_SUBTITLE_SHIFT_MS;
-  if (envVal) {
-    const val = parseInt(envVal, 10);
-    if (!isNaN(val) && val > 0) return val;
-  }
-  return 30000;
-}
 
 export async function generateFfsubsyncSubtitles(
   srtPath: string,

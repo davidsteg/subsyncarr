@@ -282,7 +282,6 @@ export class ProcessingEngine extends EventEmitter {
     if (validation.isSuspicious) {
       this.log(`[${new Date().toISOString()}] Suspicious subtitle detected (${(validation.probability * 100).toFixed(0)}%): ${fileName}`);
       validation.reasons.forEach(r => this.log(`[${new Date().toISOString()}]   Reason: ${r}`));
-      this.emit('file:suspicious', { srtPath, validation });
     }
 
     if (!videoPath) {

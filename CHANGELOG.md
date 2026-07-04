@@ -1,3 +1,12 @@
+## [1.3.26] — 2026-07-04
+
+### Removed
+- **Dead legacy entry point**: `src/index.ts` + `src/processSrtFile.ts` duplicated the sync pipeline with none of the safety checks (engine-agreement logic, not-fitting strikes, stop handling) added since — a drift risk with no upside, since the real server (`index-server.ts`) has been the only entry point in use. Also removed the unused `start:legacy` npm script.
+- **Two unused WebSocket events**: `file:suspicious` (subtitle-validator heuristics still run and log, just no longer emit an event nobody listened for) and `file:cleared` (the `clearCompletedFiles()` method in `stateManager.ts` didn't mutate any state — the visible "clear files" UI behavior comes entirely from `server.ts`'s own separate broadcast — so the method was fully dead code, removed along with its call site).
+
+### Changed
+- **Deduplicated** `getFirstCueTimeMs`/`getMaxShiftMs`, previously copy-pasted identically in both `generateAlassSubtitles.ts` and `generateFfsubsyncSubtitles.ts`; now shared from `helpers.ts`.
+
 ## [1.3.25] — 2026-07-04
 
 ### Changed
