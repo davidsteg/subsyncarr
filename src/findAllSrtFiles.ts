@@ -1,4 +1,4 @@
-import { readdirSync } from 'fs';
+import { readdirSync, unlinkSync } from 'fs';
 import { extname, join } from 'path';
 import { existsSync } from 'fs';
 import { ScanConfig } from './config';
@@ -11,21 +11,30 @@ const ALL_KNOWN_ENGINES = ['ffsubsync', 'autosubsync', 'alass'];
 // Internal temp/retry files the engines create mid-processing. These end in
 // .srt (so the engines can operate on them) and should always be cleaned up
 // (cleanupTempFiles / rename-back-to-original) before a run finishes — but a
-// killed or restarted process can leave them orphaned on disk. Without this
-// exclusion, a scan would pick them up as regular subtitles forever, wasting
-// processing time re-running engines on them indefinitely.
+// killed or restarted process can leave them orphaned on disk. A scan can
+// safely delete any of these it finds: only one run/scan happens at a time,
+// and the scan phase always runs before the current run creates any temp
+// files of its own, so anything matching these patterns must be leftover
+// from an earlier, interrupted run.
 const TEMP_FILE_PATTERNS = ['.alass-tmp.', '.ffsubsync-tmp.', '.subsyncarr_retry.'];
 
-function isEngineOutput(filename: string): boolean {
-  if (ALL_KNOWN_ENGINES.some((engine) => filename.includes(`.${engine}.`))) return true;
-  if (TEMP_FILE_PATTERNS.some((pattern) => filename.includes(pattern))) return true;
-  return false;
+function isFinishedEngineOutput(filename: string): boolean {
+  return ALL_KNOWN_ENGINES.some((engine) => filename.includes(`.${engine}.`));
+}
+
+function isOrphanedTempFile(filename: string): boolean {
+  return TEMP_FILE_PATTERNS.some((pattern) => filename.includes(pattern));
 }
 
 /** Concurrency limit for async file checks — pipelines I/O on network storage */
 const CHECK_CONCURRENCY = 20;
 
-export async function findAllSrtFiles(config: ScanConfig, db?: SubsyncarrPlusDatabase, onProgress?: (checked: number, total: number, needSync: number, alreadySynced: number) => void): Promise<{ files: string[]; directoryCache: DirectoryCache }> {
+export async function findAllSrtFiles(
+  config: ScanConfig,
+  db?: SubsyncarrPlusDatabase,
+  onProgress?: (checked: number, total: number, needSync: number, alreadySynced: number) => void,
+  dryRun?: boolean,
+): Promise<{ files: string[]; directoryCache: DirectoryCache; orphanedTempFilesRemoved: number }> {
   const engines = process.env.INCLUDE_ENGINES?.split(',') || ['ffsubsync', 'autosubsync', 'alass'];
   const format = getSubtitleFormat();
 
@@ -34,6 +43,7 @@ export async function findAllSrtFiles(config: ScanConfig, db?: SubsyncarrPlusDat
 
   // Phase 1: Walk directory tree synchronously (fast — just readdir calls, ~5 seconds for 197K files)
   const srtPaths: string[] = [];
+  let orphanedTempFilesRemoved = 0;
 
   function collectSrtPaths(directory: string): void {
     if (config.excludePaths.some((excludePath) => directory.startsWith(excludePath))) {
@@ -52,13 +62,32 @@ export async function findAllSrtFiles(config: ScanConfig, db?: SubsyncarrPlusDat
 
       if (entry.isDirectory()) {
         collectSrtPaths(fullPath);
-      } else if (
-        entry.isFile() &&
-        extname(entry.name).toLowerCase() === '.srt' &&
-        !isEngineOutput(entry.name)
-      ) {
-        srtPaths.push(fullPath);
+        continue;
       }
+      if (!entry.isFile() || extname(entry.name).toLowerCase() !== '.srt') {
+        continue;
+      }
+
+      if (isOrphanedTempFile(entry.name)) {
+        if (dryRun) {
+          console.log(`${new Date().toLocaleString()} [DRY RUN] Would delete orphaned temp file: ${fullPath}`);
+        } else {
+          try {
+            unlinkSync(fullPath);
+            orphanedTempFilesRemoved++;
+            console.log(`${new Date().toLocaleString()} Deleted orphaned temp file: ${fullPath}`);
+          } catch (err) {
+            console.log(`${new Date().toLocaleString()} Failed to delete orphaned temp file ${fullPath}: ${err instanceof Error ? err.message : String(err)}`);
+          }
+        }
+        continue;
+      }
+
+      if (isFinishedEngineOutput(entry.name)) {
+        continue;
+      }
+
+      srtPaths.push(fullPath);
     }
   }
 
@@ -137,8 +166,9 @@ export async function findAllSrtFiles(config: ScanConfig, db?: SubsyncarrPlusDat
   await Promise.all(workers);
 
   console.log(
-    `${new Date().toLocaleString()} Scan complete: ${srtPaths.length} SRT files found, ${files.length} need sync, ${skippedCount} already synced`,
+    `${new Date().toLocaleString()} Scan complete: ${srtPaths.length} SRT files found, ${files.length} need sync, ${skippedCount} already synced` +
+      (orphanedTempFilesRemoved > 0 ? `, ${orphanedTempFilesRemoved} orphaned temp file(s) removed` : ''),
   );
 
-  return { files, directoryCache };
+  return { files, directoryCache, orphanedTempFilesRemoved };
 }
