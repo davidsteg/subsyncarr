@@ -1,3 +1,8 @@
+## [1.3.24] — 2026-07-04
+
+### Fixed
+- **Orphaned engine temp/retry files got scanned as regular subtitles.** Discovered via live log inspection after deploying 1.3.23: `*.subsyncarr_retry.srt`, `*.alass-tmp.srt`, and `*.ffsubsync-tmp.srt` are internal files the engines create mid-processing and normally clean up — but a killed or restarted process can leave them behind. `findAllSrtFiles`'s exclusion filter only recognized *finished* engine output (`.alass.`, `.ffsubsync.`, `.autosubsync.`), not these temp patterns, so any orphaned one would be picked up as a "new" subtitle needing sync on every scan, forever, wasting processing time. Verified against the exact filenames found live plus the existing finished-output patterns.
+
 ## [1.3.23] — 2026-07-04
 
 ### Changed
