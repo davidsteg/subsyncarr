@@ -8,8 +8,18 @@ import { SubsyncarrPlusDatabase } from './database';
 
 const ALL_KNOWN_ENGINES = ['ffsubsync', 'autosubsync', 'alass'];
 
+// Internal temp/retry files the engines create mid-processing. These end in
+// .srt (so the engines can operate on them) and should always be cleaned up
+// (cleanupTempFiles / rename-back-to-original) before a run finishes — but a
+// killed or restarted process can leave them orphaned on disk. Without this
+// exclusion, a scan would pick them up as regular subtitles forever, wasting
+// processing time re-running engines on them indefinitely.
+const TEMP_FILE_PATTERNS = ['.alass-tmp.', '.ffsubsync-tmp.', '.subsyncarr_retry.'];
+
 function isEngineOutput(filename: string): boolean {
-  return ALL_KNOWN_ENGINES.some((engine) => filename.includes(`.${engine}.`));
+  if (ALL_KNOWN_ENGINES.some((engine) => filename.includes(`.${engine}.`))) return true;
+  if (TEMP_FILE_PATTERNS.some((pattern) => filename.includes(pattern))) return true;
+  return false;
 }
 
 /** Concurrency limit for async file checks — pipelines I/O on network storage */
