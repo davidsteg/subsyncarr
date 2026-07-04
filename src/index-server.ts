@@ -1,3 +1,4 @@
+import './serverLogBuffer'; // must be first — wraps console.log/warn/error before anything else can log
 import { ProcessingEngine } from './processingEngine';
 import { StateManager } from './stateManager';
 import { ProcessingCoordinator } from './coordinator';

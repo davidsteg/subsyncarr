@@ -7,6 +7,7 @@ import { Run } from './database';
 import { join } from 'path';
 import { readFileSync } from 'fs';
 import { getScanConfig } from './config';
+import { getRecentServerLogs, getServerLogBufferInfo } from './serverLogBuffer';
 import cronstrue from 'cronstrue';
 import parseExpression from 'cron-parser';
 
@@ -259,6 +260,30 @@ export class SubsyncarrPlusServer {
       // Read logs from file
       const logs = this.stateManager.getRunLogs(requestedId);
       res.json({ logs });
+    });
+
+    // Global server logs — everything the process has console.log/warn/error'd
+    // (startup, route access, scheduled cleanup, errors), not just one run's
+    // processing output. Meant for remote debugging without needing to pull
+    // raw container/stdout logs by hand.
+    this.app.get('/api/logs', (req, res) => {
+      const limit = Math.min(parseInt(req.query.limit as string, 10) || 500, 5000);
+      const level = (['all', 'log', 'warn', 'error'].includes(req.query.level as string)
+        ? (req.query.level as 'all' | 'log' | 'warn' | 'error')
+        : 'all');
+      const search = req.query.search as string | undefined;
+      const since = req.query.since !== undefined ? parseInt(req.query.since as string, 10) : undefined;
+
+      const entries = getRecentServerLogs({ limit, level, search, since: isNaN(since as number) ? undefined : since });
+
+      if (req.query.format === 'text') {
+        const text = entries
+          .map((e) => `[${new Date(e.timestamp).toISOString()}] ${e.level.toUpperCase()}: ${e.message}`)
+          .join('\n');
+        res.type('text/plain').send(text);
+      } else {
+        res.json({ ...getServerLogBufferInfo(), logs: entries });
+      }
     });
 
     // Start a new run
