@@ -1,3 +1,13 @@
+## [1.3.23] — 2026-07-04
+
+### Changed
+- **Now deploys from Docker Hub** — `compose.yaml` pulls `davidsteg/subsyncarr:latest` (private repo) instead of building locally via `build: .`. A GitHub Actions workflow (`.github/workflows/docker-publish.yml`) builds and pushes a multi-arch (amd64/arm64) image on every version tag push.
+
+### Fixed
+- **Removed duplicate route registrations** in `server.ts` for `/api/version`, `/api/stats`, and `/api/runs/:id/files` — Express always used the first-registered handler for a given path, silently making the second definition of each dead code.
+  - For `/api/stats`, the *live* handler (the first one) had no caching at all — meaning the 1.3.21 fix that invalidated the stats cache on run completion, and reduced its TTL, was operating on a handler that never actually served a response. Removing the dead duplicate activates that caching for real.
+  - For `/api/runs/:id/files`, the live handler had a real bug: it filtered by status *after* fetching only the first page (500 rows) of results, so a run with more matching files than fit on one page would silently miss results beyond it and report a wrong total. Filtering now happens in SQL (`getFileResultsPaginated` takes an optional `status` param), so both the returned files and the total count are correct regardless of run size. Verified against a 600-file/2-status scenario that reproduces the old bug exactly (100 expected, 0 returned under the old logic; 100/100 under the fix).
+
 ## [1.3.22] — 2026-07-03
 
 ### Added

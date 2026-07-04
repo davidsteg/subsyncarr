@@ -423,13 +423,16 @@ export class SubsyncarrPlusDatabase {
       .get(runId, filePath) as FileResult | null;
   }
 
-  getFileResultsPaginated(runId: string, limit: number, offset: number): { files: FileResult[]; total: number } {
+  getFileResultsPaginated(runId: string, limit: number, offset: number, status?: string): { files: FileResult[]; total: number } {
+    const whereClause = status ? 'WHERE run_id = ? AND status = ?' : 'WHERE run_id = ?';
+    const params = status ? [runId, status] : [runId];
+
     const total = (
-      this.db.prepare('SELECT COUNT(*) as count FROM file_results WHERE run_id = ?').get(runId) as { count: number }
+      this.db.prepare(`SELECT COUNT(*) as count FROM file_results ${whereClause}`).get(...params) as { count: number }
     ).count;
     const files = this.db
-      .prepare('SELECT * FROM file_results WHERE run_id = ? ORDER BY created_at ASC LIMIT ? OFFSET ?')
-      .all(runId, limit, offset) as FileResult[];
+      .prepare(`SELECT * FROM file_results ${whereClause} ORDER BY created_at ASC LIMIT ? OFFSET ?`)
+      .all(...params, limit, offset) as FileResult[];
     return { files, total };
   }
 
