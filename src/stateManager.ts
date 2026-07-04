@@ -219,8 +219,9 @@ export class StateManager extends EventEmitter {
     runId: string,
     limit: number,
     offset: number,
+    status?: string,
   ): { files: FileResult[]; total: number } {
-    return this.db.getFileResultsPaginated(runId, limit, offset);
+    return this.db.getFileResultsPaginated(runId, limit, offset, status);
   }
 
   appendLog(runId: string, logMessage: string): void {

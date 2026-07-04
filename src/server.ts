@@ -87,33 +87,12 @@ export class SubsyncarrPlusServer {
       } catch {}
       res.json({
         version,
-        releaseUrl: `https://github.com/davidsteg/subsyncarr/releases/tag/${version}`,
-      });
-    });
-
-    // Media stats
-    this.app.get('/api/stats', (_req, res) => {
-      const stats = this.stateManager.getDatabase().getMediaStats();
-      res.json(stats);
-    });
-
-    // Get current status
-    // API version info
-    this.app.get('/api/version', (req, res) => {
-      const fs = require('fs');
-      const path = require('path');
-      let version = 'unknown';
-      try {
-        version = fs.readFileSync(path.join(__dirname, '..', 'VERSION'), 'utf8').trim();
-      } catch {}
-      res.json({
-        version,
         repo: 'davidsteg/subsyncarr',
         releaseUrl: `https://github.com/davidsteg/subsyncarr/releases/tag/${version}`,
       });
     });
 
-    // Media stats (cached, 30s TTL)
+    // Media stats (cached; TTL kept below the client's poll interval so every poll gets fresh data)
     this.app.get('/api/stats', (req, res) => {
       const now = Date.now();
       if (this.statsCache && (now - this.statsCache.timestamp) < SubsyncarrPlusServer.STATS_CACHE_TTL_MS) {
@@ -174,23 +153,6 @@ export class SubsyncarrPlusServer {
       res.json(runs);
     });
 
-    // Get files for a specific run (lazy-loaded, filtered by status)
-    this.app.get('/api/runs/:id/files', (req, res) => {
-      const { id } = req.params;
-      const status = req.query.status as string || '';
-      const limit = parseInt(req.query.limit as string, 10) || 500;
-      const offset = parseInt(req.query.offset as string, 10) || 0;
-
-      const result = this.stateManager.getFileResultsPaginated(id, limit, offset);
-      let files = result.files;
-      if (status && ['completed','skipped','error','not_fitting'].includes(status)) {
-        const mappedStatus = status === 'error' ? 'error' : status;
-        files = files.filter(f => f.status === mappedStatus);
-      }
-
-      res.json({ files, total: files.length });
-    });
-
     // Get specific run details (latest files only — use paginated endpoint for full list)
     this.app.get('/api/runs/:id', (req, res) => {
       console.log(`[${new Date().toISOString()}] GET /api/runs/${req.params.id}`);
@@ -218,10 +180,16 @@ export class SubsyncarrPlusServer {
       });
     });
 
-    // Get paginated file results for a run
+    // Get paginated file results for a run, optionally filtered by status.
+    // Filtering happens in SQL (see getFileResultsPaginated) so total/totalPages
+    // reflect the true count for that status, not just the first page fetched.
     this.app.get('/api/runs/:id/files', (req, res) => {
       console.log(`[${new Date().toISOString()}] GET /api/runs/${req.params.id}/files`);
       const requestedId = req.params.id;
+      const rawStatus = req.query.status as string | undefined;
+      const status = rawStatus && ['pending', 'processing', 'completed', 'skipped', 'error', 'not_fitting'].includes(rawStatus)
+        ? rawStatus
+        : undefined;
       const page = Math.max(1, parseInt(req.query.page as string, 10) || 1);
       const limit = Math.min(parseInt(req.query.limit as string, 10) || 500, 5000);
       const offset = (page - 1) * limit;
@@ -234,7 +202,7 @@ export class SubsyncarrPlusServer {
         return res.status(404).json({ error: 'Run not found' });
       }
 
-      const result = this.stateManager.getFileResultsPaginated(requestedId, limit, offset);
+      const result = this.stateManager.getFileResultsPaginated(requestedId, limit, offset, status);
       res.json({
         ...result,
         page,
