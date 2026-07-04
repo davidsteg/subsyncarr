@@ -131,6 +131,7 @@ docker run -d \
 | ---------------------------------- | ------------------------------ | ------------------------------------------- |
 | `DB_PATH`                          | `/app/data/subsyncarr.db` | SQLite database location                    |
 | `LOG_BUFFER_SIZE`                  | `1000`                         | Ring buffer size for in-memory logs         |
+| `SERVER_LOG_BUFFER_SIZE`           | `5000`                         | Ring buffer size for the global server log (see `GET /api/logs` below) |
 | `RETENTION_KEEP_RUNS_DAYS`         | `30`                           | Keep complete runs for N days               |
 | `RETENTION_TRIM_LOGS_DAYS`         | `7`                            | Trim logs after N days (keeps summary only) |
 | `RETENTION_MAX_LOG_SIZE`           | `10000`                        | Max size for trimmed logs in bytes          |
@@ -281,6 +282,25 @@ docker logs -f subsyncarr
 ### Check Web UI Logs
 
 Detailed processing logs are available in the Web UI under "Processing History" - click on any run to view full logs.
+
+### Remote Log API
+
+`GET /api/logs` returns everything the server has logged (startup, route access, scheduled cleanup, errors) — not just one run's processing output — without needing to pull raw container/stdout logs by hand. Kept in an in-memory ring buffer (`SERVER_LOG_BUFFER_SIZE`, default 5000 entries); resets on restart.
+
+Query params (all optional):
+
+| Param | Description |
+| --- | --- |
+| `limit` | Max entries to return (default 500, max 5000) |
+| `level` | `all` (default), `log`, `warn`, or `error` |
+| `search` | Case-insensitive substring filter |
+| `since` | Only entries with `seq` greater than this — use the previous response's `latestSeq` to fetch just what's new |
+| `format` | `text` for a plain-text dump (one line per entry); omit for JSON |
+
+```bash
+curl "http://localhost:3000/api/logs?limit=200&level=error"
+curl "http://localhost:3000/api/logs?format=text" # plain text, easy to paste/grep
+```
 
 ### Permission Issues
 

@@ -1,3 +1,8 @@
+## [1.3.22] — 2026-07-03
+
+### Added
+- **`GET /api/logs`** — remote access to the server's console output (startup, route access, scheduled cleanup, errors), not just one run's processing log. Backed by a global in-memory ring buffer (`SERVER_LOG_BUFFER_SIZE`, default 5000 entries) that wraps `console.log`/`warn`/`error` process-wide. Supports `limit`, `level`, `search`, `since` (incremental fetch by sequence number), and `format=text` for a plain-text dump. Makes it possible to pull logs over HTTP for remote debugging instead of exporting raw container logs by hand.
+
 ## [1.3.21] — 2026-07-03
 
 ### Fixed
