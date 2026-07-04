@@ -1,7 +1,12 @@
 {
   "name": "@johnpc/subsyncarr-plus",
   "version": "0.1.0",
+  "description": "Automated subtitle synchronization tool for Docker — a fork of johnpc/subsyncarr.",
   "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/davidsteg/subsyncarr.git"
+  },
   "engines": {
     "node": ">=18"
   },

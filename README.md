@@ -2,6 +2,8 @@
 
 An automated subtitle synchronization tool that runs as a Docker container. It continuously monitors your media directories for video files with out-of-sync subtitles and automatically synchronizes them using three sync engines (ffsubsync, autosubsync, and alass).
 
+This is a fork of [johnpc/subsyncarr](https://github.com/johnpc/subsyncarr).
+
 **Docker Hub:** [mrorbitman/subsyncarr](https://hub.docker.com/r/mrorbitman/subsyncarr)
 
 ## Features
