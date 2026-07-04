@@ -1,3 +1,8 @@
+## [1.3.25] — 2026-07-04
+
+### Changed
+- **Orphaned engine temp/retry files are now actively deleted during a scan**, not just excluded from being treated as regular subtitles (1.3.24 only excluded them, leaving them on disk). `*.alass-tmp.srt`, `*.ffsubsync-tmp.srt`, and `*.subsyncarr_retry.srt` are only ever created internally mid-processing — anything matching these patterns found during a scan must be leftover from an earlier, interrupted run (only one run/scan happens at a time, and the scan always runs before the current run creates any temp files of its own), so it's always safe to remove. Respects `DRY_RUN` (logs what would be deleted, deletes nothing). The run log now reports how many were removed.
+
 ## [1.3.24] — 2026-07-04
 
 ### Fixed

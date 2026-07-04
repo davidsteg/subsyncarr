@@ -19,7 +19,7 @@ An automated subtitle synchronization tool that runs as a Docker container. It c
 - **Configurable Timeouts** - Set per-engine timeout limits to prevent hung processes
 - **Log Management** - Configurable retention policies with automatic trimming and deletion
 
-> **Note:** This tool syncs subtitles **in place** (overwriting the original `.srt`, with a `# synced:` header marker) and **deletes** subtitles that consistently fail to align across multiple runs (see [Not-Fitting Delete Threshold](#not-fitting-delete-threshold) below). Keep a backup of subtitles you can't easily re-download, and use `DRY_RUN=true` first to preview what would be changed or deleted.
+> **Note:** This tool syncs subtitles **in place** (overwriting the original `.srt`, with a `# synced:` header marker) and **deletes** subtitles that consistently fail to align across multiple runs (see [Not-Fitting Delete Threshold](#not-fitting-delete-threshold) below). It also deletes its own leftover temp/retry files (`*.alass-tmp.srt`, `*.ffsubsync-tmp.srt`, `*.subsyncarr_retry.srt`) found during a scan — these are only ever created internally and orphaned copies (e.g. from a killed/restarted process) are safe to remove. Keep a backup of subtitles you can't easily re-download, and use `DRY_RUN=true` first to preview what would be changed or deleted.
 
 ## Quick Start
 

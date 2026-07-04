@@ -100,13 +100,17 @@ export class ProcessingEngine extends EventEmitter {
 
     this.scanProgress = { checked: 0, total: 0, needSync: 0, alreadySynced: 0 };
     const db = this.stateManager?.getDatabase();
-    const { files: srtFiles, directoryCache } = await findAllSrtFiles(scanConfig, db,
+    const { files: srtFiles, directoryCache, orphanedTempFilesRemoved } = await findAllSrtFiles(scanConfig, db,
       (checked, total, needSync, alreadySynced) => {
         this.scanProgress = { checked, total, needSync, alreadySynced };
-      }
+      },
+      this.dryRun,
     );
     this.scanProgress = null;
     this.directoryCache = directoryCache;
+    if (orphanedTempFilesRemoved > 0) {
+      this.log(`[${new Date().toISOString()}] 🧹 Removed ${orphanedTempFilesRemoved} orphaned temp/retry file(s) left over from an interrupted run`);
+    }
     this.log(`[${new Date().toISOString()}] Found ${srtFiles.length} subtitle files`);
     this.emit('run:files_found', srtFiles);
 
