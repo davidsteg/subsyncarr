@@ -197,6 +197,20 @@ export class SubsyncarrPlusDatabase {
       `);
     }
 
+    // Migration: add mtime_ms/size_bytes to synced_files so the cache can be
+    // invalidated when a file changes (e.g. Bazarr drops in a fresh,
+    // unsynced subtitle at a path previously cached as synced). Nullable —
+    // existing rows from before this migration have no metadata to compare
+    // against, so they're treated as a cache miss exactly once (forcing a
+    // real header re-check) and then backfilled going forward.
+    const syncedFilesColumns = this.db.pragma('table_info(synced_files)') as Array<{ name: string }>;
+    if (!syncedFilesColumns.some((c) => c.name === 'mtime_ms')) {
+      this.db.exec(`ALTER TABLE synced_files ADD COLUMN mtime_ms REAL`);
+    }
+    if (!syncedFilesColumns.some((c) => c.name === 'size_bytes')) {
+      this.db.exec(`ALTER TABLE synced_files ADD COLUMN size_bytes INTEGER`);
+    }
+
     // Migration: Create settings table for runtime configuration
     const settingsTable = this.db
       .prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='settings'")
@@ -749,15 +763,32 @@ export class SubsyncarrPlusDatabase {
   }
 
   // === Synced files cache ===
-  // Speeds up findAllSrtFiles by skipping the header read for files we already know are synced.
+  // Speeds up findAllSrtFiles by skipping the header read for files we already
+  // know are synced — but only trusts the cache if the file's mtime/size
+  // still match what was recorded when it was cached. Without this check, a
+  // fresh, unsynced subtitle dropped in at the same path (e.g. by Bazarr)
+  // would be wrongly skipped forever, since the cache is keyed by path alone.
 
-  isFileInSyncCache(filePath: string): boolean {
-    const row = this.db.prepare('SELECT 1 FROM synced_files WHERE file_path = ?').get(filePath);
-    return !!row;
+  isFileInSyncCache(filePath: string, mtimeMs: number, sizeBytes: number): boolean {
+    const row = this.db
+      .prepare('SELECT mtime_ms, size_bytes FROM synced_files WHERE file_path = ?')
+      .get(filePath) as { mtime_ms: number | null; size_bytes: number | null } | undefined;
+    if (!row) return false;
+    // Pre-migration rows (or ones cached before this change shipped) have no
+    // metadata to compare against — treat as a miss so it gets re-verified
+    // and backfilled, rather than trusting it blindly.
+    if (row.mtime_ms === null || row.size_bytes === null) return false;
+    return row.mtime_ms === mtimeMs && row.size_bytes === sizeBytes;
   }
 
-  addFileToSyncCache(filePath: string): void {
-    this.db.prepare('INSERT OR REPLACE INTO synced_files (file_path, synced_at) VALUES (?, ?)').run(filePath, Date.now());
+  addFileToSyncCache(filePath: string, mtimeMs: number, sizeBytes: number): void {
+    this.db
+      .prepare(
+        `INSERT INTO synced_files (file_path, synced_at, mtime_ms, size_bytes)
+         VALUES (?, ?, ?, ?)
+         ON CONFLICT(file_path) DO UPDATE SET synced_at = ?, mtime_ms = ?, size_bytes = ?`,
+      )
+      .run(filePath, Date.now(), mtimeMs, sizeBytes, Date.now(), mtimeMs, sizeBytes);
   }
 
   // Settings methods

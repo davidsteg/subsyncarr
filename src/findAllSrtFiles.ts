@@ -1,4 +1,5 @@
 import { readdirSync, unlinkSync } from 'fs';
+import { stat } from 'fs/promises';
 import { extname, join } from 'path';
 import { existsSync } from 'fs';
 import { ScanConfig } from './config';
@@ -109,15 +110,26 @@ export async function findAllSrtFiles(
     let isSynced: boolean;
 
     if (format === 'overwrite') {
-      // Check DB cache first — instant, no I/O
-      if (db && db.isFileInSyncCache(srtPath)) {
+      // Check DB cache first, but only trust it if the file's mtime/size
+      // still match what was recorded — a cheap stat() call, much less
+      // costly than reading file content, so this still avoids the header
+      // read for the common case where nothing changed.
+      let fileStat: { mtimeMs: number; size: number } | null = null;
+      try {
+        const s = await stat(srtPath);
+        fileStat = { mtimeMs: s.mtimeMs, size: s.size };
+      } catch {
+        fileStat = null;
+      }
+
+      if (db && fileStat && db.isFileInSyncCache(srtPath, fileStat.mtimeMs, fileStat.size)) {
         isSynced = true;
       } else {
         // Async header check — pipelines I/O on network storage
         isSynced = await isSyncedSrt(srtPath);
-        // Cache result to avoid future header reads
-        if (isSynced && db) {
-          db.addFileToSyncCache(srtPath);
+        // Cache result (with current mtime/size) to avoid future header reads
+        if (isSynced && db && fileStat) {
+          db.addFileToSyncCache(srtPath, fileStat.mtimeMs, fileStat.size);
         }
       }
     } else {
