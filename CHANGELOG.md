@@ -1,3 +1,14 @@
+## [1.3.31] — 2026-07-05
+
+### Changed
+- **Removed the per-engine convergence retry — roughly doubles throughput.** Live-log analysis showed ~90% of engine runs triggered a retry (re-running the engine on its own output = another full video decode) as a quality check. That check predates the two-engine agreement comparison, which is the actual quality gate now — so the second decode bought nothing. Each engine now runs exactly once per file. The `Sync Retry Threshold` / `Max Retries` settings (which were silently non-functional anyway — the engine only ever read env vars, not the DB values the UI saved) are removed from the Settings page.
+- **Removed the `validateSubtitleMatch` pre-check** — it read and fully parsed every subtitle just to produce a log line (its event consumer was removed in 1.3.26). Saves one full-file read per file on network storage.
+
+### Fixed
+- **`Max Subtitle Shift` setting was a silent no-op** — saved to the DB but the engines only read the `MAX_SUBTITLE_SHIFT_MS` env var. Now wired through the runtime config like the other engine settings; UI changes take effect on the next engine run.
+- **ETA was fiction** — it counted every WebSocket event as a file completion and divided by a hardcoded concurrency of 6, showing "4.9h" on a run whose real remainder was ~6 weeks. Now computed from the run's own counters (processed ÷ elapsed), hidden until 10 files have been processed, and formats multi-day estimates as days.
+- **Current Run page showed "Processing (0) — None" during active runs** — it fetched the first N files by creation order, which on a large run were processed hours earlier. `/api/status` now returns the files actually being processed plus the most recently finished ones, and the run page refreshes its list on file updates (debounced to one fetch per 2s).
+
 ## [1.3.30] — 2026-07-05
 
 ### Added

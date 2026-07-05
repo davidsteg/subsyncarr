@@ -18,8 +18,18 @@ export function getFirstCueTimeMs(srtPath: string): number | null {
   }
 }
 
-/** Max allowed shift (ms) between an engine's output and the original before it's judged a mismatch. */
+/**
+ * Max allowed shift (ms) between an engine's output and the original before
+ * it's judged a mismatch. Runtime config (Settings UI, persisted in DB) takes
+ * precedence — previously this read only the env var, making the Settings
+ * field a silent no-op.
+ */
 export function getMaxShiftMs(): number {
+  try {
+    const { getRuntimeCfg } = require('./engineRuntime');
+    const cfg = getRuntimeCfg();
+    if (cfg.maxSubtitleShiftMs > 0) return cfg.maxSubtitleShiftMs;
+  } catch {}
   const envVal = process.env.MAX_SUBTITLE_SHIFT_MS;
   if (envVal) {
     const val = parseInt(envVal, 10);

@@ -1,5 +1,5 @@
 import EventEmitter from 'events';
-import { ScanConfig, getScanConfig, getSyncRetryConfig, getDryRunConfig, getEngineChainConfig, getEngineAgreementThresholdMs, getNotFittingDeleteThreshold } from './config';
+import { ScanConfig, getScanConfig, getDryRunConfig, getEngineChainConfig, getEngineAgreementThresholdMs, getNotFittingDeleteThreshold } from './config';
 import { findAllSrtFiles } from './findAllSrtFiles';
 import { findMatchingVideoFile, DirectoryCache, clearDirectoryCache } from './findMatchingVideoFile';
 import { generateFfsubsyncSubtitles } from './generateFfsubsyncSubtitles';
@@ -9,8 +9,6 @@ import { StateManager } from './stateManager';
 import { readFileSync, writeFileSync, unlinkSync, existsSync, statSync } from 'fs';
 import { getSubtitleFormat, getOutputPath, markSrtAsSynced, isSyncedSrt } from './helpers';
 import { calculateSubtitleOffset } from './subtitleOffsetCalculator';
-import { validateSubtitleMatch } from './subtitleValidator';
-import { basename, dirname, join } from 'path';
 
 interface EngineRunResult {
   success: boolean;
@@ -122,11 +120,6 @@ export class ProcessingEngine extends EventEmitter {
       this.log(`[${new Date().toISOString()}] DRY RUN MODE — no files will be written`);
     }
 
-    const retryConfig = getSyncRetryConfig();
-    this.log(
-      `[${new Date().toISOString()}] Sync retry: threshold=${retryConfig.thresholdMs}ms, maxRetries=${retryConfig.maxRetries}`,
-    );
-
     await this.processWithConcurrency(srtFiles);
 
     // Clean up directory cache after processing
@@ -196,47 +189,6 @@ export class ProcessingEngine extends EventEmitter {
     }
   }
 
-  /**
-   * Create a temporary SRT file for retry attempts.
-   * Returns the path to the temp file, or null on failure.
-   */
-  private createTempSrtFile(srtPath: string, content: string): string | null {
-    const directory = dirname(srtPath);
-    const srtBaseName = basename(srtPath, '.srt');
-    const tempPath = join(directory, `${srtBaseName}.subsyncarr_retry.srt`);
-    try {
-      writeFileSync(tempPath, content, 'utf8');
-      return tempPath;
-    } catch (error) {
-      this.log(`[${new Date().toISOString()}] Failed to create temp file: ${error instanceof Error ? error.message : String(error)}`);
-      return null;
-    }
-  }
-
-  /**
-   * Clean up temporary retry files.
-   */
-  private cleanupTempFiles(tempSrtPath: string | null, engine: string): void {
-    if (tempSrtPath && existsSync(tempSrtPath)) {
-      try {
-        unlinkSync(tempSrtPath);
-      } catch {
-        // Ignore cleanup errors
-      }
-    }
-    // Also clean up the engine output for the temp file
-    if (tempSrtPath) {
-      const tempOutputPath = getOutputPath(tempSrtPath, engine);
-      if (existsSync(tempOutputPath)) {
-        try {
-          unlinkSync(tempOutputPath);
-        } catch {
-          // Ignore cleanup errors
-        }
-      }
-    }
-  }
-
   private async processFile(srtPath: string): Promise<void> {
     const fileName = srtPath.split('/').pop()!;
 
@@ -277,13 +229,6 @@ export class ProcessingEngine extends EventEmitter {
 
     this.emit('file:started', { srtPath, videoPath });
 
-    // Validate subtitle match before processing
-    const validation = validateSubtitleMatch(srtPath, videoPath);
-    if (validation.isSuspicious) {
-      this.log(`[${new Date().toISOString()}] Suspicious subtitle detected (${(validation.probability * 100).toFixed(0)}%): ${fileName}`);
-      validation.reasons.forEach(r => this.log(`[${new Date().toISOString()}]   Reason: ${r}`));
-    }
-
     if (!videoPath) {
       this.log(`[${new Date().toISOString()}] No matching video found for: ${fileName}`);
       this.emit('file:no_video', { srtPath });
@@ -301,7 +246,6 @@ export class ProcessingEngine extends EventEmitter {
     }
 
     const engineConfig = getEngineChainConfig();
-    const retryConfig = getSyncRetryConfig();
     const agreementThresholdMs = getEngineAgreementThresholdMs();
 
     // Both engines run independently on the ORIGINAL subtitle. We then compare
@@ -311,8 +255,7 @@ export class ProcessingEngine extends EventEmitter {
     // is deleted. Deletion therefore requires BOTH engines to fail to agree.
     const engineChain = [engineConfig.defaultEngine, engineConfig.fallbackEngine];
     this.log(
-      `[${new Date().toISOString()}] Engine chain: ${engineChain.join(' + ')} ` +
-        `(agreement threshold: ${agreementThresholdMs}ms, max retries: ${retryConfig.maxRetries})`,
+      `[${new Date().toISOString()}] Engine chain: ${engineChain.join(' + ')} (agreement threshold: ${agreementThresholdMs}ms)`,
     );
 
     const alignments: { engine: string; content: string; shiftMs: number }[] = [];
@@ -342,7 +285,7 @@ export class ProcessingEngine extends EventEmitter {
       this.log(`[${new Date().toISOString()}] Starting ${engine} for: ${fileName}`);
       this.emit('file:engine_started', { srtPath, engine });
 
-      const aligned = await this.alignWithEngine(engine, srtPath, videoPath, originalContent, retryConfig, signal);
+      const aligned = await this.alignWithEngine(engine, srtPath, videoPath, originalContent, signal);
 
       if (aligned.cancelled) {
         this.log(`[${new Date().toISOString()}] Skipped (cancelled during ${engine}): ${fileName}`);
@@ -400,15 +343,16 @@ export class ProcessingEngine extends EventEmitter {
 
   /**
    * Run one engine on the given subtitle and return its aligned output.
-   * Retries feed the engine its own previous output until the alignment stops
-   * moving (converges within the retry threshold) or maxRetries is reached.
+   * No per-engine convergence retry: it used to re-run the engine on its own
+   * output (another full video decode, triggered by ~90% of real files) as a
+   * quality check — but the two-engine agreement comparison downstream is
+   * the actual quality gate now, so that second decode bought nothing.
    */
   private async alignWithEngine(
     engine: string,
     srtPath: string,
     videoPath: string,
     originalContent: string | null,
-    retryConfig: { thresholdMs: number; maxRetries: number },
     signal: AbortSignal,
   ): Promise<{ success: boolean; content: string | null; shiftMs: number; cancelled: boolean; result: EngineRunResult }> {
     const result = await this.runEngine(engine, srtPath, videoPath, signal);
@@ -421,31 +365,12 @@ export class ProcessingEngine extends EventEmitter {
       return { success: false, content: null, shiftMs: 0, cancelled: false, result };
     }
 
-    let content = this.readEngineOutput(engine, srtPath);
+    const content = this.readEngineOutput(engine, srtPath);
     if (content === null) {
       return {
         success: false, content: null, shiftMs: 0, cancelled: false,
         result: { ...result, success: false, message: 'Engine reported success but produced no output' },
       };
-    }
-
-    // Re-run the engine on its own output until the alignment stabilizes.
-    for (let attempt = 1; attempt <= retryConfig.maxRetries; attempt++) {
-      if (this.cancelledFiles.has(srtPath) || signal.aborted) break;
-
-      const tempPath = this.createTempSrtFile(srtPath, content);
-      if (!tempPath) break;
-
-      const retry = await this.runEngine(engine, tempPath, videoPath, signal);
-      const retryContent = retry.success ? this.readEngineOutput(engine, tempPath) : null;
-      this.cleanupTempFiles(tempPath, engine);
-
-      if (!retryContent) break;
-
-      const delta = Math.abs(calculateSubtitleOffset(content, retryContent));
-      content = retryContent;
-      this.log(`[${new Date().toISOString()}] [retry ${attempt}/${retryConfig.maxRetries}] ${engine} moved a further ${delta}ms`);
-      if (delta <= retryConfig.thresholdMs) break; // converged
     }
 
     const shiftMs = originalContent ? calculateSubtitleOffset(originalContent, content) : 0;
