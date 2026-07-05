@@ -72,11 +72,22 @@ jobs:
       - name: Build release title from the tagged commit's message
         id: title
         run: |
+          VERSION="${{ github.ref_name }}"
           SUBJECT=$(git log -1 --format=%s)
-          # Strip a conventional-commit prefix like "feat: " or "fix(scope): "
-          CLEAN=$(echo "$SUBJECT" | sed -E 's/^(feat|fix|chore|docs|refactor|perf|test|style|ci|build)(\([^)]*\))?: //')
+          # Strip any leading "word: " or "word(scope): " prefix (feat:, fix:,
+          # chore:, release:, etc.) — generalized rather than a fixed
+          # whitelist, so it doesn't silently do nothing for a prefix that
+          # wasn't anticipated.
+          CLEAN=$(echo "$SUBJECT" | sed -E 's/^[a-zA-Z]+(\([^)]*\))?: //')
           CLEAN="$(echo "${CLEAN:0:1}" | tr '[:lower:]' '[:upper:]')${CLEAN:1}"
-          echo "title=${{ github.ref_name }} — $CLEAN" >> "$GITHUB_OUTPUT"
+          # Avoid double-prefixing if the commit message already led with the
+          # version itself (e.g. "release: 1.3.30 — description").
+          if [[ "$CLEAN" == "$VERSION"* ]]; then
+            TITLE="$CLEAN"
+          else
+            TITLE="$VERSION — $CLEAN"
+          fi
+          echo "title=$TITLE" >> "$GITHUB_OUTPUT"
 
       - name: Create GitHub Release
         env:
