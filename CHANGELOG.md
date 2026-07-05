@@ -1,3 +1,12 @@
+## [1.3.30] — 2026-07-05
+
+### Added
+- `SECURITY.md` — documents the app's actual risk profile (no built-in authentication, can delete files) and how to report vulnerabilities via GitHub's private security advisory feature instead of a public issue.
+- Auto-created GitHub Releases now get a descriptive title pulled from the tagged commit's message (e.g. "1.3.30 — ..."), instead of just the bare version number.
+
+### Removed
+- `.hermes/plans/2026-07-03_ui-features.md` — a one-off implementation plan from a past agent session. All 9 tasks it described are already implemented in the current codebase; kept no ongoing value and risked confusing future readers into thinking there was unfinished work.
+
 ## [1.3.29] — 2026-07-05
 
 ### Fixed
