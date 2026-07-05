@@ -4,7 +4,49 @@ import { StateManager } from './stateManager';
 import { ProcessingCoordinator } from './coordinator';
 import { SubsyncarrPlusServer } from './server';
 import { schedule } from 'node-cron';
-import { getRetentionConfig } from './config';
+import { getRetentionConfig, getScanConfig } from './config';
+
+const DEFAULT_SCAN_PATH = '/scan_dir';
+
+/**
+ * Detect the container running with no real SCAN_PATHS configured — the
+ * fallback default `/scan_dir` almost never exists in a real deployment, so
+ * every scan silently finds 0 files and "completes" doing nothing. This has
+ * happened before (e.g. a container restarted via a bare `docker run`/
+ * `docker start` that skipped the compose environment: block) and ran
+ * unnoticed for over a day, since an empty run looks identical to a healthy
+ * one everywhere except the scan path itself.
+ */
+function isScanPathMisconfigured(): boolean {
+  const config = getScanConfig();
+  return config.includePaths.length === 1 && config.includePaths[0] === DEFAULT_SCAN_PATH;
+}
+
+function warnIfScanPathMisconfigured(loud: boolean): void {
+  if (!isScanPathMisconfigured()) return;
+  if (loud) {
+    console.warn(
+      '\n' +
+        '='.repeat(78) + '\n' +
+        `WARNING: SCAN_PATHS is not set — falling back to the default "${DEFAULT_SCAN_PATH}"\n` +
+        '='.repeat(78) + '\n' +
+        'This path almost certainly does not exist in your container. Every scan\n' +
+        '(manual or scheduled) will find 0 files and silently "complete" doing\n' +
+        'nothing — no errors, just empty runs, possibly for hours or days without\n' +
+        'anyone noticing.\n\n' +
+        'Fix: set SCAN_PATHS to your actual media mount (e.g. SCAN_PATHS=/media)\n' +
+        'in the container\'s environment and restart. If you use docker-compose,\n' +
+        "make sure the container is actually started via 'docker compose up -d'\n" +
+        "with your compose file — not a bare 'docker run'/'docker start' that\n" +
+        'skips the environment: block.\n' +
+        '='.repeat(78),
+    );
+  } else {
+    console.warn(
+      `[${new Date().toISOString()}] WARNING: still running with default SCAN_PATHS="${DEFAULT_SCAN_PATH}" — see startup log for details`,
+    );
+  }
+}
 
 async function main() {
   const dbPath = process.env.DB_PATH || '/app/data/subsyncarr-plus.db';
@@ -12,6 +54,7 @@ async function main() {
   const host = process.env.WEB_HOST || '0.0.0.0';
 
   console.log(`[${new Date().toISOString()}] Initializing Subsyncarr Plus Server...`);
+  warnIfScanPathMisconfigured(true);
 
   const stateManager = new StateManager(dbPath);
 
@@ -94,13 +137,15 @@ async function main() {
     db.vacuum();
   }, 5000);
 
-  // Log memory usage periodically
+  // Log memory usage periodically (also re-warns about scan-path
+  // misconfiguration, so it can't just scroll off after the startup banner)
   setInterval(
     () => {
       const usage = process.memoryUsage();
       console.log(
         `[${new Date().toISOString()}] Memory: RSS=${(usage.rss / 1024 / 1024).toFixed(1)}MB, Heap=${(usage.heapUsed / 1024 / 1024).toFixed(1)}MB/${(usage.heapTotal / 1024 / 1024).toFixed(1)}MB`,
       );
+      warnIfScanPathMisconfigured(false);
     },
     5 * 60 * 1000,
   ); // Every 5 minutes

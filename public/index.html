@@ -37,6 +37,9 @@
           <span class="schedule-badge" id="dashSchedule">...</span>
         </div>
       </div>
+      <div id="notConfiguredBanner" class="config-warning-banner hidden">
+        ⚠️ <strong>No scan path configured</strong> — this instance is watching the placeholder default (<code>/scan_dir</code>), which almost certainly doesn't exist. Every scan (manual or scheduled) will find 0 files and silently do nothing. Set <code>SCAN_PATHS</code> in the container's environment and restart.
+      </div>
       <div id="scanBanner" class="scan-banner hidden">
         <div class="scan-title">Scanning files...</div>
         <div class="progress-bar"><div class="progress-fill" id="scanProgressFill" style="width:0%"></div></div>
