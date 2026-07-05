@@ -450,6 +450,27 @@ export class SubsyncarrPlusDatabase {
     return { files, total };
   }
 
+  /**
+   * The live view of a run: files currently being processed plus the most
+   * recently finished ones. The Current Run page used to fetch the first N
+   * rows by creation order — on a 180K-file run those were processed hours
+   * earlier, so "Processing" always showed empty while workers churned
+   * thousands of rows further down.
+   */
+  getActiveAndRecentFiles(runId: string, recentLimit: number): FileResult[] {
+    const processing = this.db
+      .prepare(`SELECT * FROM file_results WHERE run_id = ? AND status = 'processing' ORDER BY updated_at DESC`)
+      .all(runId) as FileResult[];
+    const recent = this.db
+      .prepare(
+        `SELECT * FROM file_results
+         WHERE run_id = ? AND status IN ('completed', 'skipped', 'error', 'not_fitting')
+         ORDER BY updated_at DESC LIMIT ?`,
+      )
+      .all(runId, recentLimit) as FileResult[];
+    return [...processing, ...recent];
+  }
+
   // Engine failure tracking methods
   getEngineFailureTracking(filePath: string, engine: string): EngineFailureTracking | null {
     return this.db

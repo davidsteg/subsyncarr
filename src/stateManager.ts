@@ -211,6 +211,11 @@ export class StateManager extends EventEmitter {
     return this.db.getFileResultsPaginated(runId, limit, offset, status);
   }
 
+  /** Files currently processing plus the most recently finished ones — the live run view. */
+  getActiveAndRecentFiles(runId: string, recentLimit: number): FileResult[] {
+    return this.db.getActiveAndRecentFiles(runId, recentLimit);
+  }
+
   appendLog(runId: string, logMessage: string): void {
     // Write to log file instead of database
     this.logFileManager.appendLog(runId, logMessage);

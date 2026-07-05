@@ -1,7 +1,7 @@
 class SubsyncarrPlusClient {
   constructor() {
     this.ws = null;
-    this.state = { currentRun: null, files: [], isRunning: false, scanProgress: null, avgTimePerFile: 0, fileTimestamps: [], dryRun: false }; this._scanPoll = null;
+    this.state = { currentRun: null, files: [], isRunning: false, scanProgress: null, dryRun: false }; this._scanPoll = null; this._filesRefreshTimer = null;
     this.historyCache = {};
     this.initialized = false;
     this.activePage = 'dashboard';
@@ -81,14 +81,16 @@ class SubsyncarrPlusClient {
         break;
       case 'file:updated':
         if (msg.data.run) this.state.currentRun = msg.data.run;
-        // Track recent file completion times for ETA
-        var now = Date.now();
-        this.state.fileTimestamps.push(now);
-        if (this.state.fileTimestamps.length > 20) this.state.fileTimestamps.shift();
-        if (this.state.fileTimestamps.length >= 2) {
-          this.state.avgTimePerFile = (now - this.state.fileTimestamps[0]) / this.state.fileTimestamps.length;
-        }
         this.render();
+        // Refresh the run page's live file list (debounced — workers can emit
+        // many of these per second, one fetch per 2s is plenty for the UI)
+        if (this.activePage === 'run' && !this._filesRefreshTimer) {
+          var self2 = this;
+          this._filesRefreshTimer = setTimeout(function() {
+            self2._filesRefreshTimer = null;
+            if (self2.activePage === 'run' && self2.state.isRunning) self2.fetchRunFiles();
+          }, 2000);
+        }
         break;
       case 'files:cleared':
         this.state.currentRun = msg.data.currentRun; this.state.files = msg.data.files;
@@ -229,12 +231,24 @@ class SubsyncarrPlusClient {
     // Show filters
     var filterEl = document.getElementById('runFilters');
     if (filterEl) filterEl.style.display = run.status === 'running' ? 'flex' : 'none';
-    // Update ETA
+    // ETA from the run's own counters: processed-so-far over elapsed time.
+    // (The old version counted every WebSocket event as a file completion and
+    // divided by a hardcoded concurrency of 6 — it showed hours when the real
+    // number was weeks.)
     var etaEl = document.getElementById('etaText');
-    if (etaEl && self.state.avgTimePerFile > 0 && run.total_files) {
-      var remaining = run.total_files - (run.completed+run.skipped+run.failed+run.not_fitting);
-      etaEl.textContent = 'ETA: ' + self._formatETA(remaining * self.state.avgTimePerFile / 6);
-      etaEl.className = 'eta-text ' + (remaining * self.state.avgTimePerFile / 1000 > 3600 ? 'slow' : 'fast');
+    if (etaEl && run.status === 'running' && run.total_files) {
+      var processed = (run.completed||0) + (run.skipped||0) + (run.failed||0) + (run.not_fitting||0);
+      var elapsedMs = Date.now() - run.start_time;
+      if (processed >= 10 && elapsedMs > 0) {
+        var remaining = run.total_files - processed;
+        var etaMs = remaining * (elapsedMs / processed);
+        etaEl.textContent = 'ETA: ' + self._formatETA(etaMs);
+        etaEl.className = 'eta-text ' + (etaMs / 1000 > 3600 ? 'slow' : 'fast');
+      } else {
+        etaEl.textContent = '';
+      }
+    } else if (etaEl) {
+      etaEl.textContent = '';
     }
     container.innerHTML =
       '<div class="run-progress"><div class="run-stats-row"><span>OK ' + (run.completed||0) + '</span><span>SK ' + (run.skipped||0) + '</span><span>FAIL ' + (run.failed||0) + '</span><span>NF ' + (run.not_fitting||0) + '</span><span>Total: ' + (run.total_files||0).toLocaleString() + '</span></div>' +
@@ -373,8 +387,6 @@ class SubsyncarrPlusClient {
       document.getElementById('setMaxShift').value = s.maxSubtitleShiftMs;
       document.getElementById('setAgreementThreshold').value = s.engineAgreementThresholdMs || 5000;
       document.getElementById('setNotFittingThreshold').value = s.notFittingDeleteThreshold || 3;
-      document.getElementById('setRetryThreshold').value = s.syncRetryThresholdMs;
-      document.getElementById('setMaxRetries').value = s.syncMaxRetries;
       document.getElementById('setDefaultEngine').value = s.defaultEngine || 'alass';
       document.getElementById('setFallbackEngine').value = s.fallbackEngine || 'ffsubsync';
       document.getElementById('setDryRun').checked = s.dryRun;
@@ -390,8 +402,6 @@ class SubsyncarrPlusClient {
   async saveSettings() {
     var data = {
       max_subtitle_shift_ms: document.getElementById('setMaxShift').value,
-      sync_retry_threshold_ms: document.getElementById('setRetryThreshold').value,
-      sync_max_retries: document.getElementById('setMaxRetries').value,
       default_engine: document.getElementById('setDefaultEngine').value,
       fallback_engine: document.getElementById('setFallbackEngine').value,
       dry_run: document.getElementById('setDryRun').checked ? 'true' : 'false',
@@ -484,7 +494,8 @@ class SubsyncarrPlusClient {
   _formatETA(ms) {
     if (ms < 60000) return Math.round(ms/1000) + 's';
     if (ms < 3600000) return Math.round(ms/60000) + 'm';
-    return (ms/3600000).toFixed(1) + 'h';
+    if (ms < 48 * 3600000) return (ms/3600000).toFixed(1) + 'h';
+    return Math.round(ms/86400000) + 'd';
   }
   _filterFiles(files, query) {
     if (!query) return files;

@@ -118,10 +118,12 @@ export class SubsyncarrPlusServer {
       let files: any[] = [];
       let totalFiles = 0;
       if (!brief && currentRun) {
+        // Live view: currently-processing files + most recently finished ones,
+        // not the first N rows by creation order (which on a large run were
+        // processed hours earlier and left "Processing" looking empty).
         const limit = Math.min(parseInt(req.query.limit as string, 10) || 100, 1000);
-        const result = this.stateManager.getFileResultsPaginated(currentRun.id, limit, 0);
-        files = result?.files || [];
-        totalFiles = result?.total || 0;
+        files = this.stateManager.getActiveAndRecentFiles(currentRun.id, limit);
+        totalFiles = currentRun.total_files;
       }
       res.json({
         currentRun: brief && currentRun ? {
@@ -375,8 +377,6 @@ export class SubsyncarrPlusServer {
       const dbSettings = this.stateManager.getDatabase().getAllSettings();
       res.json({
         maxSubtitleShiftMs: parseInt(dbSettings['max_subtitle_shift_ms'] || process.env.MAX_SUBTITLE_SHIFT_MS || '30000', 10),
-        syncRetryThresholdMs: parseInt(dbSettings['sync_retry_threshold_ms'] || process.env.SYNC_RETRY_THRESHOLD_MS || '5000', 10),
-        syncMaxRetries: parseInt(dbSettings['sync_max_retries'] || process.env.SYNC_MAX_RETRIES || '2', 10),
         engineAgreementThresholdMs: parseInt(dbSettings['engine_agreement_threshold_ms'] || process.env.ENGINE_AGREEMENT_THRESHOLD_MS || '5000', 10),
         notFittingDeleteThreshold: parseInt(dbSettings['not_fitting_delete_threshold'] || process.env.NOT_FITTING_DELETE_THRESHOLD || '3', 10),
         engineTimeouts: {
@@ -398,7 +398,7 @@ export class SubsyncarrPlusServer {
       const db = this.stateManager.getDatabase();
       const updates_raw = req.body;
       const allowedKeys = [
-        'max_subtitle_shift_ms', 'sync_retry_threshold_ms', 'sync_max_retries',
+        'max_subtitle_shift_ms',
         'default_engine', 'fallback_engine', 'dry_run', 'theme',
         'engine_timeout_alass', 'engine_timeout_ffsubsync', 'engine_timeout_autosubsync',
         'max_concurrent_tasks', 'engine_agreement_threshold_ms', 'not_fitting_delete_threshold'
@@ -415,6 +415,7 @@ export class SubsyncarrPlusServer {
         if (updates_raw['max_concurrent_tasks']) updates.maxConcurrentTasks = parseInt(updates_raw['max_concurrent_tasks'], 10);
         if (updates_raw['engine_agreement_threshold_ms']) updates.engineAgreementThresholdMs = parseInt(updates_raw['engine_agreement_threshold_ms'], 10);
         if (updates_raw['not_fitting_delete_threshold']) updates.notFittingDeleteThreshold = parseInt(updates_raw['not_fitting_delete_threshold'], 10);
+        if (updates_raw['max_subtitle_shift_ms']) updates.maxSubtitleShiftMs = parseInt(updates_raw['max_subtitle_shift_ms'], 10);
         const timeouts: any = {};
         if (updates_raw['engine_timeout_alass']) timeouts.alass = parseInt(updates_raw['engine_timeout_alass'], 10);
         if (updates_raw['engine_timeout_ffsubsync']) timeouts.ffsubsync = parseInt(updates_raw['engine_timeout_ffsubsync'], 10);
