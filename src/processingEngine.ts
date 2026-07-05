@@ -6,7 +6,7 @@ import { generateFfsubsyncSubtitles } from './generateFfsubsyncSubtitles';
 import { generateAutosubsyncSubtitles } from './generateAutosubsyncSubtitles';
 import { generateAlassSubtitles } from './generateAlassSubtitles';
 import { StateManager } from './stateManager';
-import { readFileSync, writeFileSync, unlinkSync, existsSync } from 'fs';
+import { readFileSync, writeFileSync, unlinkSync, existsSync, statSync } from 'fs';
 import { getSubtitleFormat, getOutputPath, markSrtAsSynced, isSyncedSrt } from './helpers';
 import { calculateSubtitleOffset } from './subtitleOffsetCalculator';
 import { validateSubtitleMatch } from './subtitleValidator';
@@ -490,7 +490,13 @@ export class ProcessingEngine extends EventEmitter {
       if (this.subtitleFormat === 'overwrite') {
         markSrtAsSynced(srtPath, engine, content);
         if (this.stateManager) {
-          try { this.stateManager.getDatabase().addFileToSyncCache(srtPath); } catch {}
+          // Record the mtime/size of the file as it now sits on disk (after
+          // the write above), so a later scan can trust the cache only for
+          // as long as the file matches this exact state.
+          try {
+            const s = statSync(srtPath);
+            this.stateManager.getDatabase().addFileToSyncCache(srtPath, s.mtimeMs, s.size);
+          } catch {}
         }
       } else {
         writeFileSync(srtPath, content, 'utf8');

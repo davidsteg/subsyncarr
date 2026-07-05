@@ -1,3 +1,8 @@
+## [1.3.29] — 2026-07-05
+
+### Fixed
+- **Sync cache could wrongly skip a file that was replaced at the same path.** The `synced_files` DB cache was keyed by path only — if Bazarr (or anything else) dropped in a fresh, unsynced subtitle at a path previously cached as synced, the cache would trust the stale entry and skip it forever, since it short-circuited before ever re-reading the file's actual header. Now stores each cached file's mtime + size and only trusts the cache if they still match a cheap `fs.stat()` (much less costly than reading file content, so the common case — nothing changed — is still fast). Pre-migration rows with no metadata are treated as a one-time cache miss and self-heal. Verified against the exact scenario this fixes (a file re-written at the same path is correctly re-detected as needing sync) plus 7 unit-level cases for the cache logic itself, all passing.
+
 ## [1.3.28] — 2026-07-05
 
 ### Added
