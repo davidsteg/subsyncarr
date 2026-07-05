@@ -1,3 +1,10 @@
+## [1.3.28] — 2026-07-05
+
+### Added
+- **Scan-path misconfiguration sanity check.** Discovered via a real incident: a container restarted (after an OOM-kill) without its `docker-compose` `environment:` block applied, silently fell back to the default `SCAN_PATHS=/scan_dir`, and ran empty "successful" scans every hour for over a day — no errors, just 0-file runs, because an empty run looks identical to a healthy one everywhere except the scan path itself.
+  - Server now logs a loud, unmissable warning banner at startup if the resolved scan path is still the `/scan_dir` placeholder, and re-warns (a shorter line) every 5 minutes via the existing memory-heartbeat log so it can't just scroll away.
+  - Dashboard now shows a prominent red banner ("No scan path configured...") whenever `/api/config` reports `isConfigured: false`, replacing the easy-to-miss small status dot as the only signal.
+
 ## [1.3.27] — 2026-07-04
 
 ### Docs

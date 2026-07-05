@@ -150,6 +150,8 @@ class SubsyncarrPlusClient {
     if (c && c.schedule && c.schedule.enabled) {
       sch.textContent = c.schedule.nextRun ? 'Next: ' + new Date(c.schedule.nextRun).toLocaleTimeString() : (c.schedule.description || c.schedule.cron || 'Scheduled');
     } else { sch.textContent = 'Manual only'; }
+    var warnBanner = document.getElementById('notConfiguredBanner');
+    if (warnBanner) warnBanner.classList.toggle('hidden', !(c && !c.isConfigured));
   }
   renderStats(stats) {
     if (!stats) return;
