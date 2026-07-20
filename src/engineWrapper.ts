@@ -63,8 +63,8 @@ export async function generateEngineSubtitles(
         return {
           success: false,
           message: `${engineName} did not produce output file: ${tempPath}`,
-          stdout: stdout || undefined,
-          stderr: stderr || undefined,
+          stdout: stdout?.substring(0, 1000) || undefined,
+          stderr: stderr?.substring(0, 1000) || undefined,
         };
       }
 
@@ -83,8 +83,8 @@ export async function generateEngineSubtitles(
         return {
           success: false,
           message: `${engineName} produced empty or unparseable output for ${basename(srtPath)}`,
-          stdout: stdout || undefined,
-          stderr: stderr || undefined,
+          stdout: stdout?.substring(0, 1000) || undefined,
+          stderr: stderr?.substring(0, 1000) || undefined,
         };
       }
 
@@ -109,8 +109,8 @@ export async function generateEngineSubtitles(
           return {
             success: false,
             message: `Shift too large: ${shiftMs}ms (max: ${maxShiftMs}ms). Subtitle likely does not match this video.`,
-            stdout: stdout || undefined,
-            stderr: stderr || undefined,
+            stdout: stdout?.substring(0, 1000) || undefined,
+            stderr: stderr?.substring(0, 1000) || undefined,
             shiftTooLarge: true,
             originalShiftMs: shiftMs,
           };
@@ -130,8 +130,8 @@ export async function generateEngineSubtitles(
       return {
         success: true,
         message: `Successfully synced: ${basename(srtPath)}`,
-        stdout: stdout || undefined,
-        stderr: stderr || undefined,
+        stdout: stdout?.substring(0, 1000) || undefined,
+        stderr: stderr?.substring(0, 1000) || undefined,
       };
     } catch (error) {
       const errorMessage = error instanceof Error ? error.message : String(error);
@@ -149,15 +149,15 @@ export async function generateEngineSubtitles(
         return {
           success: false,
           message: `Timeout: ${engineName} took longer than allowed timeout for ${basename(srtPath)}`,
-          stdout: stdout || undefined,
-          stderr: stderr || undefined,
+          stdout: stdout?.substring(0, 1000) || undefined,
+          stderr: stderr?.substring(0, 1000) || undefined,
         };
       }
       return {
         success: false,
         message: `Error processing ${basename(srtPath)}: ${errorMessage}${stderr ? ' -- stderr: ' + stderr.substring(0, 300) : ''}`,
-        stdout: stdout || undefined,
-        stderr: stderr || undefined,
+        stdout: stdout?.substring(0, 1000) || undefined,
+        stderr: stderr?.substring(0, 1000) || undefined,
       };
     }
   } catch (error) {

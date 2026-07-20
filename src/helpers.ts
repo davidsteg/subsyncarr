@@ -167,10 +167,14 @@ export function getEngineTimeoutMs(engine: string): number {
   return getTimeoutMs();
 }
 
-export function execPromise(command: string, timeoutMs?: number, signal?: AbortSignal): Promise<{ stdout: string; stderr: string }> {
+export function execPromise(
+  command: string,
+  timeoutMs?: number,
+  signal?: AbortSignal,
+): Promise<{ stdout: string; stderr: string }> {
   const timeout = timeoutMs ?? getTimeoutMs();
   return new Promise((resolve, reject) => {
-    const child = exec(command, { timeout, maxBuffer: 1024 * 1024 * 10 }, (error, stdout, stderr) => {
+    const child = exec(command, { timeout, maxBuffer: 512 * 1024 }, (error, stdout, stderr) => {
       if (signal?.aborted) {
         reject(new Error(`Aborted: ${command}`));
         return;
