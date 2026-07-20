@@ -10,9 +10,8 @@ import {
 } from './config';
 import { findAllSrtFiles } from './findAllSrtFiles';
 import { findMatchingVideoFile, DirectoryCache, clearDirectoryCache } from './findMatchingVideoFile';
-import { generateFfsubsyncSubtitles } from './generateFfsubsyncSubtitles';
 import { generateAutosubsyncSubtitles } from './generateAutosubsyncSubtitles';
-import { generateAlassSubtitles } from './generateAlassSubtitles';
+import { generateEngineSubtitles } from './engineWrapper';
 import { StateManager } from './stateManager';
 import { readFileSync, writeFileSync, unlinkSync, existsSync, statSync } from 'fs';
 import { basename, dirname, join } from 'path';
@@ -342,18 +341,14 @@ export class ProcessingEngine extends EventEmitter {
     const startTime = Date.now();
     try {
       let result;
-      switch (engine) {
-        case 'ffsubsync':
-          result = await generateFfsubsyncSubtitles(srtPath, videoPath, signal);
-          break;
-        case 'autosubsync':
-          result = await generateAutosubsyncSubtitles(srtPath, videoPath, signal);
-          break;
-        case 'alass':
-          result = await generateAlassSubtitles(srtPath, videoPath, signal);
-          break;
-        default:
-          return { success: false, message: `Unknown engine: ${engine}`, duration: 0 };
+      if (engine === 'alass' || engine === 'ffsubsync') {
+        // Use unified wrapper for in-place engines
+        result = await generateEngineSubtitles(engine, srtPath, videoPath, signal);
+      } else if (engine === 'autosubsync') {
+        // autosubsync writes to sidecar, keep original wrapper
+        result = await generateAutosubsyncSubtitles(srtPath, videoPath, signal);
+      } else {
+        return { success: false, message: `Unknown engine: ${engine}`, duration: 0 };
       }
       const duration = Date.now() - startTime;
       return { ...result, duration };
