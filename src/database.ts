@@ -1,49 +1,99 @@
 import Database from 'better-sqlite3';
 import * as fs from 'fs';
 import * as path from 'path';
+import { runMigrations } from './migrations';
 
 // ISO 639-1 (2-letter) and common ISO 639-2 (3-letter) subtitle language codes → display name.
 // Both variants map to the same name so counts merge (e.g. "de" and "ger" → German).
 const LANGUAGE_NAMES: Record<string, string> = {
-  en: 'English', eng: 'English',
-  fr: 'French', fre: 'French', fra: 'French',
-  de: 'German', ger: 'German', deu: 'German',
-  es: 'Spanish', spa: 'Spanish',
-  it: 'Italian', ita: 'Italian',
-  pt: 'Portuguese', por: 'Portuguese',
-  nl: 'Dutch', dut: 'Dutch', nld: 'Dutch',
-  sv: 'Swedish', swe: 'Swedish',
-  no: 'Norwegian', nor: 'Norwegian',
-  da: 'Danish', dan: 'Danish',
-  fi: 'Finnish', fin: 'Finnish',
-  pl: 'Polish', pol: 'Polish',
-  cs: 'Czech', cze: 'Czech', ces: 'Czech',
-  sk: 'Slovak', slo: 'Slovak', slk: 'Slovak',
-  hu: 'Hungarian', hun: 'Hungarian',
-  ro: 'Romanian', rum: 'Romanian', ron: 'Romanian',
-  tr: 'Turkish', tur: 'Turkish',
-  ru: 'Russian', rus: 'Russian',
-  uk: 'Ukrainian', ukr: 'Ukrainian',
-  ja: 'Japanese', jpn: 'Japanese',
-  ko: 'Korean', kor: 'Korean',
-  zh: 'Chinese', chi: 'Chinese', zho: 'Chinese',
-  ar: 'Arabic', ara: 'Arabic',
-  he: 'Hebrew', heb: 'Hebrew',
-  hi: 'Hindi', hin: 'Hindi',
-  el: 'Greek', gre: 'Greek', ell: 'Greek',
-  bg: 'Bulgarian', bul: 'Bulgarian',
-  hr: 'Croatian', hrv: 'Croatian',
-  sr: 'Serbian', srp: 'Serbian',
-  sl: 'Slovenian', slv: 'Slovenian',
-  et: 'Estonian', est: 'Estonian',
-  lv: 'Latvian', lav: 'Latvian',
-  lt: 'Lithuanian', lit: 'Lithuanian',
-  th: 'Thai', tha: 'Thai',
-  vi: 'Vietnamese', vie: 'Vietnamese',
-  id: 'Indonesian', ind: 'Indonesian',
-  ms: 'Malay', may: 'Malay', msa: 'Malay',
-  fa: 'Persian', per: 'Persian', fas: 'Persian',
-  ca: 'Catalan', cat: 'Catalan',
+  en: 'English',
+  eng: 'English',
+  fr: 'French',
+  fre: 'French',
+  fra: 'French',
+  de: 'German',
+  ger: 'German',
+  deu: 'German',
+  es: 'Spanish',
+  spa: 'Spanish',
+  it: 'Italian',
+  ita: 'Italian',
+  pt: 'Portuguese',
+  por: 'Portuguese',
+  nl: 'Dutch',
+  dut: 'Dutch',
+  nld: 'Dutch',
+  sv: 'Swedish',
+  swe: 'Swedish',
+  no: 'Norwegian',
+  nor: 'Norwegian',
+  da: 'Danish',
+  dan: 'Danish',
+  fi: 'Finnish',
+  fin: 'Finnish',
+  pl: 'Polish',
+  pol: 'Polish',
+  cs: 'Czech',
+  cze: 'Czech',
+  ces: 'Czech',
+  sk: 'Slovak',
+  slo: 'Slovak',
+  slk: 'Slovak',
+  hu: 'Hungarian',
+  hun: 'Hungarian',
+  ro: 'Romanian',
+  rum: 'Romanian',
+  ron: 'Romanian',
+  tr: 'Turkish',
+  tur: 'Turkish',
+  ru: 'Russian',
+  rus: 'Russian',
+  uk: 'Ukrainian',
+  ukr: 'Ukrainian',
+  ja: 'Japanese',
+  jpn: 'Japanese',
+  ko: 'Korean',
+  kor: 'Korean',
+  zh: 'Chinese',
+  chi: 'Chinese',
+  zho: 'Chinese',
+  ar: 'Arabic',
+  ara: 'Arabic',
+  he: 'Hebrew',
+  heb: 'Hebrew',
+  hi: 'Hindi',
+  hin: 'Hindi',
+  el: 'Greek',
+  gre: 'Greek',
+  ell: 'Greek',
+  bg: 'Bulgarian',
+  bul: 'Bulgarian',
+  hr: 'Croatian',
+  hrv: 'Croatian',
+  sr: 'Serbian',
+  srp: 'Serbian',
+  sl: 'Slovenian',
+  slv: 'Slovenian',
+  et: 'Estonian',
+  est: 'Estonian',
+  lv: 'Latvian',
+  lav: 'Latvian',
+  lt: 'Lithuanian',
+  lit: 'Lithuanian',
+  th: 'Thai',
+  tha: 'Thai',
+  vi: 'Vietnamese',
+  vie: 'Vietnamese',
+  id: 'Indonesian',
+  ind: 'Indonesian',
+  ms: 'Malay',
+  may: 'Malay',
+  msa: 'Malay',
+  fa: 'Persian',
+  per: 'Persian',
+  fas: 'Persian',
+  ca: 'Catalan',
+  cat: 'Catalan',
 };
 
 export interface Run {
@@ -125,169 +175,8 @@ export class SubsyncarrPlusDatabase {
     this.db.pragma('temp_store = MEMORY'); // Keep temp data in memory
     this.db.pragma('auto_vacuum = INCREMENTAL'); // Reclaim space gradually
 
-    this.db.exec(`
-      CREATE TABLE IF NOT EXISTS runs (
-        id TEXT PRIMARY KEY,
-        start_time INTEGER NOT NULL,
-        end_time INTEGER,
-        total_files INTEGER NOT NULL,
-        completed INTEGER DEFAULT 0,
-        skipped INTEGER DEFAULT 0,
-        failed INTEGER DEFAULT 0,
-        not_fitting INTEGER DEFAULT 0,
-        total_engines INTEGER DEFAULT 0,
-        completed_engines INTEGER DEFAULT 0,
-        status TEXT NOT NULL,
-        logs TEXT DEFAULT '',
-        engine_stats TEXT DEFAULT '{}'
-      );
-
-      CREATE TABLE IF NOT EXISTS file_results (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        run_id TEXT NOT NULL,
-        file_path TEXT NOT NULL,
-        video_path TEXT,
-        status TEXT NOT NULL,
-        current_engine TEXT,
-        engines TEXT DEFAULT '{}',
-        created_at INTEGER NOT NULL,
-        updated_at INTEGER NOT NULL,
-        FOREIGN KEY(run_id) REFERENCES runs(id)
-      );
-
-      CREATE INDEX IF NOT EXISTS idx_file_results_run
-        ON file_results(run_id);
-      CREATE INDEX IF NOT EXISTS idx_file_results_status
-        ON file_results(status);
-    `);
-
-    // Migration: Add logs column if it doesn't exist
-    const columns = this.db.pragma('table_info(runs)') as Array<{ name: string }>;
-    const hasLogsColumn = columns.some((col) => col.name === 'logs');
-    if (!hasLogsColumn) {
-      this.db.exec(`ALTER TABLE runs ADD COLUMN logs TEXT DEFAULT ''`);
-    }
-
-    // Migration: Add total_engines and completed_engines columns if they don't exist
-    const hasTotalEnginesColumn = columns.some((col) => col.name === 'total_engines');
-    if (!hasTotalEnginesColumn) {
-      this.db.exec(`ALTER TABLE runs ADD COLUMN total_engines INTEGER DEFAULT 0`);
-    }
-    const hasCompletedEnginesColumn = columns.some((col) => col.name === 'completed_engines');
-    if (!hasCompletedEnginesColumn) {
-      this.db.exec(`ALTER TABLE runs ADD COLUMN completed_engines INTEGER DEFAULT 0`);
-    }
-
-    // Migration: Add not_fitting column if it doesn't exist
-    const hasNotFittingColumn = columns.some((col) => col.name === 'not_fitting');
-    if (!hasNotFittingColumn) {
-      this.db.exec(`ALTER TABLE runs ADD COLUMN not_fitting INTEGER DEFAULT 0`);
-    }
-
-    // Migration: Add engine_stats column if it doesn't exist
-    const hasEngineStatsColumn = columns.some((col) => col.name === 'engine_stats');
-    if (!hasEngineStatsColumn) {
-      this.db.exec(`ALTER TABLE runs ADD COLUMN engine_stats TEXT DEFAULT '{}'`);
-    }
-
-    // Migration: anchor-alignment counters on runs (how many files synced as
-    // anchors vs. aligned sub-to-sub via an anchor)
-    if (!columns.some((col) => col.name === 'anchors_completed')) {
-      this.db.exec(`ALTER TABLE runs ADD COLUMN anchors_completed INTEGER DEFAULT 0`);
-    }
-    if (!columns.some((col) => col.name === 'followers_completed')) {
-      this.db.exec(`ALTER TABLE runs ADD COLUMN followers_completed INTEGER DEFAULT 0`);
-    }
-
-    // Migration: sync_mode/anchor_path on file_results (anchor alignment)
-    const frColumns = this.db.pragma('table_info(file_results)') as Array<{ name: string }>;
-    if (!frColumns.some((col) => col.name === 'sync_mode')) {
-      this.db.exec(`ALTER TABLE file_results ADD COLUMN sync_mode TEXT`);
-    }
-    if (!frColumns.some((col) => col.name === 'anchor_path')) {
-      this.db.exec(`ALTER TABLE file_results ADD COLUMN anchor_path TEXT`);
-    }
-
-    // Migration: Create synced_files cache table — avoids re-scanning 183K SRT headers
-    const syncedFilesTable = this.db
-      .prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='synced_files'")
-      .all();
-    if (syncedFilesTable.length === 0) {
-      this.db.exec(`
-        CREATE TABLE synced_files (
-          file_path TEXT PRIMARY KEY,
-          synced_at INTEGER NOT NULL
-        )
-      `);
-    }
-
-    // Migration: add mtime_ms/size_bytes to synced_files so the cache can be
-    // invalidated when a file changes (e.g. Bazarr drops in a fresh,
-    // unsynced subtitle at a path previously cached as synced). Nullable —
-    // existing rows from before this migration have no metadata to compare
-    // against, so they're treated as a cache miss exactly once (forcing a
-    // real header re-check) and then backfilled going forward.
-    const syncedFilesColumns = this.db.pragma('table_info(synced_files)') as Array<{ name: string }>;
-    if (!syncedFilesColumns.some((c) => c.name === 'mtime_ms')) {
-      this.db.exec(`ALTER TABLE synced_files ADD COLUMN mtime_ms REAL`);
-    }
-    if (!syncedFilesColumns.some((c) => c.name === 'size_bytes')) {
-      this.db.exec(`ALTER TABLE synced_files ADD COLUMN size_bytes INTEGER`);
-    }
-
-    // Migration: Create settings table for runtime configuration
-    const settingsTable = this.db
-      .prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='settings'")
-      .all();
-    if (settingsTable.length === 0) {
-      this.db.exec(`
-        CREATE TABLE settings (
-          key TEXT PRIMARY KEY,
-          value TEXT NOT NULL,
-          updated_at INTEGER NOT NULL
-        )
-      `);
-    }
-
-    // Migration: Create engine_failure_tracking table
-    const tables = this.db
-      .prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='engine_failure_tracking'")
-      .all();
-    if (tables.length === 0) {
-      this.db.exec(`
-        CREATE TABLE engine_failure_tracking (
-          id INTEGER PRIMARY KEY AUTOINCREMENT,
-          file_path TEXT NOT NULL,
-          engine TEXT NOT NULL,
-          consecutive_failures INTEGER DEFAULT 0,
-          last_failure_time INTEGER,
-          last_success_time INTEGER,
-          is_skipped BOOLEAN DEFAULT 0,
-          created_at INTEGER NOT NULL,
-          updated_at INTEGER NOT NULL,
-          UNIQUE(file_path, engine)
-        );
-
-        CREATE INDEX idx_failure_tracking_file ON engine_failure_tracking(file_path);
-        CREATE INDEX idx_failure_tracking_skipped ON engine_failure_tracking(is_skipped);
-      `);
-    }
-
-    // Migration: Create not_fitting_tracking table — consecutive-run strikes
-    // before a subtitle both engines can't agree on is actually deleted.
-    const notFittingTable = this.db
-      .prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='not_fitting_tracking'")
-      .all();
-    if (notFittingTable.length === 0) {
-      this.db.exec(`
-        CREATE TABLE not_fitting_tracking (
-          file_path TEXT PRIMARY KEY,
-          consecutive_strikes INTEGER NOT NULL DEFAULT 0,
-          last_strike_time INTEGER,
-          updated_at INTEGER NOT NULL
-        );
-      `);
-    }
+    // Run all pending migrations
+    runMigrations(this.db);
   }
 
   // Run methods
@@ -317,7 +206,17 @@ export class SubsyncarrPlusDatabase {
     this.db.prepare('UPDATE runs SET engine_stats = ? WHERE id = ?').run(engineStats, runId);
   }
 
-  incrementRunField(id: string, field: 'completed' | 'skipped' | 'failed' | 'not_fitting' | 'completed_engines' | 'anchors_completed' | 'followers_completed'): void {
+  incrementRunField(
+    id: string,
+    field:
+      | 'completed'
+      | 'skipped'
+      | 'failed'
+      | 'not_fitting'
+      | 'completed_engines'
+      | 'anchors_completed'
+      | 'followers_completed',
+  ): void {
     this.db.prepare(`UPDATE runs SET ${field} = ${field} + 1 WHERE id = ?`).run(id);
   }
 
@@ -461,7 +360,12 @@ export class SubsyncarrPlusDatabase {
       .get(runId, filePath) as FileResult | null;
   }
 
-  getFileResultsPaginated(runId: string, limit: number, offset: number, status?: string): { files: FileResult[]; total: number } {
+  getFileResultsPaginated(
+    runId: string,
+    limit: number,
+    offset: number,
+    status?: string,
+  ): { files: FileResult[]; total: number } {
     const whereClause = status ? 'WHERE run_id = ? AND status = ?' : 'WHERE run_id = ?';
     const params = status ? [runId, status] : [runId];
 
@@ -678,7 +582,9 @@ export class SubsyncarrPlusDatabase {
 
     // A file is "synced" if any engine synced it at least once.
     const syncedFiles = this.db
-      .prepare('SELECT COUNT(DISTINCT file_path) as count FROM engine_failure_tracking WHERE last_success_time IS NOT NULL')
+      .prepare(
+        'SELECT COUNT(DISTINCT file_path) as count FROM engine_failure_tracking WHERE last_success_time IS NOT NULL',
+      )
       .get() as { count: number };
 
     // A file is "skipped" if it's flagged skipped and was never successfully synced.
@@ -778,7 +684,7 @@ export class SubsyncarrPlusDatabase {
     for (const row of rows) {
       if (row.synced) row.skipped = 0;
     }
-    
+
     interface FolderNode {
       total: number;
       synced: number;
@@ -833,9 +739,9 @@ export class SubsyncarrPlusDatabase {
   // would be wrongly skipped forever, since the cache is keyed by path alone.
 
   isFileInSyncCache(filePath: string, mtimeMs: number, sizeBytes: number): boolean {
-    const row = this.db
-      .prepare('SELECT mtime_ms, size_bytes FROM synced_files WHERE file_path = ?')
-      .get(filePath) as { mtime_ms: number | null; size_bytes: number | null } | undefined;
+    const row = this.db.prepare('SELECT mtime_ms, size_bytes FROM synced_files WHERE file_path = ?').get(filePath) as
+      | { mtime_ms: number | null; size_bytes: number | null }
+      | undefined;
     if (!row) return false;
     // Pre-migration rows (or ones cached before this change shipped) have no
     // metadata to compare against — treat as a miss so it gets re-verified
@@ -866,13 +772,18 @@ export class SubsyncarrPlusDatabase {
 
   setSetting(key: string, value: string): void {
     const now = Date.now();
-    this.db.prepare(
-      'INSERT INTO settings (key, value, updated_at) VALUES (?, ?, ?) ON CONFLICT(key) DO UPDATE SET value = ?, updated_at = ?'
-    ).run(key, value, now, value, now);
+    this.db
+      .prepare(
+        'INSERT INTO settings (key, value, updated_at) VALUES (?, ?, ?) ON CONFLICT(key) DO UPDATE SET value = ?, updated_at = ?',
+      )
+      .run(key, value, now, value, now);
   }
 
   getAllSettings(): Record<string, string> {
-    const rows = this.db.prepare('SELECT key, value FROM settings ORDER BY key').all() as Array<{ key: string; value: string }>;
+    const rows = this.db.prepare('SELECT key, value FROM settings ORDER BY key').all() as Array<{
+      key: string;
+      value: string;
+    }>;
     const result: Record<string, string> = {};
     for (const row of rows) {
       result[row.key] = row.value;
@@ -883,24 +794,28 @@ export class SubsyncarrPlusDatabase {
   // Get detailed info for a specific media file
   getMediaDetail(filePath: string) {
     // Engine failure tracking for this file
-    const failureTracking = this.db.prepare(
-      'SELECT * FROM engine_failure_tracking WHERE file_path = ?'
-    ).all(filePath) as EngineFailureTracking[];
+    const failureTracking = this.db
+      .prepare('SELECT * FROM engine_failure_tracking WHERE file_path = ?')
+      .all(filePath) as EngineFailureTracking[];
 
     // Recent file_results across runs for this file
-    const fileResults = this.db.prepare(
-      `SELECT fr.*, r.start_time as run_start_time, r.status as run_status
+    const fileResults = this.db
+      .prepare(
+        `SELECT fr.*, r.start_time as run_start_time, r.status as run_status
        FROM file_results fr
        JOIN runs r ON fr.run_id = r.id
        WHERE fr.file_path = ?
        ORDER BY r.start_time DESC
-       LIMIT 20`
-    ).all(filePath) as Array<FileResult & { run_start_time: number; run_status: string }>;
+       LIMIT 20`,
+      )
+      .all(filePath) as Array<FileResult & { run_start_time: number; run_status: string }>;
 
     // Parse engines JSON for each result to extract shift/offset info
-    const syncHistory = fileResults.map(fr => {
-      let engines: Record<string, any> = {};
-      try { engines = JSON.parse(fr.engines); } catch(e) {}
+    const syncHistory = fileResults.map((fr) => {
+      let engines: Record<string, unknown> = {};
+      try {
+        engines = JSON.parse(fr.engines);
+      } catch (e) {}
       return {
         runId: fr.run_id,
         runStartTime: fr.run_start_time,
