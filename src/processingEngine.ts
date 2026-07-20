@@ -1,5 +1,13 @@
 import EventEmitter from 'events';
-import { ScanConfig, getScanConfig, getDryRunConfig, getEngineChainConfig, getEngineAgreementThresholdMs, getNotFittingDeleteThreshold, isAnchorAlignmentEnabled } from './config';
+import {
+  ScanConfig,
+  getScanConfig,
+  getDryRunConfig,
+  getEngineChainConfig,
+  getEngineAgreementThresholdMs,
+  getNotFittingDeleteThreshold,
+  isAnchorAlignmentEnabled,
+} from './config';
 import { findAllSrtFiles } from './findAllSrtFiles';
 import { findMatchingVideoFile, DirectoryCache, clearDirectoryCache } from './findMatchingVideoFile';
 import { generateFfsubsyncSubtitles } from './generateFfsubsyncSubtitles';
@@ -11,6 +19,7 @@ import { basename, dirname, join } from 'path';
 import { getSubtitleFormat, getOutputPath, markSrtAsSynced, isSyncedSrt } from './helpers';
 import { calculateSubtitleOffset } from './subtitleOffsetCalculator';
 import { groupByVideo, planAnchor, countCues, isTooSparseForFastPath, VideoGroup } from './anchorPlanner';
+import { decideOutcome, Alignment } from './decideOutcome';
 
 export type SyncMode = 'anchor' | 'follower' | 'full';
 
@@ -120,7 +129,14 @@ export class ProcessingEngine extends EventEmitter {
 
     this.scanProgress = { checked: 0, total: 0, needSync: 0, alreadySynced: 0 };
     const db = this.stateManager?.getDatabase();
-    const { files: srtFiles, directoryCache, orphanedTempFilesRemoved, corruptedSyncedFilesRemoved } = await findAllSrtFiles(scanConfig, db,
+    const {
+      files: srtFiles,
+      directoryCache,
+      orphanedTempFilesRemoved,
+      corruptedSyncedFilesRemoved,
+    } = await findAllSrtFiles(
+      scanConfig,
+      db,
       (checked, total, needSync, alreadySynced) => {
         this.scanProgress = { checked, total, needSync, alreadySynced };
       },
@@ -129,10 +145,14 @@ export class ProcessingEngine extends EventEmitter {
     this.scanProgress = null;
     this.directoryCache = directoryCache;
     if (orphanedTempFilesRemoved > 0) {
-      this.log(`[${new Date().toISOString()}] 🧹 Removed ${orphanedTempFilesRemoved} orphaned temp/retry file(s) left over from an interrupted run`);
+      this.log(
+        `[${new Date().toISOString()}] 🧹 Removed ${orphanedTempFilesRemoved} orphaned temp/retry file(s) left over from an interrupted run`,
+      );
     }
     if (corruptedSyncedFilesRemoved > 0) {
-      this.log(`[${new Date().toISOString()}] 🧹 Removed ${corruptedSyncedFilesRemoved} corrupted synced subtitle(s) (0 parseable cues) — will be resupplied by your subtitle manager`);
+      this.log(
+        `[${new Date().toISOString()}] 🧹 Removed ${corruptedSyncedFilesRemoved} corrupted synced subtitle(s) (0 parseable cues) — will be resupplied by your subtitle manager`,
+      );
     }
     this.log(`[${new Date().toISOString()}] Found ${srtFiles.length} subtitle files`);
     this.emit('run:files_found', srtFiles);
@@ -189,9 +209,7 @@ export class ProcessingEngine extends EventEmitter {
         const fileIndex = nextIndex++;
         const file = files[fileIndex];
         completedCount++;
-        this.log(
-          `[${new Date().toISOString()}] Starting file ${completedCount}/${total}: ${file.split('/').pop()!}`,
-        );
+        this.log(`[${new Date().toISOString()}] Starting file ${completedCount}/${total}: ${file.split('/').pop()!}`);
         await this.processFile(file);
       }
     };
@@ -240,9 +258,15 @@ export class ProcessingEngine extends EventEmitter {
    * temp reference file on disk, and dry run promises to write nothing.
    */
   private async processGroup(group: VideoGroup): Promise<void> {
-    const plan = this.dryRun ? null : planAnchor(group, (p) => {
-      try { return statSync(p).size; } catch { return 0; }
-    });
+    const plan = this.dryRun
+      ? null
+      : planAnchor(group, (p) => {
+          try {
+            return statSync(p).size;
+          } catch {
+            return 0;
+          }
+        });
 
     if (!plan) {
       for (const file of group.files) {
@@ -267,7 +291,9 @@ export class ProcessingEngine extends EventEmitter {
         writeFileSync(anchorRefPath, anchorOutcome.syncedContent, 'utf8');
         anchorCueCount = countCues(anchorOutcome.syncedContent);
       } catch (err) {
-        this.log(`[${new Date().toISOString()}] Could not write anchor reference, falling back to full pipeline: ${err instanceof Error ? err.message : String(err)}`);
+        this.log(
+          `[${new Date().toISOString()}] Could not write anchor reference, falling back to full pipeline: ${err instanceof Error ? err.message : String(err)}`,
+        );
         anchorRefPath = null;
       }
     } else if (plan.followers.length > 0) {
@@ -298,12 +324,21 @@ export class ProcessingEngine extends EventEmitter {
       }
     } finally {
       if (anchorRefPath) {
-        try { unlinkSync(anchorRefPath); } catch { /* ignore */ }
+        try {
+          unlinkSync(anchorRefPath);
+        } catch {
+          /* ignore */
+        }
       }
     }
   }
 
-  private async runEngine(engine: string, srtPath: string, videoPath: string, signal?: AbortSignal): Promise<EngineRunResult> {
+  private async runEngine(
+    engine: string,
+    srtPath: string,
+    videoPath: string,
+    signal?: AbortSignal,
+  ): Promise<EngineRunResult> {
     const startTime = Date.now();
     try {
       let result;
@@ -367,7 +402,12 @@ export class ProcessingEngine extends EventEmitter {
     }
   }
 
-  private async processFileInner(srtPath: string, fileName: string, signal: AbortSignal, ctx?: FileContext): Promise<FileOutcome> {
+  private async processFileInner(
+    srtPath: string,
+    fileName: string,
+    signal: AbortSignal,
+    ctx?: FileContext,
+  ): Promise<FileOutcome> {
     const videoPath = ctx !== undefined ? ctx.videoPath : findMatchingVideoFile(srtPath, this.directoryCache);
     let mode: SyncMode = ctx?.mode ?? 'full';
     let anchorPath = mode === 'follower' ? ctx?.anchorPath ?? null : null;
@@ -396,7 +436,9 @@ export class ProcessingEngine extends EventEmitter {
       // the full video pipeline instead of risking a bad alignment.
       const cueCount = originalContent !== null ? countCues(originalContent) : 0;
       if (originalContent !== null && isTooSparseForFastPath(cueCount, ctx.anchorCueCount ?? 0)) {
-        this.log(`[${new Date().toISOString()}] Sparse subtitle (${cueCount} cues) — rerouting to full pipeline: ${fileName}`);
+        this.log(
+          `[${new Date().toISOString()}] Sparse subtitle (${cueCount} cues) — rerouting to full pipeline: ${fileName}`,
+        );
         mode = 'full';
         anchorPath = null;
       } else {
@@ -432,7 +474,8 @@ export class ProcessingEngine extends EventEmitter {
       if (this.stateManager?.shouldSkipEngine(srtPath, engine)) {
         this.log(`[${new Date().toISOString()}] ⊘ Skipping ${engine} (3+ consecutive failures): ${fileName}`);
         this.emit('file:engine_completed', {
-          srtPath, engine,
+          srtPath,
+          engine,
           result: { success: false, duration: 0, message: 'Skipped — 3+ consecutive failures', skipped: true },
         });
         continue;
@@ -440,7 +483,9 @@ export class ProcessingEngine extends EventEmitter {
 
       // Always align from the pristine original so the two engines are comparable.
       if (originalContent !== null) {
-        try { writeFileSync(srtPath, originalContent, 'utf8'); } catch {}
+        try {
+          writeFileSync(srtPath, originalContent, 'utf8');
+        } catch {}
       }
 
       this.log(`[${new Date().toISOString()}] Starting ${engine} for: ${fileName}`);
@@ -464,44 +509,40 @@ export class ProcessingEngine extends EventEmitter {
       }
     }
 
-    // --- Keep vs. delete decision ---
-    if (alignments.length === 0) {
-      // Neither engine produced a usable alignment → subtitle doesn't fit (this run).
-      this.log(`[${new Date().toISOString()}] ✗ No engine could sync: ${fileName}`);
-      await this.handleNotFitting(srtPath, fileName, 'none', 0, originalContent, mode, anchorPath);
-      return { status: 'not_fitting' };
-    }
+    // --- Keep vs. delete decision (pure function) ---
+    const alignmentData: Alignment[] = alignments.map((a) => ({ engine: a.engine, shiftMs: a.shiftMs }));
+    const outcome = decideOutcome(alignmentData, agreementThresholdMs);
 
-    if (alignments.length === 1) {
-      // Only one engine produced output; the other errored or judged it unfit.
-      // Deleting requires BOTH engines to agree it doesn't fit, so keep this one.
-      const only = alignments[0];
-      this.log(
-        `[${new Date().toISOString()}] Only ${only.engine} produced output — keeping (no second engine to corroborate a delete): ${fileName}`,
+    if (outcome === 'not_fitting') {
+      // Engines disagree or neither could sync → subtitle doesn't fit (this run).
+      const reason = alignments.length === 0 ? 'No engine could sync' : "Engines disagree — subtitle doesn't fit";
+      this.log(`[${new Date().toISOString()}] ✗ ${reason}: ${fileName}`);
+      await this.handleNotFitting(
+        srtPath,
+        fileName,
+        alignments.length > 0 ? `${alignments[0].engine}/${alignments[1].engine}` : 'none',
+        alignments.length > 0 ? Math.abs(alignments[0].shiftMs - alignments[1].shiftMs) : 0,
+        originalContent,
+        mode,
+        anchorPath,
       );
-      this.commitSync(srtPath, fileName, only.engine, only.content, only.shiftMs, originalContent, mode, anchorPath);
-      return { status: 'completed', syncedContent: only.content };
-    }
-
-    // Both engines produced output — compare how far apart their alignments are.
-    const [first, second] = alignments;
-    const disagreementMs = Math.abs(calculateSubtitleOffset(first.content, second.content));
-    this.log(
-      `[${new Date().toISOString()}] ${first.engine} vs ${second.engine} disagree by ${disagreementMs}ms ` +
-        `(threshold: ${agreementThresholdMs}ms): ${fileName}`,
-    );
-
-    if (disagreementMs <= agreementThresholdMs) {
-      // Engines agree → the subtitle fits. Keep the default engine's alignment.
-      this.log(`[${new Date().toISOString()}] ✓ Engines agree — subtitle fits: ${fileName}`);
-      this.commitSync(srtPath, fileName, first.engine, first.content, first.shiftMs, originalContent, mode, anchorPath);
-      return { status: 'completed', syncedContent: first.content };
-    } else {
-      // Engines disagree → the subtitle doesn't fit its reference (this run).
-      this.log(`[${new Date().toISOString()}] ✗ Engines disagree — subtitle doesn't fit: ${fileName}`);
-      await this.handleNotFitting(srtPath, fileName, `${first.engine}/${second.engine}`, disagreementMs, originalContent, mode, anchorPath);
       return { status: 'not_fitting' };
     }
+
+    // Engines agree or only one produced output → keep
+    const winner = alignments[0];
+    this.log(`[${new Date().toISOString()}] ✓ Engines agree — subtitle fits: ${fileName}`);
+    this.commitSync(
+      srtPath,
+      fileName,
+      winner.engine,
+      winner.content,
+      winner.shiftMs,
+      originalContent,
+      mode,
+      anchorPath,
+    );
+    return { status: 'completed', syncedContent: winner.content };
   }
 
   /**
@@ -517,7 +558,13 @@ export class ProcessingEngine extends EventEmitter {
     referencePath: string,
     originalContent: string | null,
     signal: AbortSignal,
-  ): Promise<{ success: boolean; content: string | null; shiftMs: number; cancelled: boolean; result: EngineRunResult }> {
+  ): Promise<{
+    success: boolean;
+    content: string | null;
+    shiftMs: number;
+    cancelled: boolean;
+    result: EngineRunResult;
+  }> {
     const result = await this.runEngine(engine, srtPath, referencePath, signal);
 
     if (signal.aborted) {
@@ -531,7 +578,10 @@ export class ProcessingEngine extends EventEmitter {
     const content = this.readEngineOutput(engine, srtPath);
     if (content === null) {
       return {
-        success: false, content: null, shiftMs: 0, cancelled: false,
+        success: false,
+        content: null,
+        shiftMs: 0,
+        cancelled: false,
         result: { ...result, success: false, message: 'Engine reported success but produced no output' },
       };
     }
@@ -545,7 +595,10 @@ export class ProcessingEngine extends EventEmitter {
     // through as "agreement".
     if (countCues(content) === 0) {
       return {
-        success: false, content: null, shiftMs: 0, cancelled: false,
+        success: false,
+        content: null,
+        shiftMs: 0,
+        cancelled: false,
         result: { ...result, success: false, message: 'Engine produced output with no parseable subtitle cues' },
       };
     }
@@ -561,7 +614,11 @@ export class ProcessingEngine extends EventEmitter {
     try {
       const content = readFileSync(outputPath, 'utf8');
       if (!inPlace) {
-        try { unlinkSync(outputPath); } catch { /* ignore */ }
+        try {
+          unlinkSync(outputPath);
+        } catch {
+          /* ignore */
+        }
       }
       return content;
     } catch {
@@ -583,7 +640,9 @@ export class ProcessingEngine extends EventEmitter {
     if (this.dryRun) {
       // Engines already overwrote srtPath in place; undo that so dry-run leaves files untouched.
       if (originalContent !== null) {
-        try { writeFileSync(srtPath, originalContent, 'utf8'); } catch {}
+        try {
+          writeFileSync(srtPath, originalContent, 'utf8');
+        } catch {}
       }
       this.log(`[${new Date().toISOString()}] [DRY RUN] Would sync (${engine}, shift ${shiftMs}ms): ${fileName}`);
       this.emit('file:completed', { srtPath, syncMode, anchorPath });
@@ -605,10 +664,14 @@ export class ProcessingEngine extends EventEmitter {
       } else {
         writeFileSync(srtPath, content, 'utf8');
       }
-      this.log(`[${new Date().toISOString()}] ✓ Synced (${engine}${syncMode === 'follower' ? ', via anchor' : ''}, shift ${shiftMs}ms): ${fileName}`);
+      this.log(
+        `[${new Date().toISOString()}] ✓ Synced (${engine}${syncMode === 'follower' ? ', via anchor' : ''}, shift ${shiftMs}ms): ${fileName}`,
+      );
       // Break any not-fitting streak — the file synced fine this run.
       if (this.stateManager) {
-        try { this.stateManager.getDatabase().resetNotFittingStrikes(srtPath); } catch {}
+        try {
+          this.stateManager.getDatabase().resetNotFittingStrikes(srtPath);
+        } catch {}
       }
     } catch {
       this.log(`[${new Date().toISOString()}] Failed to write synced subtitle: ${fileName}`);
@@ -638,9 +701,13 @@ export class ProcessingEngine extends EventEmitter {
     if (this.dryRun) {
       // Restore the original the engines overwrote; dry-run touches nothing, including strike counts.
       if (originalContent !== null) {
-        try { writeFileSync(srtPath, originalContent, 'utf8'); } catch {}
+        try {
+          writeFileSync(srtPath, originalContent, 'utf8');
+        } catch {}
       }
-      this.log(`[${new Date().toISOString()}] [DRY RUN] Would record not-fitting strike (threshold: ${threshold}): ${fileName}`);
+      this.log(
+        `[${new Date().toISOString()}] [DRY RUN] Would record not-fitting strike (threshold: ${threshold}): ${fileName}`,
+      );
       this.emit('file:not_fitting', { srtPath, engine: lastEngine, offsetMs, syncMode, anchorPath });
       return;
     }
@@ -651,20 +718,28 @@ export class ProcessingEngine extends EventEmitter {
       try {
         if (existsSync(srtPath)) {
           unlinkSync(srtPath);
-          this.log(`[${new Date().toISOString()}] 🗑 Deleted after ${strikes} consecutive not-fitting run(s): ${fileName}`);
+          this.log(
+            `[${new Date().toISOString()}] 🗑 Deleted after ${strikes} consecutive not-fitting run(s): ${fileName}`,
+          );
         }
       } catch {
         this.log(`[${new Date().toISOString()}] Failed to delete subtitle: ${fileName}`);
       }
       if (this.stateManager) {
-        try { this.stateManager.getDatabase().resetNotFittingStrikes(srtPath); } catch {}
+        try {
+          this.stateManager.getDatabase().resetNotFittingStrikes(srtPath);
+        } catch {}
       }
     } else {
       // Not enough strikes yet — restore the original and retry on the next run.
       if (originalContent !== null) {
-        try { writeFileSync(srtPath, originalContent, 'utf8'); } catch {}
+        try {
+          writeFileSync(srtPath, originalContent, 'utf8');
+        } catch {}
       }
-      this.log(`[${new Date().toISOString()}] ⚠ Not fitting (strike ${strikes}/${threshold}) — keeping subtitle, will retry next run: ${fileName}`);
+      this.log(
+        `[${new Date().toISOString()}] ⚠ Not fitting (strike ${strikes}/${threshold}) — keeping subtitle, will retry next run: ${fileName}`,
+      );
     }
 
     this.emit('file:not_fitting', { srtPath, engine: lastEngine, offsetMs, syncMode, anchorPath });
