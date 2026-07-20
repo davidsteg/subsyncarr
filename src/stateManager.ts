@@ -127,13 +127,26 @@ export class StateManager extends EventEmitter {
     this.db.batchCreateFileResults(runId, files);
   }
 
-  updateFileStatus(runId: string, filePath: string, status: FileResult['status'], currentEngine?: string | null, videoPath?: string | null): void {
+  updateFileStatus(
+    runId: string,
+    filePath: string,
+    status: FileResult['status'],
+    currentEngine?: string | null,
+    videoPath?: string | null,
+    syncInfo?: { syncMode?: FileResult['sync_mode']; anchorPath?: string | null },
+  ): void {
     const updates: Partial<FileResult> = { status };
     if (currentEngine !== undefined) {
       updates.current_engine = currentEngine;
     }
     if (videoPath !== undefined) {
       updates.video_path = videoPath;
+    }
+    if (syncInfo?.syncMode !== undefined) {
+      updates.sync_mode = syncInfo.syncMode;
+    }
+    if (syncInfo?.anchorPath !== undefined) {
+      updates.anchor_path = syncInfo.anchorPath;
     }
 
     this.db.updateFileResult(runId, filePath, updates);

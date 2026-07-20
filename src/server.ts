@@ -136,6 +136,8 @@ export class SubsyncarrPlusServer {
           not_fitting: currentRun.not_fitting,
           total_engines: currentRun.total_engines,
           completed_engines: currentRun.completed_engines,
+          anchors_completed: currentRun.anchors_completed,
+          followers_completed: currentRun.followers_completed,
           status: currentRun.status,
         } : currentRun,
         scanProgress,

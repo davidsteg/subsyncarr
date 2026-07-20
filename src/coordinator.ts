@@ -93,12 +93,23 @@ export class ProcessingCoordinator {
       },
     );
 
-    this.engine.on('file:completed', ({ srtPath }: { srtPath: string }) => {
-      if (this.currentRunId) {
-        this.stateManager.incrementRunCounter(this.currentRunId, 'completed');
-        this.stateManager.updateFileStatus(this.currentRunId, srtPath, 'completed', null);
-      }
-    });
+    this.engine.on(
+      'file:completed',
+      ({ srtPath, syncMode, anchorPath }: { srtPath: string; syncMode?: 'anchor' | 'follower' | 'full'; anchorPath?: string | null }) => {
+        if (this.currentRunId) {
+          this.stateManager.incrementRunCounter(this.currentRunId, 'completed');
+          if (syncMode === 'anchor') {
+            this.stateManager.getDatabase().incrementRunField(this.currentRunId, 'anchors_completed');
+          } else if (syncMode === 'follower') {
+            this.stateManager.getDatabase().incrementRunField(this.currentRunId, 'followers_completed');
+          }
+          this.stateManager.updateFileStatus(this.currentRunId, srtPath, 'completed', null, undefined, {
+            syncMode: syncMode ?? 'full',
+            anchorPath: anchorPath ?? null,
+          });
+        }
+      },
+    );
 
     this.engine.on('file:skipped', ({ srtPath }: { srtPath: string }) => {
       if (this.currentRunId) {
@@ -123,10 +134,13 @@ export class ProcessingCoordinator {
 
     this.engine.on(
       'file:not_fitting',
-      ({ srtPath }: { srtPath: string; engine: string; offsetMs: number }) => {
+      ({ srtPath, syncMode, anchorPath }: { srtPath: string; engine: string; offsetMs: number; syncMode?: 'anchor' | 'follower' | 'full'; anchorPath?: string | null }) => {
         if (this.currentRunId) {
           this.stateManager.incrementRunCounter(this.currentRunId, 'not_fitting');
-          this.stateManager.updateFileStatus(this.currentRunId, srtPath, 'not_fitting', null);
+          this.stateManager.updateFileStatus(this.currentRunId, srtPath, 'not_fitting', null, undefined, {
+            syncMode: syncMode ?? 'full',
+            anchorPath: anchorPath ?? null,
+          });
         }
       },
     );
