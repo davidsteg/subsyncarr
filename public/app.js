@@ -166,11 +166,15 @@ class SubsyncarrPlusClient {
       document.getElementById('scanNeedSync').textContent = sp.needSync.toLocaleString() + ' need sync';
       document.getElementById('scanAlready').textContent = sp.alreadySynced.toLocaleString() + ' already synced';
     } else { banner.classList.add('hidden'); }
+    var fastPathCard = (stats.fastPath && stats.fastPath.followers > 0)
+      ? '<div class="stat-card accent"><div class="label">Fast Path</div><div class="value">' + stats.fastPath.followerShare + '%</div><div class="sub">' + stats.fastPath.followers.toLocaleString() + ' via anchor - ' + stats.fastPath.anchors.toLocaleString() + ' anchors</div><div class="mini-progress"><div class="mini-progress-fill" style="width:' + stats.fastPath.followerShare + '%"></div></div></div>'
+      : '';
     document.getElementById('statsGrid').innerHTML =
       '<div class="stat-card accent"><div class="label">Total Tracked</div><div class="value">' + stats.totalFiles.toLocaleString() + '</div></div>' +
       '<div class="stat-card success"><div class="label">Synced</div><div class="value">' + stats.syncedFiles.toLocaleString() + '</div><div class="sub">' + stats.syncRate + '% complete</div><div class="mini-progress"><div class="mini-progress-fill" style="width:' + stats.syncRate + '%"></div></div></div>' +
       '<div class="stat-card warning"><div class="label">Skipped</div><div class="value">' + stats.skippedFiles.toLocaleString() + '</div></div>' +
-      '<div class="stat-card"><div class="label">Pending</div><div class="value">' + (stats.totalFiles - stats.syncedFiles - stats.skippedFiles).toLocaleString() + '</div></div>';
+      '<div class="stat-card"><div class="label">Pending</div><div class="value">' + (stats.totalFiles - stats.syncedFiles - stats.skippedFiles).toLocaleString() + '</div></div>' +
+      fastPathCard;
     var engHtml = (stats.engines || []).map(function(e) {
       return '<div class="stat-card success"><div class="label">' + e.engine + '</div><div class="value">' + e.synced.toLocaleString() + '</div><div class="sub">' + e.rate + '% synced - ' + e.total.toLocaleString() + ' total</div><div class="mini-progress"><div class="mini-progress-fill" style="width:' + e.rate + '%"></div></div></div>';
     }).join('');
@@ -211,21 +215,47 @@ class SubsyncarrPlusClient {
     var self = this;
     var searchQ = document.getElementById("runSearch");
     var showFiles = searchQ ? self._filterFiles(self.state.files, searchQ.value) : self.state.files;
-    var processing = showFiles.filter(function(f) { return f.status === "processing"; });
-    var done = showFiles.filter(function(f) { return ["completed","skipped","error","not_fitting"].indexOf(f.status) >= 0; });
-    function fileCards(arr, showSkip) {
-      return arr.map(function(f) {
-        var engines = {}; try { engines = JSON.parse(f.engines); } catch(e) {}
-        var badges = Object.entries(engines).map(function(e) {
-          var name = e[0], r = e[1];
-          var cls = r.success ? 'pass' : (r.skipped ? 'skip' : 'fail');
-          var label = r.success ? 'OK' : (r.skipped ? 'SK' : 'FAIL');
-          var dur = r.duration ? ' ' + (r.duration/1000).toFixed(1) + 's' : '';
-          return '<span class="engine-badge ' + cls + '">' + label + ' ' + name + dur + '</span>';
-        }).join('');
-        var statusLabel = f.status === 'not_fitting' ? 'NF' : f.status === 'error' ? 'FAIL' : f.status === 'skipped' ? 'SK' : 'OK';
-        var skipBtn = showSkip ? '<button class="btn btn-sm btn-danger" onclick="client.skipFile(\'' + f.file_path.replace(/'/g,'\\\'') + '\')">Skip</button>' : '';
-        return '<div class="file-card ' + f.status + '"><div class="file-header"><div class="file-name"><span class="status-tag ' + f.status + '">' + statusLabel + '</span> ' + f.file_path.split('/').pop() + '</div>' + skipBtn + '</div><div class="engine-badges">' + badges + '</div></div>';
+    var visible = showFiles.filter(function(f) { return ["processing","completed","skipped","error","not_fitting"].indexOf(f.status) >= 0; });
+    var processingCount = visible.filter(function(f) { return f.status === "processing"; }).length;
+
+    function fileRow(f, showSkip) {
+      var engines = {}; try { engines = JSON.parse(f.engines); } catch(e) {}
+      var badges = Object.entries(engines).map(function(e) {
+        var name = e[0], r = e[1];
+        var cls = r.success ? 'pass' : (r.skipped ? 'skip' : 'fail');
+        var label = r.success ? 'OK' : (r.skipped ? 'SK' : 'FAIL');
+        var dur = r.duration ? ' ' + (r.duration/1000).toFixed(1) + 's' : '';
+        return '<span class="engine-badge ' + cls + '">' + label + ' ' + name + dur + '</span>';
+      }).join('');
+      var statusLabel = f.status === 'processing' ? '...' : f.status === 'not_fitting' ? 'NF' : f.status === 'error' ? 'FAIL' : f.status === 'skipped' ? 'SK' : 'OK';
+      var modeChip = '';
+      if (f.sync_mode === 'anchor') modeChip = '<span class="mode-chip anchor">ANCHOR</span>';
+      else if (f.sync_mode === 'follower') modeChip = '<span class="mode-chip follower">via anchor</span>';
+      else if (f.sync_mode === 'full' && f.file_path.toLowerCase().indexOf('.forced.') >= 0) modeChip = '<span class="mode-chip forced">forced - full pipeline</span>';
+      var skipBtn = (showSkip && f.status === 'processing') ? '<button class="btn btn-sm btn-danger" onclick="client.skipFile(\'' + f.file_path.replace(/'/g,'\\\'') + '\')">Skip</button>' : '';
+      var indent = f.sync_mode === 'follower' ? ' follower-row' : '';
+      return '<div class="file-card ' + f.status + indent + '"><div class="file-header"><div class="file-name"><span class="status-tag ' + f.status + '">' + statusLabel + '</span> ' + modeChip + ' ' + f.file_path.split('/').pop() + '</div>' + skipBtn + '</div><div class="engine-badges">' + badges + '</div></div>';
+    }
+
+    // Group by matched video so anchor + followers read as one unit
+    function groupedCards(arr) {
+      var groups = {}; var order = [];
+      arr.forEach(function(f) {
+        var key = f.video_path || f.file_path;
+        if (!groups[key]) { groups[key] = []; order.push(key); }
+        groups[key].push(f);
+      });
+      return order.map(function(key) {
+        var files = groups[key];
+        // anchor first, then followers, then the rest — each newest-first as delivered
+        files.sort(function(a, b) {
+          var rank = function(f) { return f.sync_mode === 'anchor' ? 0 : f.sync_mode === 'follower' ? 1 : 2; };
+          return rank(a) - rank(b);
+        });
+        var rows = files.map(function(f) { return fileRow(f, true); }).join('');
+        if (files.length === 1 && !files[0].sync_mode) return rows;
+        var videoName = (files[0].video_path || '').split('/').pop() || 'No video matched';
+        return '<div class="video-group"><div class="video-group-head">' + videoName + ' <span class="text-muted">(' + files.length + ')</span></div>' + rows + '</div>';
       }).join('');
     }
     // Show filters
@@ -250,12 +280,14 @@ class SubsyncarrPlusClient {
     } else if (etaEl) {
       etaEl.textContent = '';
     }
+    var fastPathNote = (run.followers_completed > 0)
+      ? '<span>Fast path: ' + run.followers_completed + ' via anchor / ' + (run.anchors_completed||0) + ' anchors</span>'
+      : '';
     container.innerHTML =
-      '<div class="run-progress"><div class="run-stats-row"><span>OK ' + (run.completed||0) + '</span><span>SK ' + (run.skipped||0) + '</span><span>FAIL ' + (run.failed||0) + '</span><span>NF ' + (run.not_fitting||0) + '</span><span>Total: ' + (run.total_files||0).toLocaleString() + '</span></div>' +
+      '<div class="run-progress"><div class="run-stats-row"><span>OK ' + (run.completed||0) + '</span><span>SK ' + (run.skipped||0) + '</span><span>FAIL ' + (run.failed||0) + '</span><span>NF ' + (run.not_fitting||0) + '</span><span>Total: ' + (run.total_files||0).toLocaleString() + '</span>' + fastPathNote + '</div>' +
       '<div class="progress-bar"><div class="progress-fill" style="width:' + pct + '%"></div></div>' +
       '<div class="text-sm text-muted">' + (run.completed_engines||0) + ' / ' + (run.total_engines||0) + ' engines (' + pct + '%)</div></div>' +
-      '<h4>Processing (' + processing.length + ')</h4>' + (fileCards(processing, true) || '<p class="text-muted text-sm">None</p>') +
-      '<h4 style="margin-top:20px">Completed (' + done.length + ')</h4>' + (fileCards(done, false) || '<p class="text-muted text-sm">None</p>');
+      '<h4>Activity (' + processingCount + ' processing)</h4>' + (groupedCards(visible) || '<p class="text-muted text-sm">None yet</p>');
   }
   renderHistory(runs) {
     var self = this;
@@ -277,10 +309,14 @@ class SubsyncarrPlusClient {
         return '<td>' + (s.pass>0?'<span style="color:#10b981">'+s.pass+'</span>':'') + (s.pass>0&&s.fail>0?'/':'') + (s.fail>0?'<span style="color:#ef4444">'+s.fail+'</span>':'') + '</td>';
       }
       function click(n, cat) { return n>0 ? '<span class="stat-clickable" onclick="client.showFileList(\''+run.id+'\',\''+cat+'\')">'+n+'</span>' : n; }
+      var af = (run.anchors_completed || run.followers_completed)
+        ? (run.anchors_completed||0) + '/' + (run.followers_completed||0)
+        : '-';
       return '<tr><td>' + new Date(run.start_time).toLocaleString() + '</td>' +
         '<td><span class="status-badge ' + run.status + '">' + run.status + '</span></td>' +
         '<td>' + (run.total_files||0).toLocaleString() + '</td>' +
         '<td>' + click(run.completed,'completed') + '</td>' +
+        '<td>' + af + '</td>' +
         '<td>' + click(run.skipped,'skipped') + '</td>' +
         '<td>' + click(run.failed,'failed') + '</td>' +
         '<td>' + click(run.not_fitting||0,'not_fitting') + '</td>' +
@@ -288,7 +324,7 @@ class SubsyncarrPlusClient {
         '<td>' + dur + '</td>' +
         '<td><button class="btn btn-sm btn-secondary" onclick="client.viewLogs(\''+run.id+'\')">Logs</button></td></tr>';
     }).join('');
-    document.getElementById('historyBody').innerHTML = html || '<tr><td colspan="12" class="text-muted">No runs yet</td></tr>';
+    document.getElementById('historyBody').innerHTML = html || '<tr><td colspan="13" class="text-muted">No runs yet</td></tr>';
   }
   renderFolders(folders, parent) {
     var self = this;
@@ -457,7 +493,10 @@ class SubsyncarrPlusClient {
             var cls = r.success ? 'pass' : 'fail';
             return '<span class="engine-badge ' + cls + '">' + name + ': ' + (r.success ? 'OK' : 'FAIL') + offset + dur + '</span>';
           }).join(' ');
-          return '<div class="timeline-entry"><div class="timeline-date">' + date + '</div><div class="timeline-status"><span class="status-badge ' + statusCls + '">' + sh.fileStatus + '</span></div><div class="timeline-engines">' + engineDetails + '</div></div>';
+          var modeInfo = '';
+          if (sh.syncMode === 'anchor') modeInfo = ' <span class="mode-chip anchor">ANCHOR</span>';
+          else if (sh.syncMode === 'follower') modeInfo = ' <span class="mode-chip follower">via anchor' + (sh.anchorPath ? ': ' + sh.anchorPath.split('/').pop() : '') + '</span>';
+          return '<div class="timeline-entry"><div class="timeline-date">' + date + '</div><div class="timeline-status"><span class="status-badge ' + statusCls + '">' + sh.fileStatus + '</span>' + modeInfo + '</div><div class="timeline-engines">' + engineDetails + '</div></div>';
         }).join('');
         html += '</div></div>';
       }

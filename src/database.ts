@@ -60,6 +60,8 @@ export interface Run {
   status: 'running' | 'completed' | 'cancelled';
   logs: string;
   engine_stats: string;
+  anchors_completed: number;
+  followers_completed: number;
 }
 
 export interface FileResult {
@@ -70,6 +72,10 @@ export interface FileResult {
   status: 'pending' | 'processing' | 'completed' | 'skipped' | 'error' | 'not_fitting';
   current_engine: string | null;
   engines: string; // JSON stringified { ffsubsync?: {...}, autosubsync?: {...}, alass?: {...} }
+  /** How the file was (or will be) synced: full video pipeline, as the group's anchor, or sub-to-sub via an anchor. */
+  sync_mode: 'anchor' | 'follower' | 'full' | null;
+  /** For followers: the anchor subtitle this file was aligned against. */
+  anchor_path: string | null;
   created_at: number;
   updated_at: number;
 }
@@ -184,6 +190,24 @@ export class SubsyncarrPlusDatabase {
       this.db.exec(`ALTER TABLE runs ADD COLUMN engine_stats TEXT DEFAULT '{}'`);
     }
 
+    // Migration: anchor-alignment counters on runs (how many files synced as
+    // anchors vs. aligned sub-to-sub via an anchor)
+    if (!columns.some((col) => col.name === 'anchors_completed')) {
+      this.db.exec(`ALTER TABLE runs ADD COLUMN anchors_completed INTEGER DEFAULT 0`);
+    }
+    if (!columns.some((col) => col.name === 'followers_completed')) {
+      this.db.exec(`ALTER TABLE runs ADD COLUMN followers_completed INTEGER DEFAULT 0`);
+    }
+
+    // Migration: sync_mode/anchor_path on file_results (anchor alignment)
+    const frColumns = this.db.pragma('table_info(file_results)') as Array<{ name: string }>;
+    if (!frColumns.some((col) => col.name === 'sync_mode')) {
+      this.db.exec(`ALTER TABLE file_results ADD COLUMN sync_mode TEXT`);
+    }
+    if (!frColumns.some((col) => col.name === 'anchor_path')) {
+      this.db.exec(`ALTER TABLE file_results ADD COLUMN anchor_path TEXT`);
+    }
+
     // Migration: Create synced_files cache table — avoids re-scanning 183K SRT headers
     const syncedFilesTable = this.db
       .prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='synced_files'")
@@ -293,7 +317,7 @@ export class SubsyncarrPlusDatabase {
     this.db.prepare('UPDATE runs SET engine_stats = ? WHERE id = ?').run(engineStats, runId);
   }
 
-  incrementRunField(id: string, field: 'completed' | 'skipped' | 'failed' | 'not_fitting' | 'completed_engines'): void {
+  incrementRunField(id: string, field: 'completed' | 'skipped' | 'failed' | 'not_fitting' | 'completed_engines' | 'anchors_completed' | 'followers_completed'): void {
     this.db.prepare(`UPDATE runs SET ${field} = ${field} + 1 WHERE id = ?`).run(id);
   }
 
@@ -701,6 +725,18 @@ export class SubsyncarrPlusDatabase {
       .sort((a, b) => b.count - a.count)
       .slice(0, 10);
 
+    // Fast-path share across retained runs: how many completed syncs skipped
+    // the video decode by aligning against an anchor subtitle instead.
+    const fastPath = this.db
+      .prepare(
+        `SELECT
+           SUM(CASE WHEN sync_mode = 'follower' THEN 1 ELSE 0 END) as followers,
+           SUM(CASE WHEN sync_mode = 'anchor' THEN 1 ELSE 0 END) as anchors,
+           COUNT(*) as total
+         FROM file_results WHERE status = 'completed'`,
+      )
+      .get() as { followers: number | null; anchors: number | null; total: number };
+
     return {
       totalFiles: totalFiles.count,
       syncedFiles: syncedFiles.count,
@@ -708,6 +744,12 @@ export class SubsyncarrPlusDatabase {
       syncRate: totalFiles.count > 0 ? Math.round((syncedFiles.count / totalFiles.count) * 100) : 0,
       engines: engineStats.map((e) => ({ ...e, rate: e.total > 0 ? Math.round((e.synced / e.total) * 100) : 0 })),
       languages,
+      fastPath: {
+        anchors: fastPath.anchors || 0,
+        followers: fastPath.followers || 0,
+        completed: fastPath.total,
+        followerShare: fastPath.total > 0 ? Math.round(((fastPath.followers || 0) / fastPath.total) * 100) : 0,
+      },
     };
   }
 
@@ -812,6 +854,10 @@ export class SubsyncarrPlusDatabase {
       .run(filePath, Date.now(), mtimeMs, sizeBytes, Date.now(), mtimeMs, sizeBytes);
   }
 
+  removeFileFromSyncCache(filePath: string): void {
+    this.db.prepare('DELETE FROM synced_files WHERE file_path = ?').run(filePath);
+  }
+
   // Settings methods
   getSetting(key: string): string | null {
     const row = this.db.prepare('SELECT value FROM settings WHERE key = ?').get(key) as { value: string } | undefined;
@@ -861,6 +907,8 @@ export class SubsyncarrPlusDatabase {
         runStatus: fr.run_status,
         fileStatus: fr.status,
         engines,
+        syncMode: fr.sync_mode,
+        anchorPath: fr.anchor_path,
         updatedAt: fr.updated_at,
       };
     });

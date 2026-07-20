@@ -9,8 +9,11 @@ export async function generateAlassSubtitles(
 ): Promise<ProcessingResult> {
   const directory = dirname(srtPath);
   const srtBaseName = basename(srtPath, '.srt');
-  const tempPath = join(directory, `${srtBaseName}.alass-tmp.srt`);
-  const backupPath = srtPath + '.bak';
+  // Dot-prefixed so media servers watching this directory (Jellyfin, Plex,
+  // Samba dotfile hiding) ignore these mid-processing files instead of
+  // indexing/probing them while alass is still writing or we're mid-rename.
+  const tempPath = join(directory, `.${srtBaseName}.alass-tmp.srt`);
+  const backupPath = join(directory, `.${srtBaseName}.srt.bak`);
   const originalFirstCueMs = getFirstCueTimeMs(srtPath);
 
   try {
@@ -27,19 +30,30 @@ export async function generateAlassSubtitles(
         return { success: false, message: `alass did not produce output file: ${tempPath}`, stdout: stdout || undefined, stderr: stderr || undefined };
       }
 
-      if (originalFirstCueMs !== null) {
-        const newFirstCueMs = getFirstCueTimeMs(tempPath);
-        if (newFirstCueMs !== null) {
-          const shiftMs = Math.abs(newFirstCueMs - originalFirstCueMs);
-          const maxShiftMs = getMaxShiftMs();
-          console.log(`${new Date().toLocaleString()} Shift detected: ${shiftMs}ms (max allowed: ${maxShiftMs}ms) for: ${basename(srtPath)}`);
+      // alass can exit 0 while writing an empty/unparseable file (e.g. a
+      // malformed input, an encoding it silently mishandled). Never install
+      // that over the original — it would leave a subtitle with zero valid
+      // cues on disk, permanently (Jellyfin/ffprobe then reject it on every
+      // scan, and the "two engines agree" check downstream treated 0 cues as
+      // a perfect match, so this used to sail straight through).
+      const newFirstCueMs = getFirstCueTimeMs(tempPath);
+      if (newFirstCueMs === null) {
+        console.log(`${new Date().toLocaleString()} alass output has no parseable cues, restoring backup for: ${basename(srtPath)}`);
+        try { unlinkSync(tempPath); } catch { /* ignore */ }
+        renameSync(backupPath, srtPath);
+        return { success: false, message: `alass produced empty or unparseable output for ${basename(srtPath)}`, stdout: stdout || undefined, stderr: stderr || undefined };
+      }
 
-          if (shiftMs > maxShiftMs) {
-            console.log(`${new Date().toLocaleString()} Shift too large (${shiftMs}ms > ${maxShiftMs}ms), restoring backup for: ${basename(srtPath)}`);
-            try { unlinkSync(tempPath); } catch { /* ignore */ }
-            renameSync(backupPath, srtPath);
-            return { success: false, message: `Shift too large: ${shiftMs}ms (max: ${maxShiftMs}ms). Subtitle likely does not match this video.`, stdout: stdout || undefined, stderr: stderr || undefined, shiftTooLarge: true, originalShiftMs: shiftMs };
-          }
+      if (originalFirstCueMs !== null) {
+        const shiftMs = Math.abs(newFirstCueMs - originalFirstCueMs);
+        const maxShiftMs = getMaxShiftMs();
+        console.log(`${new Date().toLocaleString()} Shift detected: ${shiftMs}ms (max allowed: ${maxShiftMs}ms) for: ${basename(srtPath)}`);
+
+        if (shiftMs > maxShiftMs) {
+          console.log(`${new Date().toLocaleString()} Shift too large (${shiftMs}ms > ${maxShiftMs}ms), restoring backup for: ${basename(srtPath)}`);
+          try { unlinkSync(tempPath); } catch { /* ignore */ }
+          renameSync(backupPath, srtPath);
+          return { success: false, message: `Shift too large: ${shiftMs}ms (max: ${maxShiftMs}ms). Subtitle likely does not match this video.`, stdout: stdout || undefined, stderr: stderr || undefined, shiftTooLarge: true, originalShiftMs: shiftMs };
         }
       } else {
         console.log(`${new Date().toLocaleString()} Could not parse original SRT cue times, skipping shift check for: ${basename(srtPath)}`);

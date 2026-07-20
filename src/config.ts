@@ -103,6 +103,16 @@ export function getNotFittingDeleteThreshold(): number {
   return 3;
 }
 
+/**
+ * Anchor-based alignment: sync one sub per video against the video, then
+ * align that video's other subs against the synced anchor (sub-to-sub, no
+ * video decode). Enabled by default; ANCHOR_ALIGNMENT=false is the kill
+ * switch if it ever misbehaves on real data.
+ */
+export function isAnchorAlignmentEnabled(): boolean {
+  return (process.env.ANCHOR_ALIGNMENT || 'true') !== 'false';
+}
+
 export interface DryRunConfig {
   enabled: boolean;
 }

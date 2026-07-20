@@ -1,7 +1,7 @@
 import { exec } from 'child_process';
 import { basename, dirname, join } from 'path';
 import { writeFileSync, openSync, readSync, closeSync, readFileSync } from 'fs';
-import { open } from 'fs/promises';
+import { open, readFile } from 'fs/promises';
 
 export type SubtitleFormat = 'standard' | 'overwrite';
 
@@ -86,6 +86,24 @@ export async function isSyncedSrt(srtPath: string): Promise<boolean> {
 export function markSrtAsSynced(srtPath: string, engine: string, content: string): void {
   const marker = `${SYNC_MARKER}${engine} ${Date.now()}\n`;
   writeFileSync(srtPath, marker + content, 'utf8');
+}
+
+/**
+ * A file already carrying the "# synced:" marker but with zero parseable
+ * cues in its body — evidence that a past run's engine installed empty or
+ * unparseable output (the bug the `getFirstCueTimeMs === null` guards in
+ * the engine wrappers now prevent going forward). Because the marker makes
+ * `isSyncedSrt` report "already synced", a file like this is otherwise never
+ * looked at again — it fails ffprobe on every media-server scan forever.
+ * Only call on files already confirmed synced; this reads the full file.
+ */
+export async function isCorruptSyncedSrt(srtPath: string): Promise<boolean> {
+  try {
+    const content = await readFile(srtPath, 'utf8');
+    return !/\d{2}:\d{2}:\d{2},\d{3}\s*-->/.test(content);
+  } catch {
+    return false;
+  }
 }
 
 export interface ProcessingResult {

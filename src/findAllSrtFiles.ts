@@ -3,7 +3,7 @@ import { stat } from 'fs/promises';
 import { extname, join } from 'path';
 import { existsSync } from 'fs';
 import { ScanConfig } from './config';
-import { getOutputPath, getSubtitleFormat, isSyncedSrt } from './helpers';
+import { getOutputPath, getSubtitleFormat, isSyncedSrt, isCorruptSyncedSrt } from './helpers';
 import { DirectoryCache, initDirectoryCache } from './findMatchingVideoFile';
 import { SubsyncarrPlusDatabase } from './database';
 
@@ -17,7 +17,7 @@ const ALL_KNOWN_ENGINES = ['ffsubsync', 'autosubsync', 'alass'];
 // and the scan phase always runs before the current run creates any temp
 // files of its own, so anything matching these patterns must be leftover
 // from an earlier, interrupted run.
-const TEMP_FILE_PATTERNS = ['.alass-tmp.', '.ffsubsync-tmp.', '.subsyncarr_retry.'];
+const TEMP_FILE_PATTERNS = ['.alass-tmp.', '.ffsubsync-tmp.', '.subsyncarr_retry.', '.anchor-ref.'];
 
 function isFinishedEngineOutput(filename: string): boolean {
   return ALL_KNOWN_ENGINES.some((engine) => filename.includes(`.${engine}.`));
@@ -35,7 +35,7 @@ export async function findAllSrtFiles(
   db?: SubsyncarrPlusDatabase,
   onProgress?: (checked: number, total: number, needSync: number, alreadySynced: number) => void,
   dryRun?: boolean,
-): Promise<{ files: string[]; directoryCache: DirectoryCache; orphanedTempFilesRemoved: number }> {
+): Promise<{ files: string[]; directoryCache: DirectoryCache; orphanedTempFilesRemoved: number; corruptedSyncedFilesRemoved: number }> {
   const engines = process.env.INCLUDE_ENGINES?.split(',') || ['ffsubsync', 'autosubsync', 'alass'];
   const format = getSubtitleFormat();
 
@@ -45,6 +45,20 @@ export async function findAllSrtFiles(
   // Phase 1: Walk directory tree synchronously (fast — just readdir calls, ~5 seconds for 197K files)
   const srtPaths: string[] = [];
   let orphanedTempFilesRemoved = 0;
+
+  function removeOrphan(fullPath: string, label: string): void {
+    if (dryRun) {
+      console.log(`${new Date().toLocaleString()} [DRY RUN] Would delete ${label}: ${fullPath}`);
+      return;
+    }
+    try {
+      unlinkSync(fullPath);
+      orphanedTempFilesRemoved++;
+      console.log(`${new Date().toLocaleString()} Deleted ${label}: ${fullPath}`);
+    } catch (err) {
+      console.log(`${new Date().toLocaleString()} Failed to delete ${label} ${fullPath}: ${err instanceof Error ? err.message : String(err)}`);
+    }
+  }
 
   function collectSrtPaths(directory: string): void {
     if (config.excludePaths.some((excludePath) => directory.startsWith(excludePath))) {
@@ -65,22 +79,22 @@ export async function findAllSrtFiles(
         collectSrtPaths(fullPath);
         continue;
       }
-      if (!entry.isFile() || extname(entry.name).toLowerCase() !== '.srt') {
+      if (!entry.isFile()) continue;
+
+      // Engine backups (`.name.srt.bak`) don't end in `.srt`, so they'd never
+      // be seen by the `.srt`-only check below — a crashed/killed run can
+      // leave one behind just as easily as a `-tmp.srt` file.
+      if (entry.name.endsWith('.srt.bak')) {
+        removeOrphan(fullPath, 'orphaned backup file');
+        continue;
+      }
+
+      if (extname(entry.name).toLowerCase() !== '.srt') {
         continue;
       }
 
       if (isOrphanedTempFile(entry.name)) {
-        if (dryRun) {
-          console.log(`${new Date().toLocaleString()} [DRY RUN] Would delete orphaned temp file: ${fullPath}`);
-        } else {
-          try {
-            unlinkSync(fullPath);
-            orphanedTempFilesRemoved++;
-            console.log(`${new Date().toLocaleString()} Deleted orphaned temp file: ${fullPath}`);
-          } catch (err) {
-            console.log(`${new Date().toLocaleString()} Failed to delete orphaned temp file ${fullPath}: ${err instanceof Error ? err.message : String(err)}`);
-          }
-        }
+        removeOrphan(fullPath, 'orphaned temp file');
         continue;
       }
 
@@ -105,6 +119,7 @@ export async function findAllSrtFiles(
   const files: string[] = [];
   let skippedCount = 0;
   let completedCount = 0;
+  let corruptedSyncedFilesRemoved = 0;
 
   async function checkFile(srtPath: string): Promise<void> {
     let isSynced: boolean;
@@ -130,6 +145,37 @@ export async function findAllSrtFiles(
         // Cache result (with current mtime/size) to avoid future header reads
         if (isSynced && db && fileStat) {
           db.addFileToSyncCache(srtPath, fileStat.mtimeMs, fileStat.size);
+        }
+      }
+
+      // Repair pass: a past run could have installed empty/unparseable
+      // engine output under the sync marker (see the engine wrappers' cue
+      // validation, added to prevent this going forward) — that file reads
+      // as "already synced" forever and is never looked at again, while
+      // Jellyfin/ffprobe rejects it on every library scan. Delete it here so
+      // it drops out of the cache and gets resupplied instead of staying
+      // permanently broken. Runs on cache hits too, since a corrupted file's
+      // mtime/size never changes once broken — that's exactly what makes it
+      // stick in the cache.
+      if (isSynced) {
+        const corrupt = await isCorruptSyncedSrt(srtPath);
+        if (corrupt) {
+          isSynced = false;
+          if (dryRun) {
+            console.log(`${new Date().toLocaleString()} [DRY RUN] Would delete corrupted synced subtitle (0 cues): ${srtPath}`);
+          } else {
+            try {
+              unlinkSync(srtPath);
+              corruptedSyncedFilesRemoved++;
+              console.log(`${new Date().toLocaleString()} Deleted corrupted synced subtitle (0 cues): ${srtPath}`);
+              if (db) db.removeFileFromSyncCache(srtPath);
+            } catch (err) {
+              console.log(`${new Date().toLocaleString()} Failed to delete corrupted subtitle ${srtPath}: ${err instanceof Error ? err.message : String(err)}`);
+            }
+          }
+          completedCount++;
+          // File is gone (or dry-run pretends it is) — nothing to sync or skip.
+          return;
         }
       }
     } else {
@@ -179,8 +225,9 @@ export async function findAllSrtFiles(
 
   console.log(
     `${new Date().toLocaleString()} Scan complete: ${srtPaths.length} SRT files found, ${files.length} need sync, ${skippedCount} already synced` +
-      (orphanedTempFilesRemoved > 0 ? `, ${orphanedTempFilesRemoved} orphaned temp file(s) removed` : ''),
+      (orphanedTempFilesRemoved > 0 ? `, ${orphanedTempFilesRemoved} orphaned temp file(s) removed` : '') +
+      (corruptedSyncedFilesRemoved > 0 ? `, ${corruptedSyncedFilesRemoved} corrupted synced subtitle(s) removed` : ''),
   );
 
-  return { files, directoryCache, orphanedTempFilesRemoved };
+  return { files, directoryCache, orphanedTempFilesRemoved, corruptedSyncedFilesRemoved };
 }
