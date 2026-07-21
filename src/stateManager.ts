@@ -9,15 +9,22 @@ export class StateManager extends EventEmitter {
   private currentRunId: string | null = null;
   private logFileManager: LogFileManager;
 
-  constructor(dbPath: string) {
+  /**
+   * @param options.skipInit  Reader mode for the API process — open the DB as a
+   *   secondary reader (no migrations) and skip handleIncompleteRuns (that
+   *   writes, and is the writer/worker's job on startup).
+   */
+  constructor(dbPath: string, options?: { skipInit?: boolean }) {
     super();
-    this.db = new SubsyncarrPlusDatabase(dbPath);
+    this.db = new SubsyncarrPlusDatabase(dbPath, { skipInit: options?.skipInit });
 
     // Create log file manager in same directory as database
     const logDir = path.join(path.dirname(dbPath), 'logs');
     this.logFileManager = new LogFileManager(logDir);
 
-    this.handleIncompleteRuns();
+    if (!options?.skipInit) {
+      this.handleIncompleteRuns();
+    }
   }
 
   private handleIncompleteRuns(): void {

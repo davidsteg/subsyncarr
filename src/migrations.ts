@@ -225,6 +225,23 @@ const MIGRATIONS: Migration[] = [
       }
     },
   },
+  {
+    version: 14,
+    name: 'add_file_results_run_updated_index',
+    run: (db) => {
+      // The live-view query (getActiveAndRecentFiles) filters by run_id and
+      // ORDERs BY updated_at DESC. With only the single-column idx_file_results_run,
+      // SQLite had to collect every row for the run and sort them — ~115k rows
+      // on a large active run, which blocked the synchronous event loop for
+      // ~40-50s per dashboard poll. This composite lets it walk the index
+      // backwards and stop at LIMIT, turning that query from seconds into
+      // sub-millisecond.
+      db.exec(`
+        CREATE INDEX IF NOT EXISTS idx_file_results_run_updated
+          ON file_results(run_id, updated_at);
+      `);
+    },
+  },
 ];
 
 export function runMigrations(db: Database.Database): void {

@@ -145,7 +145,15 @@ export interface EngineFailureTracking {
 export class SubsyncarrPlusDatabase {
   private db: Database.Database;
 
-  constructor(dbPath: string) {
+  /**
+   * @param options.skipInit  Open as a secondary *reader* connection (the API
+   *   process). The worker process owns schema creation, migrations and the
+   *   persistent WAL/synchronous pragmas — a reader must not run those (they
+   *   write, and racing migrations across two processes is unsafe). It only
+   *   sets connection-local, read-safe pragmas. WAL lets this reader see the
+   *   worker's committed writes without blocking it.
+   */
+  constructor(dbPath: string, options?: { skipInit?: boolean }) {
     const dir = path.dirname(dbPath);
     try {
       fs.mkdirSync(dir, { recursive: true });
@@ -163,7 +171,11 @@ export class SubsyncarrPlusDatabase {
       }
       throw err;
     }
-    this.initSchema();
+    if (options?.skipInit) {
+      this.initReaderConnection();
+    } else {
+      this.initSchema();
+    }
   }
 
   private initSchema() {
@@ -177,6 +189,19 @@ export class SubsyncarrPlusDatabase {
 
     // Run all pending migrations
     runMigrations(this.db);
+  }
+
+  /**
+   * Reader connection for the API process. Only connection-local, read-safe
+   * pragmas — no journal_mode/synchronous/auto_vacuum (persistent, already set
+   * by the writer) and no migrations. busy_timeout covers the brief moments a
+   * WAL checkpoint holds a lock.
+   */
+  private initReaderConnection() {
+    this.db.pragma('cache_size = -64000');
+    this.db.pragma('mmap_size = 268435456');
+    this.db.pragma('temp_store = MEMORY');
+    this.db.pragma('busy_timeout = 5000');
   }
 
   // Run methods
