@@ -1,3 +1,21 @@
+## [1.3.37] — 2026-07-21
+
+### Fixed
+- **Engine child-process output buffer was cut to 512 KB in 1.3.36, risking spurious sync failures.** `execPromise`'s `maxBuffer` caps how much stdout/stderr the engine subprocess may emit before Node kills it and the sync fails. ffsubsync can be very chatty on a long decode, so a 512 KB cap could kill an otherwise-successful run. Restored to 10 MB of headroom. This is independent of how much output is *persisted* — that's capped separately at 1 KB in the engine wrapper, so the larger process buffer only costs transient memory.
+- **Keep/skip decision logging lost its diagnostic detail in the 1.3.36 refactor.** The successful-sync path printed a blanket "✓ Engines agree" even when only one engine actually produced output, and the engine-to-engine millisecond delta (e.g. "alass vs ffsubsync agree (15ms ≤ 5000ms)") disappeared from both the agree and disagree paths. Restored: the log now distinguishes "only one engine produced output — keeping" from a genuine two-engine agreement, and shows the actual delta and threshold on every two-engine decision.
+- **`compose.yaml` pinned a Docker image tag that was never built.** 1.3.36 changed it to `davidsteg/subsyncarr:v1.3.36`, but the publish workflow tags images from the bare version tag (`1.3.36`, no `v` prefix) — so `docker compose pull` would fail with "not found". Repointed to `davidsteg/subsyncarr:1.3.37`, matching the image the workflow actually pushes.
+
+### Removed
+- **Dead code left behind by the 1.3.36 refactor.** `generateAlassSubtitles.ts` and `generateFfsubsyncSubtitles.ts` were superseded by the unified `engineWrapper.ts` but left on disk — two stale copies of the exact logic the dedup was meant to eliminate. Also removed `configResolver.ts`: a 195-line "single source of truth for settings" module that was never imported anywhere (config resolution still runs through `config.ts` / `engineRuntime.ts` / `helpers.ts`). Unifying those three into one resolver is still open work — this just removes the dead scaffold that made it look done.
+
+## [1.3.36] — 2026-07-20
+
+### Changed
+- **Extracted the keep-vs-delete decision into a pure `decideOutcome()` function** (`decideOutcome.ts`) with unit tests covering the empty / single-engine / agree / disagree / exact-threshold / negative-shift cases — the most safety-critical logic in the app (it governs subtitle deletion) is now isolated and testable instead of buried inline in the processing loop.
+- **Unified the alass and ffsubsync wrappers** into a single `engineWrapper.ts` parameterized by command-builder and temp-suffix, eliminating ~95% duplication (they differed only in the command string). Preserves all 1.3.32 safety behavior: cue-count validation before install, hidden dot-file temp/backup names, and the shift-too-large check.
+- **Centralized database migrations** into a versioned `migrations.ts` runner (tracked in a `migrations` table) instead of scattered inline `ALTER TABLE` blocks in `initSchema`. Idempotent on existing databases.
+- **Capped persisted engine stdout/stderr to 1 KB** (was effectively unbounded, up to the process buffer) — the source of multi-megabyte API responses on large runs.
+
 ## [1.3.32] — 2026-07-20
 
 ### Added

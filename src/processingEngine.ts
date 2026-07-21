@@ -508,15 +508,26 @@ export class ProcessingEngine extends EventEmitter {
     const alignmentData: Alignment[] = alignments.map((a) => ({ engine: a.engine, shiftMs: a.shiftMs }));
     const outcome = decideOutcome(alignmentData, agreementThresholdMs);
 
+    // Disagreement between the two engines, as the difference of each engine's
+    // shift-vs-original. For a constant global shift (the overwhelming common
+    // case) this equals a direct content-to-content comparison; it only
+    // diverges under non-constant warping. Only meaningful with 2 alignments.
+    const disagreementMs = alignments.length === 2 ? Math.abs(alignments[0].shiftMs - alignments[1].shiftMs) : 0;
+
     if (outcome === 'not_fitting') {
-      // Engines disagree or neither could sync → subtitle doesn't fit (this run).
-      const reason = alignments.length === 0 ? 'No engine could sync' : "Engines disagree — subtitle doesn't fit";
-      this.log(`[${new Date().toISOString()}] ✗ ${reason}: ${fileName}`);
+      if (alignments.length === 0) {
+        this.log(`[${new Date().toISOString()}] ✗ No engine could sync: ${fileName}`);
+      } else {
+        this.log(
+          `[${new Date().toISOString()}] ${alignments[0].engine} vs ${alignments[1].engine} disagree by ${disagreementMs}ms ` +
+            `(threshold: ${agreementThresholdMs}ms) — subtitle doesn't fit: ${fileName}`,
+        );
+      }
       await this.handleNotFitting(
         srtPath,
         fileName,
         alignments.length > 0 ? `${alignments[0].engine}/${alignments[1].engine}` : 'none',
-        alignments.length > 0 ? Math.abs(alignments[0].shiftMs - alignments[1].shiftMs) : 0,
+        disagreementMs,
         originalContent,
         mode,
         anchorPath,
@@ -524,9 +535,18 @@ export class ProcessingEngine extends EventEmitter {
       return { status: 'not_fitting' };
     }
 
-    // Engines agree or only one produced output → keep
+    // Keep. Two paths reach here: only one engine produced output (can't
+    // corroborate a delete, so keep), or both agreed within threshold.
     const winner = alignments[0];
-    this.log(`[${new Date().toISOString()}] ✓ Engines agree — subtitle fits: ${fileName}`);
+    if (alignments.length === 1) {
+      this.log(
+        `[${new Date().toISOString()}] Only ${winner.engine} produced output — keeping (no second engine to corroborate a delete): ${fileName}`,
+      );
+    } else {
+      this.log(
+        `[${new Date().toISOString()}] ✓ ${alignments[0].engine} vs ${alignments[1].engine} agree (${disagreementMs}ms ≤ ${agreementThresholdMs}ms) — subtitle fits: ${fileName}`,
+      );
+    }
     this.commitSync(
       srtPath,
       fileName,
