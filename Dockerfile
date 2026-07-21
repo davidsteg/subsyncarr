@@ -75,12 +75,15 @@ COPY --from=builder --chown=node:node /home/node/.local /home/node/.local
 # Create data directory
 RUN mkdir -p /app/data && chown node:node /app/data
 
-# Copy entrypoint
+# Copy entrypoint + two-process supervisor
 COPY entrypoint.sh /entrypoint.sh
-RUN chmod +x /entrypoint.sh
+COPY supervisor.sh /supervisor.sh
+RUN chmod +x /entrypoint.sh /supervisor.sh
 
 EXPOSE 3000
 
 USER root
 ENTRYPOINT ["/entrypoint.sh"]
-CMD ["node", "dist/index-server.js"]
+# Two processes (API + worker) in one container. Revert to single-process with:
+#   CMD ["node", "dist/index-server.js"]
+CMD ["/supervisor.sh"]

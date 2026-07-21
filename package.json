@@ -14,6 +14,8 @@
     "clean": "rm -rf dist; rm -rf node_modules; rm -rf build/* && rm -rf build",
     "build": "tsc",
     "start": "node dist/index-server.js",
+    "start:worker": "node dist/index-server.js",
+    "start:api": "node dist/index-api.js",
     "watch": "tsc -w",
     "lint": "eslint .",
     "lint:fix": "prettier --write \"**/*\" && npm run lint -- --fix",

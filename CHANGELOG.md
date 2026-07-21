@@ -1,3 +1,14 @@
+## [1.3.38] — 2026-07-21
+
+### Changed
+- **Split the API and the sync worker into two processes (one container) so heavy dashboard reads can never stall a run.** better-sqlite3 is synchronous, so a big `/api/status` or `/api/history` query used to block the same event loop that drives the engine — the root cause of the ~40–50s freezes observed on a large active run. Now:
+  - The **worker** runs the existing single-process server unchanged, bound to `127.0.0.1:$WORKER_PORT` (default 3001) — it stays the sole DB writer and the only process that touches media files, and still owns the engine, cron and cleanup. Its file-handling code is untouched by this change.
+  - A new **API process** (`index-api.ts`) serves the public port. It answers the heavy reads (`/api/status`, `/api/history`, `/api/stats`, `/api/folders`, `/api/runs/:id[/files]`) from its own **read-only** SQLite connection — WAL lets it read the worker's committed writes without blocking it — and transparently reverse-proxies everything stateful (control POSTs, the live WebSocket, config/version/settings, the worker log buffer) to the worker. Live updates stay event-driven (the WebSocket is proxied, not re-polled).
+  - A small `supervisor.sh` runs both, forwards signals, and exits the container if either dies. Revert to the original single process any time by setting the container command to `node dist/index-server.js`.
+
+### Fixed
+- **Added the `(run_id, updated_at)` composite index on `file_results`** (migration v14). The live-run view (`getActiveAndRecentFiles`) filters by `run_id` and orders by `updated_at DESC`; with only the single-column `run_id` index, SQLite had to sort every row for the run (~115k on a large active run), which is what made that query take tens of seconds. The composite lets it walk the index backwards to the `LIMIT` — sub-millisecond. This alone eliminates the freeze; the process split above is defense-in-depth so no future heavy read can reintroduce it.
+
 ## [1.3.37] — 2026-07-21
 
 ### Fixed
