@@ -174,7 +174,13 @@ export function execPromise(
 ): Promise<{ stdout: string; stderr: string }> {
   const timeout = timeoutMs ?? getTimeoutMs();
   return new Promise((resolve, reject) => {
-    const child = exec(command, { timeout, maxBuffer: 512 * 1024 }, (error, stdout, stderr) => {
+    // maxBuffer caps the child's *stdout/stderr* — if the engine prints more
+    // than this, exec kills it and the sync fails spuriously. ffsubsync in
+    // particular can be very chatty (progress output) on a long decode, so
+    // keep generous headroom here. This is unrelated to how much we persist:
+    // what lands in the DB is capped separately (stdout?.substring(0, 1000)
+    // in engineWrapper), so a large buffer here costs only transient memory.
+    const child = exec(command, { timeout, maxBuffer: 1024 * 1024 * 10 }, (error, stdout, stderr) => {
       if (signal?.aborted) {
         reject(new Error(`Aborted: ${command}`));
         return;
