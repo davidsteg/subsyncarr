@@ -40,7 +40,12 @@ for _ in $(seq 1 120); do
 done
 
 # API: public-facing reader + proxy.
-node dist/index-api.js &
+# Give the reader a small heap: it only answers DB reads and proxies, so 256MB
+# is plenty. The image default (NODE_OPTIONS, sized for the heavy worker) would
+# otherwise apply here too — two processes each allowed ~900MB against a 1.5G
+# container limit, plus up to 3 engine subprocesses, is an OOM-kill waiting to
+# happen under load. Cap the reader separately so the sum stays inside the cgroup.
+NODE_OPTIONS="--max-old-space-size=256" node dist/index-api.js &
 API_PID=$!
 
 terminate() {
