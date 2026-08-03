@@ -38,7 +38,7 @@ FROM node:22-slim
 ENV PUID=1000
 ENV PGID=1000
 ENV CRON_SCHEDULE="0 0 * * *"
-ENV NODE_OPTIONS="--max-old-space-size=2048"
+ENV NODE_OPTIONS="--max-old-space-size=896"
 ENV PATH="/home/node/.local/bin:$PATH"
 
 # Install runtime dependencies and gosu
