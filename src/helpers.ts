@@ -110,6 +110,30 @@ export async function isCorruptSyncedSrt(srtPath: string): Promise<boolean> {
   }
 }
 
+/**
+ * Strip the legacy `# synced:` header line from a single SRT file.
+ * Returns true if the file was rewritten, false if no header was found.
+ * The header was invalid SRT and broke ffprobe/Jellyfin's SubtitleResolver.
+ */
+export function stripLegacySyncHeader(srtPath: string): boolean {
+  try {
+    const fd = openSync(srtPath, 'r');
+    const buf = Buffer.alloc(100);
+    const bytesRead = readSync(fd, buf, 0, 100, 0);
+    closeSync(fd);
+    if (bytesRead <= 0 || !buf.toString('utf8', 0, bytesRead).startsWith(SYNC_MARKER)) {
+      return false;
+    }
+    const content = readFileSync(srtPath, 'utf8');
+    const newlinePos = content.indexOf('\n');
+    if (newlinePos === -1) return false;
+    writeFileSync(srtPath, content.slice(newlinePos + 1), 'utf8');
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 export interface ProcessingResult {
   success: boolean;
   message: string;

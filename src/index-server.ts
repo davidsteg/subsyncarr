@@ -27,15 +27,17 @@ function warnIfScanPathMisconfigured(loud: boolean): void {
   if (loud) {
     console.warn(
       '\n' +
-        '='.repeat(78) + '\n' +
+        '='.repeat(78) +
+        '\n' +
         `WARNING: SCAN_PATHS is not set — falling back to the default "${DEFAULT_SCAN_PATH}"\n` +
-        '='.repeat(78) + '\n' +
+        '='.repeat(78) +
+        '\n' +
         'This path almost certainly does not exist in your container. Every scan\n' +
         '(manual or scheduled) will find 0 files and silently "complete" doing\n' +
         'nothing — no errors, just empty runs, possibly for hours or days without\n' +
         'anyone noticing.\n\n' +
         'Fix: set SCAN_PATHS to your actual media mount (e.g. SCAN_PATHS=/media)\n' +
-        'in the container\'s environment and restart. If you use docker-compose,\n' +
+        "in the container's environment and restart. If you use docker-compose,\n" +
         "make sure the container is actually started via 'docker compose up -d'\n" +
         "with your compose file — not a bare 'docker run'/'docker start' that\n" +
         'skips the environment: block.\n' +
@@ -136,6 +138,21 @@ async function main() {
     db.deleteOldRuns(retentionConfig.keepRunsDays);
     db.vacuum();
   }, 5000);
+
+  // Trigger a scan on startup to strip legacy # synced: headers.
+  // The scan in findAllSrtFiles already handles header stripping as part of
+  // its normal pass — no need for a separate walk. This runs once, shortly
+  // after boot, so headers are cleaned before the next scheduled cron run.
+  if (!isScanPathMisconfigured()) {
+    setTimeout(async () => {
+      console.log(`[${new Date().toISOString()}] Starting startup scan (legacy header cleanup)...`);
+      try {
+        await coordinator.startRun();
+      } catch (error) {
+        console.error(`[${new Date().toISOString()}] Startup scan failed:`, error);
+      }
+    }, 8000);
+  }
 
   // Log memory usage periodically (also re-warns about scan-path
   // misconfiguration, so it can't just scroll off after the startup banner)

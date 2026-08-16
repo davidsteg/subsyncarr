@@ -1,8 +1,8 @@
-import { readdirSync, unlinkSync, existsSync, writeFileSync, statSync, openSync, readSync, closeSync } from 'fs';
-import { readFile, stat } from 'fs/promises';
+import { readdirSync, unlinkSync, existsSync, statSync } from 'fs';
+import { stat } from 'fs/promises';
 import { extname, join } from 'path';
 import { ScanConfig } from './config';
-import { getOutputPath, getSubtitleFormat, isSyncedSrt, isCorruptSyncedSrt, SYNC_MARKER } from './helpers';
+import { getOutputPath, getSubtitleFormat, isSyncedSrt, isCorruptSyncedSrt, stripLegacySyncHeader } from './helpers';
 import { DirectoryCache, initDirectoryCache } from './findMatchingVideoFile';
 import { SubsyncarrPlusDatabase } from './database';
 
@@ -192,31 +192,16 @@ export async function findAllSrtFiles(
 
         // Migration: strip legacy # synced: header from already-synced files.
         // The header was invalid SRT and broke ffprobe/Jellyfin's SubtitleResolver.
-        // Only runs on files detected as synced (header or cache), reads the
-        // first line to check, and rewrites the file without the header if found.
-        if (!dryRun) {
-          try {
-            const fd = openSync(srtPath, 'r');
-            const headerBuf = Buffer.alloc(100);
-            const bytesRead = readSync(fd, headerBuf, 0, 100, 0);
-            closeSync(fd);
-            if (bytesRead > 0 && headerBuf.toString('utf8', 0, bytesRead).startsWith(SYNC_MARKER)) {
-              const fullContent = await readFile(srtPath, 'utf8');
-              const newlinePos = fullContent.indexOf('\n');
-              if (newlinePos !== -1) {
-                const cleanContent = fullContent.slice(newlinePos + 1);
-                writeFileSync(srtPath, cleanContent, 'utf8');
-                legacyHeadersStripped++;
-                console.log(`${new Date().toLocaleString()} Stripped legacy sync header from: ${srtPath}`);
-                if (db) {
-                  try {
-                    const s = statSync(srtPath);
-                    db.addFileToSyncCache(srtPath, s.mtimeMs, s.size);
-                  } catch {}
-                }
-              }
-            }
-          } catch {}
+        // Uses the shared stripLegacySyncHeader — idempotent, skips clean files.
+        if (!dryRun && stripLegacySyncHeader(srtPath)) {
+          legacyHeadersStripped++;
+          console.log(`${new Date().toLocaleString()} Stripped legacy sync header from: ${srtPath}`);
+          if (db) {
+            try {
+              const s = statSync(srtPath);
+              db.addFileToSyncCache(srtPath, s.mtimeMs, s.size);
+            } catch {}
+          }
         }
       }
     } else {
