@@ -1,3 +1,9 @@
+## [1.3.40] — 2026-08-16
+
+### Fixed
+
+- **SRT header broke ffprobe/Jellyfin scans.** Subsyncarr prepended a `# synced:alass <timestamp>` comment line at the top of every synced `.srt`. That line is invalid SRT (files must start with a cue number), so ffprobe and Jellyfin's SubtitleResolver failed on every synced file — causing 88K+ errors per scan and library scans hanging for 9+ hours. `markSrtAsSynced()` now writes clean SRT content with no header. Sync status is tracked solely via the database sync cache (`synced_files` table), which already existed. A migration pass in the scanner strips the legacy header from existing synced files on the next run, rewriting them as valid SRT and updating the cache with the new mtime/size.
+
 ## [1.3.39] — 2026-08-03
 
 ### Fixed

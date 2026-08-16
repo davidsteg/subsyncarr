@@ -50,7 +50,7 @@ export function getOutputPath(srtPath: string, engine: string): string {
   return join(directory, `${srtBaseName}.${engine}.srt`);
 }
 
-const SYNC_MARKER = '# synced:';
+export const SYNC_MARKER = '# synced:';
 const SYNC_MARKER_BUF = Buffer.from(SYNC_MARKER);
 
 /**
@@ -84,8 +84,12 @@ export async function isSyncedSrt(srtPath: string): Promise<boolean> {
 }
 
 export function markSrtAsSynced(srtPath: string, engine: string, content: string): void {
-  const marker = `${SYNC_MARKER}${engine} ${Date.now()}\n`;
-  writeFileSync(srtPath, marker + content, 'utf8');
+  // Write clean SRT only — no header prepended.
+  // The sync marker line (# synced:alass ...) was invalid SRT: it broke
+  // ffprobe/Jellyfin's SubtitleResolver, which requires files to start
+  // with a cue number. Sync status is now tracked solely via the
+  // database sync cache (synced_files table), not via file headers.
+  writeFileSync(srtPath, content, 'utf8');
 }
 
 /**
