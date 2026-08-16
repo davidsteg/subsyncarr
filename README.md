@@ -21,7 +21,7 @@ This is a fork of [johnpc/subsyncarr](https://github.com/johnpc/subsyncarr).
 - **Configurable Timeouts** - Set per-engine timeout limits to prevent hung processes
 - **Log Management** - Configurable retention policies with automatic trimming and deletion
 
-> **Note:** This tool syncs subtitles **in place** (overwriting the original `.srt`, with a `# synced:` header marker) and **deletes** subtitles that consistently fail to align across multiple runs (see [Not-Fitting Delete Threshold](#not-fitting-delete-threshold) below). It also deletes its own leftover temp/retry files (`*.alass-tmp.srt`, `*.ffsubsync-tmp.srt`, `*.subsyncarr_retry.srt`) found during a scan — these are only ever created internally and orphaned copies (e.g. from a killed/restarted process) are safe to remove. Keep a backup of subtitles you can't easily re-download, and use `DRY_RUN=true` first to preview what would be changed or deleted.
+> **Note:** This tool syncs subtitles **in place** (overwriting the original `.srt`) and **deletes** subtitles that consistently fail to align across multiple runs (see [Not-Fitting Delete Threshold](#not-fitting-delete-threshold) below). It also deletes its own leftover temp/retry files (`*.alass-tmp.srt`, `*.ffsubsync-tmp.srt`, `*.subsyncarr_retry.srt`) found during a scan — these are only ever created internally and orphaned copies (e.g. from a killed/restarted process) are safe to remove. Keep a backup of subtitles you can't easily re-download, and use `DRY_RUN=true` first to preview what would be changed or deleted.
 
 ## Quick Start
 
@@ -103,41 +103,41 @@ docker run -d \
 
 ### Core Configuration
 
-| Variable                    | Default                       | Description                                                                      |
-| --------------------------- | ----------------------------- | -------------------------------------------------------------------------------- |
-| `SCAN_PATHS`                | `/scan_dir`                   | Comma-separated directories to scan for SRT files (must be mounted as volumes)   |
-| `EXCLUDE_PATHS`             | _(none)_                      | Comma-separated directories to exclude from scanning                             |
-| `CRON_SCHEDULE`             | `0 0 * * *`                   | Cron expression for sync schedule (daily at midnight), or `disabled` to turn off |
-| `MAX_CONCURRENT_SYNC_TASKS` | `1`                           | Number of subtitle files to process in parallel (higher = faster but more CPU)   |
-| `INCLUDE_ENGINES`           | `ffsubsync,autosubsync,alass` | Which sync engines to use (comma-separated)                                      |
-| `DEFAULT_ENGINE`            | `alass`                       | Primary engine; its alignment is kept when both engines agree                    |
-| `FALLBACK_ENGINE`           | `ffsubsync`                   | Second engine run for the agreement check                                        |
-| `ENGINE_AGREEMENT_THRESHOLD_MS` | `5000`                    | Max ms the two engines' alignments may differ and still count as a match. Beyond this, the subtitle is judged not fitting the video for this run |
-| `NOT_FITTING_DELETE_THRESHOLD` | `3`                        | Consecutive runs a subtitle must fail to fit before it's actually deleted — see [Not-Fitting Delete Threshold](#not-fitting-delete-threshold) |
-| `DRY_RUN`                   | `false`                       | Default dry-run mode: engines run normally but nothing is written or deleted. Can also be set per-run from the UI (Dry Run button / checkbox) or toggled persistently in Settings — a UI choice for a given run always takes precedence over this variable |
-| `SYNC_TIMEOUT`              | _(none)_                      | Timeout in seconds per sync operation (overrides SYNC_ENGINE_TIMEOUT_MS)         |
-| `SYNC_ENGINE_TIMEOUT_MS`    | `300000`                      | Timeout for each sync engine in milliseconds (5 min default)                     |
-| `ALASS_TIMEOUT_MS`          | _(none)_                      | Override timeout for alass only (takes precedence over SYNC_ENGINE_TIMEOUT_MS)   |
-| `FFSUBSYNC_TIMEOUT_MS`      | _(none)_                      | Override timeout for ffsubsync only (takes precedence over SYNC_ENGINE_TIMEOUT_MS)|
-| `AUTOSUBSYNC_TIMEOUT_MS`    | _(none)_                      | Override timeout for autosubsync only (takes precedence over SYNC_ENGINE_TIMEOUT_MS)|
-| `NODE_OPTIONS`             | `--max-old-space-size=512`    | Node.js options, used here to set memory limit (in MB)                           |
-| `WEB_PORT`                 | `3000`                        | Port for the web UI                                                              |
-| `WEB_HOST`                 | `127.0.0.1`                   | Host to bind the web UI to (`0.0.0.0` to expose externally)                     |
-| `TZ`                        | _(system)_                    | Timezone for logging and cron scheduling (e.g., `America/New_York`)              |
-| `PUID`                      | `1000`                        | User ID for file permissions (run `id -u` to find yours)                         |
-| `PGID`                      | `1000`                        | Group ID for file permissions (run `id -g` to find yours)                        |
+| Variable                        | Default                       | Description                                                                                                                                                                                                                                                |
+| ------------------------------- | ----------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `SCAN_PATHS`                    | `/scan_dir`                   | Comma-separated directories to scan for SRT files (must be mounted as volumes)                                                                                                                                                                             |
+| `EXCLUDE_PATHS`                 | _(none)_                      | Comma-separated directories to exclude from scanning                                                                                                                                                                                                       |
+| `CRON_SCHEDULE`                 | `0 0 * * *`                   | Cron expression for sync schedule (daily at midnight), or `disabled` to turn off                                                                                                                                                                           |
+| `MAX_CONCURRENT_SYNC_TASKS`     | `1`                           | Number of subtitle files to process in parallel (higher = faster but more CPU)                                                                                                                                                                             |
+| `INCLUDE_ENGINES`               | `ffsubsync,autosubsync,alass` | Which sync engines to use (comma-separated)                                                                                                                                                                                                                |
+| `DEFAULT_ENGINE`                | `alass`                       | Primary engine; its alignment is kept when both engines agree                                                                                                                                                                                              |
+| `FALLBACK_ENGINE`               | `ffsubsync`                   | Second engine run for the agreement check                                                                                                                                                                                                                  |
+| `ENGINE_AGREEMENT_THRESHOLD_MS` | `5000`                        | Max ms the two engines' alignments may differ and still count as a match. Beyond this, the subtitle is judged not fitting the video for this run                                                                                                           |
+| `NOT_FITTING_DELETE_THRESHOLD`  | `3`                           | Consecutive runs a subtitle must fail to fit before it's actually deleted — see [Not-Fitting Delete Threshold](#not-fitting-delete-threshold)                                                                                                              |
+| `DRY_RUN`                       | `false`                       | Default dry-run mode: engines run normally but nothing is written or deleted. Can also be set per-run from the UI (Dry Run button / checkbox) or toggled persistently in Settings — a UI choice for a given run always takes precedence over this variable |
+| `SYNC_TIMEOUT`                  | _(none)_                      | Timeout in seconds per sync operation (overrides SYNC_ENGINE_TIMEOUT_MS)                                                                                                                                                                                   |
+| `SYNC_ENGINE_TIMEOUT_MS`        | `300000`                      | Timeout for each sync engine in milliseconds (5 min default)                                                                                                                                                                                               |
+| `ALASS_TIMEOUT_MS`              | _(none)_                      | Override timeout for alass only (takes precedence over SYNC_ENGINE_TIMEOUT_MS)                                                                                                                                                                             |
+| `FFSUBSYNC_TIMEOUT_MS`          | _(none)_                      | Override timeout for ffsubsync only (takes precedence over SYNC_ENGINE_TIMEOUT_MS)                                                                                                                                                                         |
+| `AUTOSUBSYNC_TIMEOUT_MS`        | _(none)_                      | Override timeout for autosubsync only (takes precedence over SYNC_ENGINE_TIMEOUT_MS)                                                                                                                                                                       |
+| `NODE_OPTIONS`                  | `--max-old-space-size=512`    | Node.js options, used here to set memory limit (in MB)                                                                                                                                                                                                     |
+| `WEB_PORT`                      | `3000`                        | Port for the web UI                                                                                                                                                                                                                                        |
+| `WEB_HOST`                      | `127.0.0.1`                   | Host to bind the web UI to (`0.0.0.0` to expose externally)                                                                                                                                                                                                |
+| `TZ`                            | _(system)_                    | Timezone for logging and cron scheduling (e.g., `America/New_York`)                                                                                                                                                                                        |
+| `PUID`                          | `1000`                        | User ID for file permissions (run `id -u` to find yours)                                                                                                                                                                                                   |
+| `PGID`                          | `1000`                        | Group ID for file permissions (run `id -g` to find yours)                                                                                                                                                                                                  |
 
 ### Database & Log Configuration
 
-| Variable                           | Default                        | Description                                 |
-| ---------------------------------- | ------------------------------ | ------------------------------------------- |
-| `DB_PATH`                          | `/app/data/subsyncarr.db` | SQLite database location                    |
-| `LOG_BUFFER_SIZE`                  | `1000`                         | Ring buffer size for in-memory logs         |
-| `SERVER_LOG_BUFFER_SIZE`           | `5000`                         | Ring buffer size for the global server log (see `GET /api/logs` below) |
-| `RETENTION_KEEP_RUNS_DAYS`         | `30`                           | Keep complete runs for N days               |
-| `RETENTION_TRIM_LOGS_DAYS`         | `7`                            | Trim logs after N days (keeps summary only) |
-| `RETENTION_MAX_LOG_SIZE`           | `10000`                        | Max size for trimmed logs in bytes          |
-| `RETENTION_CLEANUP_INTERVAL_HOURS` | `24`                           | How often to run cleanup (in hours)         |
+| Variable                           | Default                   | Description                                                            |
+| ---------------------------------- | ------------------------- | ---------------------------------------------------------------------- |
+| `DB_PATH`                          | `/app/data/subsyncarr.db` | SQLite database location                                               |
+| `LOG_BUFFER_SIZE`                  | `1000`                    | Ring buffer size for in-memory logs                                    |
+| `SERVER_LOG_BUFFER_SIZE`           | `5000`                    | Ring buffer size for the global server log (see `GET /api/logs` below) |
+| `RETENTION_KEEP_RUNS_DAYS`         | `30`                      | Keep complete runs for N days                                          |
+| `RETENTION_TRIM_LOGS_DAYS`         | `7`                       | Trim logs after N days (keeps summary only)                            |
+| `RETENTION_MAX_LOG_SIZE`           | `10000`                   | Max size for trimmed logs in bytes                                     |
+| `RETENTION_CLEANUP_INTERVAL_HOURS` | `24`                      | How often to run cleanup (in hours)                                    |
 
 ### Timeout Configuration
 
@@ -145,21 +145,20 @@ The `SYNC_ENGINE_TIMEOUT_MS` environment variable controls how long each sync en
 
 You can also set per-engine timeouts that take precedence over the general timeout:
 
-| Variable               | Description                                      |
-| ---------------------- | ------------------------------------------------ |
-| `ALASS_TIMEOUT_MS`     | Timeout for alass only (in milliseconds)          |
-| `FFSUBSYNC_TIMEOUT_MS` | Timeout for ffsubsync only (in milliseconds)      |
-| `AUTOSUBSYNC_TIMEOUT_MS` | Timeout for autosubsync only (in milliseconds)  |
+| Variable                 | Description                                    |
+| ------------------------ | ---------------------------------------------- |
+| `ALASS_TIMEOUT_MS`       | Timeout for alass only (in milliseconds)       |
+| `FFSUBSYNC_TIMEOUT_MS`   | Timeout for ffsubsync only (in milliseconds)   |
+| `AUTOSUBSYNC_TIMEOUT_MS` | Timeout for autosubsync only (in milliseconds) |
 
 Example configuration:
 
 ```yaml
 environment:
-  - SYNC_ENGINE_TIMEOUT_MS=600000   # 10 minutes default for all engines
-  - ALASS_TIMEOUT_MS=300000         # 5 minutes for alass (overrides default)
-  - FFSUBSYNC_TIMEOUT_MS=1800000    # 30 minutes for ffsubsync (overrides default)
+  - SYNC_ENGINE_TIMEOUT_MS=600000 # 10 minutes default for all engines
+  - ALASS_TIMEOUT_MS=300000 # 5 minutes for alass (overrides default)
+  - FFSUBSYNC_TIMEOUT_MS=1800000 # 30 minutes for ffsubsync (overrides default)
 ```
-
 
 ### Directory Structure
 
@@ -291,13 +290,13 @@ Detailed processing logs are available in the Web UI under "Processing History" 
 
 Query params (all optional):
 
-| Param | Description |
-| --- | --- |
-| `limit` | Max entries to return (default 500, max 5000) |
-| `level` | `all` (default), `log`, `warn`, or `error` |
-| `search` | Case-insensitive substring filter |
-| `since` | Only entries with `seq` greater than this — use the previous response's `latestSeq` to fetch just what's new |
-| `format` | `text` for a plain-text dump (one line per entry); omit for JSON |
+| Param    | Description                                                                                                  |
+| -------- | ------------------------------------------------------------------------------------------------------------ |
+| `limit`  | Max entries to return (default 500, max 5000)                                                                |
+| `level`  | `all` (default), `log`, `warn`, or `error`                                                                   |
+| `search` | Case-insensitive substring filter                                                                            |
+| `since`  | Only entries with `seq` greater than this — use the previous response's `latestSeq` to fetch just what's new |
+| `format` | `text` for a plain-text dump (one line per entry); omit for JSON                                             |
 
 ```bash
 curl "http://localhost:3000/api/logs?limit=200&level=error"

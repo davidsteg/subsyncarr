@@ -1,9 +1,8 @@
-import { readdirSync, unlinkSync } from 'fs';
-import { stat } from 'fs/promises';
+import { readdirSync, unlinkSync, existsSync, writeFileSync, statSync, openSync, readSync, closeSync } from 'fs';
+import { readFile, stat } from 'fs/promises';
 import { extname, join } from 'path';
-import { existsSync } from 'fs';
 import { ScanConfig } from './config';
-import { getOutputPath, getSubtitleFormat, isSyncedSrt, isCorruptSyncedSrt } from './helpers';
+import { getOutputPath, getSubtitleFormat, isSyncedSrt, isCorruptSyncedSrt, SYNC_MARKER } from './helpers';
 import { DirectoryCache, initDirectoryCache } from './findMatchingVideoFile';
 import { SubsyncarrPlusDatabase } from './database';
 
@@ -35,7 +34,13 @@ export async function findAllSrtFiles(
   db?: SubsyncarrPlusDatabase,
   onProgress?: (checked: number, total: number, needSync: number, alreadySynced: number) => void,
   dryRun?: boolean,
-): Promise<{ files: string[]; directoryCache: DirectoryCache; orphanedTempFilesRemoved: number; corruptedSyncedFilesRemoved: number }> {
+): Promise<{
+  files: string[];
+  directoryCache: DirectoryCache;
+  orphanedTempFilesRemoved: number;
+  corruptedSyncedFilesRemoved: number;
+  legacyHeadersStripped: number;
+}> {
   const engines = process.env.INCLUDE_ENGINES?.split(',') || ['ffsubsync', 'autosubsync', 'alass'];
   const format = getSubtitleFormat();
 
@@ -56,7 +61,9 @@ export async function findAllSrtFiles(
       orphanedTempFilesRemoved++;
       console.log(`${new Date().toLocaleString()} Deleted ${label}: ${fullPath}`);
     } catch (err) {
-      console.log(`${new Date().toLocaleString()} Failed to delete ${label} ${fullPath}: ${err instanceof Error ? err.message : String(err)}`);
+      console.log(
+        `${new Date().toLocaleString()} Failed to delete ${label} ${fullPath}: ${err instanceof Error ? err.message : String(err)}`,
+      );
     }
   }
 
@@ -120,6 +127,7 @@ export async function findAllSrtFiles(
   let skippedCount = 0;
   let completedCount = 0;
   let corruptedSyncedFilesRemoved = 0;
+  let legacyHeadersStripped = 0;
 
   async function checkFile(srtPath: string): Promise<void> {
     let isSynced: boolean;
@@ -162,7 +170,9 @@ export async function findAllSrtFiles(
         if (corrupt) {
           isSynced = false;
           if (dryRun) {
-            console.log(`${new Date().toLocaleString()} [DRY RUN] Would delete corrupted synced subtitle (0 cues): ${srtPath}`);
+            console.log(
+              `${new Date().toLocaleString()} [DRY RUN] Would delete corrupted synced subtitle (0 cues): ${srtPath}`,
+            );
           } else {
             try {
               unlinkSync(srtPath);
@@ -170,12 +180,43 @@ export async function findAllSrtFiles(
               console.log(`${new Date().toLocaleString()} Deleted corrupted synced subtitle (0 cues): ${srtPath}`);
               if (db) db.removeFileFromSyncCache(srtPath);
             } catch (err) {
-              console.log(`${new Date().toLocaleString()} Failed to delete corrupted subtitle ${srtPath}: ${err instanceof Error ? err.message : String(err)}`);
+              console.log(
+                `${new Date().toLocaleString()} Failed to delete corrupted subtitle ${srtPath}: ${err instanceof Error ? err.message : String(err)}`,
+              );
             }
           }
           completedCount++;
           // File is gone (or dry-run pretends it is) — nothing to sync or skip.
           return;
+        }
+
+        // Migration: strip legacy # synced: header from already-synced files.
+        // The header was invalid SRT and broke ffprobe/Jellyfin's SubtitleResolver.
+        // Only runs on files detected as synced (header or cache), reads the
+        // first line to check, and rewrites the file without the header if found.
+        if (!dryRun) {
+          try {
+            const fd = openSync(srtPath, 'r');
+            const headerBuf = Buffer.alloc(100);
+            const bytesRead = readSync(fd, headerBuf, 0, 100, 0);
+            closeSync(fd);
+            if (bytesRead > 0 && headerBuf.toString('utf8', 0, bytesRead).startsWith(SYNC_MARKER)) {
+              const fullContent = await readFile(srtPath, 'utf8');
+              const newlinePos = fullContent.indexOf('\n');
+              if (newlinePos !== -1) {
+                const cleanContent = fullContent.slice(newlinePos + 1);
+                writeFileSync(srtPath, cleanContent, 'utf8');
+                legacyHeadersStripped++;
+                console.log(`${new Date().toLocaleString()} Stripped legacy sync header from: ${srtPath}`);
+                if (db) {
+                  try {
+                    const s = statSync(srtPath);
+                    db.addFileToSyncCache(srtPath, s.mtimeMs, s.size);
+                  } catch {}
+                }
+              }
+            }
+          } catch {}
         }
       }
     } else {
@@ -226,8 +267,9 @@ export async function findAllSrtFiles(
   console.log(
     `${new Date().toLocaleString()} Scan complete: ${srtPaths.length} SRT files found, ${files.length} need sync, ${skippedCount} already synced` +
       (orphanedTempFilesRemoved > 0 ? `, ${orphanedTempFilesRemoved} orphaned temp file(s) removed` : '') +
-      (corruptedSyncedFilesRemoved > 0 ? `, ${corruptedSyncedFilesRemoved} corrupted synced subtitle(s) removed` : ''),
+      (corruptedSyncedFilesRemoved > 0 ? `, ${corruptedSyncedFilesRemoved} corrupted synced subtitle(s) removed` : '') +
+      (legacyHeadersStripped > 0 ? `, ${legacyHeadersStripped} legacy sync header(s) stripped` : ''),
   );
 
-  return { files, directoryCache, orphanedTempFilesRemoved, corruptedSyncedFilesRemoved };
+  return { files, directoryCache, orphanedTempFilesRemoved, corruptedSyncedFilesRemoved, legacyHeadersStripped };
 }

@@ -133,6 +133,7 @@ export class ProcessingEngine extends EventEmitter {
       directoryCache,
       orphanedTempFilesRemoved,
       corruptedSyncedFilesRemoved,
+      legacyHeadersStripped,
     } = await findAllSrtFiles(
       scanConfig,
       db,
@@ -151,6 +152,11 @@ export class ProcessingEngine extends EventEmitter {
     if (corruptedSyncedFilesRemoved > 0) {
       this.log(
         `[${new Date().toISOString()}] 🧹 Removed ${corruptedSyncedFilesRemoved} corrupted synced subtitle(s) (0 parseable cues) — will be resupplied by your subtitle manager`,
+      );
+    }
+    if (legacyHeadersStripped > 0) {
+      this.log(
+        `[${new Date().toISOString()}] 🧹 Stripped ${legacyHeadersStripped} legacy sync header(s) — files are now valid SRT for ffprobe/Jellyfin`,
       );
     }
     this.log(`[${new Date().toISOString()}] Found ${srtFiles.length} subtitle files`);
