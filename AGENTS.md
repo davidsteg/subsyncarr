@@ -74,6 +74,8 @@ Since v1.3.40, sync status is tracked **solely via the database** (`synced_files
 
 ## Release Workflow
 
+**Every commit is a release. No exceptions.** Every change — code, CSS, docs, config — gets a version bump + CHANGELOG entry + commit + tag push. The GitHub Action builds and publishes automatically.
+
 1. Edit code → `npm run build` → `npm test`
 2. Bump version in `CHANGELOG.md` (Keep-a-Changelog format, no "v" prefix)
 3. `git commit` → `git push origin master`
@@ -88,12 +90,3 @@ Since v1.3.40, sync status is tracked **solely via the database** (`synced_files
 - Pre-commit hooks: prettier + eslint (husky) — must pass before commit
 - CHANGELOG: `## [version] — YYYY-MM-DD` format
 - No German in codebase — all English
-- `write_file`/`patch` tool blocked on `/mnt/raid/misc/` — use `terminal` with Python `open().write()` instead
-
-## Deploy
-
-- **Media path:** `/mnt/venus/media` on host (NOT `/mnt/raid/media` — that's Jellyfin config/cache). Mount as `-v /mnt/venus/media:/media:rw` and set `SCAN_PATHS=/media`.
-- **Always verify media path:** `find <path> -name "*.srt" | head` before deploying. If 0 results, the path is wrong.
-- **`:latest` tag pitfall:** local `docker build -t :1.3.40` does NOT update `:latest`. Either `docker tag :1.3.40 :latest` before deploy, or push the git tag and let the GitHub Action push `:latest` to Docker Hub, then `docker pull`.
-- **Verify running image:** `docker ps --filter name=subsyncarr --format '{{.Image}} {{.Status}}'` and `docker image inspect davidsteg/subsyncarr:latest --format '{{.Created}}'` — compare with the fix commit date.
-- **Startup scan:** `index-server.ts` triggers `coordinator.startRun()` 8 seconds after boot (if scan paths configured). This runs the full scan pipeline — strips legacy headers, syncs new files, etc.
