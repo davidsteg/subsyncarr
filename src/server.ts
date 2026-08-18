@@ -92,6 +92,40 @@ export class SubsyncarrPlusServer {
       });
     });
 
+    // Changelog — parses CHANGELOG.md into structured entries
+    this.app.get('/api/changelog', (_req, res) => {
+      try {
+        const raw = readFileSync(join(__dirname, '..', 'CHANGELOG.md'), 'utf8');
+        const entries: Array<{ version: string; date: string; sections: Array<{ title: string; items: string[] }> }> = [];
+        let current: { version: string; date: string; sections: Array<{ title: string; items: string[] }> } | null = null;
+        let currentSection: { title: string; items: string[] } | null = null;
+
+        for (const line of raw.split('\n')) {
+          const versionMatch = line.match(/^## \[([0-9.]+)\] .([0-9]{4}-[0-9]{2}-[0-9]{2})/);
+          if (versionMatch) {
+            if (current) entries.push(current);
+            current = { version: versionMatch[1], date: versionMatch[2], sections: [] };
+            currentSection = null;
+            continue;
+          }
+          const sectionMatch = line.match(/^### (.+)/);
+          if (sectionMatch && current) {
+            currentSection = { title: sectionMatch[1], items: [] };
+            current.sections.push(currentSection);
+            continue;
+          }
+          if (line.startsWith('- ') && current && currentSection) {
+            const item = line.slice(2).replace(/\*\*([^*]+)\*\*/g, '$1').trim();
+            currentSection.items.push(item);
+          }
+        }
+        if (current) entries.push(current);
+        res.json(entries.slice(0, 10));
+      } catch {
+        res.json([]);
+      }
+    });
+
     // Media stats (cached; TTL kept below the client's poll interval so every poll gets fresh data)
     this.app.get('/api/stats', (req, res) => {
       const now = Date.now();

@@ -35,6 +35,7 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;b
 .nav-folders{background:var(--text-muted);mask:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Cpath d='M2 6a2 2 0 012-2h5l2 2h9a2 2 0 012 2v10a2 2 0 01-2 2H4a2 2 0 01-2-2V6z'/%3E%3C/svg%3E") center/contain no-repeat;-webkit-mask:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Cpath d='M2 6a2 2 0 012-2h5l2 2h9a2 2 0 012 2v10a2 2 0 01-2 2H4a2 2 0 01-2-2V6z'/%3E%3C/svg%3E") center/contain no-repeat}
 .nav-settings{background:var(--text-muted);mask:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Ccircle cx='12' cy='12' r='3'/%3E%3Cpath d='M19.4 15a1.65 1.65 0 00.33 1.82l.06.06a2 2 0 01-2.83 2.83l-.06-.06a1.65 1.65 0 00-1.82-.33 1.65 1.65 0 00-1 1.51V21a2 2 0 01-4 0v-.09A1.65 1.65 0 009 19.4a1.65 1.65 0 00-1.82.33l-.06.06a2 2 0 01-2.83-2.83l.06-.06A1.65 1.65 0 004.68 15a1.65 1.65 0 00-1.51-1H3a2 2 0 010-4h.09A1.65 1.65 0 004.6 9a1.65 1.65 0 00-.33-1.82l-.06-.06a2 2 0 012.83-2.83l.06.06A1.65 1.65 0 009 4.68a1.65 1.65 0 001-1.51V3a2 2 0 014 0v.09a1.65 1.65 0 001 1.51 1.65 1.65 0 001.82-.33l.06-.06a2 2 0 012.83 2.83l-.06.06A1.65 1.65 0 0019.4 9a1.65 1.65 0 001.51 1H21a2 2 0 010 4h-.09a1.65 1.65 0 00-1.51 1z'/%3E%3C/svg%3E") center/contain no-repeat;-webkit-mask:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Ccircle cx='12' cy='12' r='3'/%3E%3Cpath d='M19.4 15a1.65 1.65 0 00.33 1.82l.06.06a2 2 0 01-2.83 2.83l-.06-.06a1.65 1.65 0 00-1.82-.33 1.65 1.65 0 00-1 1.51V21a2 2 0 01-4 0v-.09A1.65 1.65 0 009 19.4a1.65 1.65 0 00-1.82.33l-.06.06a2 2 0 01-2.83-2.83l.06-.06A1.65 1.65 0 004.68 15a1.65 1.65 0 00-1.51-1H3a2 2 0 010-4h.09A1.65 1.65 0 004.6 9a1.65 1.65 0 00-.33-1.82l-.06-.06a2 2 0 012.83-2.83l.06.06A1.65 1.65 0 009 4.68a1.65 1.65 0 001-1.51V3a2 2 0 014 0v.09a1.65 1.65 0 001 1.51 1.65 1.65 0 001.82-.33l.06-.06a2 2 0 012.83 2.83l-.06.06A1.65 1.65 0 0019.4 9a1.65 1.65 0 001.51 1H21a2 2 0 010 4h-.09a1.65 1.65 0 00-1.51 1z'/%3E%3C/svg%3E") center/contain no-repeat}
 .nav-item.active .nav-icon{background:var(--primary)}
+.nav-changelog{background:var(--text-muted);mask:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Cpath d='M3 3h18v18H3z' fill='none' stroke='black' stroke-width='2'/%3E%3Cline x1='7' y1='8' x2='17' y2='8' stroke='black' stroke-width='2'/%3E%3Cline x1='7' y1='12' x2='17' y2='12' stroke='black' stroke-width='2'/%3E%3Cline x1='7' y1='16' x2='13' y2='16' stroke='black' stroke-width='2'/%3E%3C/svg%3E") center/contain no-repeat;-webkit-mask:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Cpath d='M3 3h18v18H3z' fill='none' stroke='black' stroke-width='2'/%3E%3Cline x1='7' y1='8' x2='17' y2='8' stroke='black' stroke-width='2'/%3E%3Cline x1='7' y1='12' x2='17' y2='12' stroke='black' stroke-width='2'/%3E%3Cline x1='7' y1='16' x2='13' y2='16' stroke='black' stroke-width='2'/%3E%3C/svg%3E") center/contain no-repeat}
 .sidebar-footer{margin-top:auto;padding:16px 20px;border-top:1px solid var(--border);display:flex;align-items:center;justify-content:space-between;font-size:12px;color:var(--text-muted)}
 .status-indicator{font-size:12px;font-weight:600}
 .status-indicator.active{color:var(--success)}
@@ -214,3 +215,15 @@ td{padding:10px 12px;border-top:1px solid var(--border)}
   th,td{padding:6px 4px}
   .folder-numbers{display:none}
 }
+
+/* Changelog page */
+.changelog-list{display:flex;flex-direction:column;gap:16px}
+.changelog-entry{background:var(--card);border:1px solid var(--border);border-radius:8px;padding:16px 20px}
+.changelog-header{display:flex;align-items:center;gap:12px;margin-bottom:12px;padding-bottom:8px;border-bottom:1px solid var(--border)}
+.changelog-version{font-size:16px;font-weight:700;color:var(--primary)}
+.changelog-date{font-size:13px;color:var(--text-muted)}
+.changelog-section{margin-bottom:10px}
+.changelog-section-title{font-size:12px;font-weight:600;text-transform:uppercase;letter-spacing:.05em;color:var(--text-muted);display:block;margin-bottom:4px}
+.changelog-section ul{margin:0;padding-left:20px}
+.changelog-section li{font-size:13px;line-height:1.5;color:var(--text);margin-bottom:4px}
+.changelog-section li:last-child{margin-bottom:0}

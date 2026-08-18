@@ -21,6 +21,7 @@
     <button class="nav-item" data-page="history"><span class="nav-icon nav-history"></span> History</button>
     <button class="nav-item" data-page="folders"><span class="nav-icon nav-folders"></span> Folders</button>
     <button class="nav-item" data-page="settings"><span class="nav-icon nav-settings"></span> Settings</button>
+    <button class="nav-item" data-page="changelog"><span class="nav-icon nav-changelog"></span> Changelog</button>
     <div class="sidebar-footer">
       <span id="sidebarStatus" class="status-indicator active">Active</span>
       <button class="theme-toggle" id="themeToggle">Dark</button>
@@ -169,6 +170,11 @@
           <span id="settingsSaved" class="text-muted text-sm hidden">Saved</span>
         </div>
       </div>
+    </div>
+
+    <div class="page" id="page-changelog">
+      <div class="topbar"><h2>Changelog</h2></div>
+      <div id="changelogContent" class="changelog-list"></div>
     </div>
   </main>
 </div>
