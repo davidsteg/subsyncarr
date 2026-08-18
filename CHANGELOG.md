@@ -1,3 +1,13 @@
+## [1.3.41] — 2026-08-18
+
+### Added
+
+- **Changelog page in the UI.** New "Changelog" nav item shows the last 10 releases parsed from CHANGELOG.md via `/api/changelog`. Version, date, sections (Fixed/Added/Changed), and items rendered as cards — no manual updates needed, stays in sync with the CHANGELOG file automatically.
+
+### Fixed
+
+- **VERSION file stale** — was still at 1.3.39 despite v1.3.40 being released. Now updated to match the latest release.
+
 ## [1.3.40] — 2026-08-16
 
 ### Fixed

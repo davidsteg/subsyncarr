@@ -13,6 +13,7 @@ class SubsyncarrPlusClient {
     this.fetchInitialState();
     this.fetchConfig();
     this.fetchVersion();
+    this.fetchChangelog();
     this.fetchStats(); // dashboard is the default page — populate it immediately, not after the 15s interval
   }
   initTheme() {
@@ -127,6 +128,31 @@ class SubsyncarrPlusClient {
     try { var r = await fetch('/api/version'); var d = await r.json();
       document.getElementById('versionText').textContent = 'v' + d.version;
       document.getElementById('releaseLink').href = d.releaseUrl; } catch(e) {}
+  }
+  async fetchChangelog() {
+    try {
+      var r = await fetch('/api/changelog');
+      var entries = await r.json();
+      var html = '';
+      for (var i = 0; i < entries.length; i++) {
+        var e = entries[i];
+        html += '<div class="changelog-entry">';
+        html += '<div class="changelog-header"><span class="changelog-version">v' + e.version + '</span><span class="changelog-date">' + e.date + '</span></div>';
+        for (var j = 0; j < e.sections.length; j++) {
+          var s = e.sections[j];
+          html += '<div class="changelog-section"><span class="changelog-section-title">' + s.title + '</span>';
+          html += '<ul>';
+          for (var k = 0; k < s.items.length; k++) {
+            html += '<li>' + s.items[k] + '</li>';
+          }
+          html += '</ul></div>';
+        }
+        html += '</div>';
+      }
+      document.getElementById('changelogContent').innerHTML = html || '<p class="text-muted">No changelog available.</p>';
+    } catch(e) {
+      document.getElementById('changelogContent').innerHTML = '<p class="text-muted">Failed to load changelog.</p>';
+    }
   }
   async fetchStats() { try { var r = await fetch('/api/stats'); this.renderStats(await r.json()); } catch(e) {} }
   async fetchFolders(parent) {
