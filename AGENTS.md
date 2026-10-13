@@ -64,14 +64,14 @@ See the Configuration table in `README.md`.
 
 ## Release Workflow
 
-**Every commit to `master` is a release.** Every change gets a version bump + CHANGELOG entry + commit + tag push. The GitHub Action builds and publishes automatically.
+**Every commit to `master` is a release.** Every change gets a version bump + CHANGELOG entry. Nobody pushes tags by hand: the release workflow tags the version once CI passes on master.
 
 1. Edit code → `cargo fmt` → `cargo clippy --all-targets -- -D warnings` → `cargo test` (and `npm run check && npm run build` in `web/` for UI changes)
-2. Bump the version in `Cargo.toml`, `VERSION` and `CHANGELOG.md` (Keep-a-Changelog format, no "v" prefix)
-3. `git commit` → `git push origin master`
-4. `git tag <version>` → `git push origin <version>`
-5. GitHub Action (`.github/workflows/docker-publish.yml`) builds the image, pushes to Docker Hub, creates the GitHub Release
-6. `.github/workflows/ci.yml` runs checks and tests on every push and PR
+2. Bump the version in `Cargo.toml`, `VERSION` and `CHANGELOG.md` (Keep-a-Changelog format, no "v" prefix). An optional short line right under the version heading becomes the GitHub Release title.
+3. Commit and merge to `master` (PR or push).
+4. `.github/workflows/ci.yml` runs checks and tests on every push and PR.
+5. When CI passes on master, `.github/workflows/release.yml` checks that `Cargo.toml`, `VERSION` and `CHANGELOG.md` agree. If the version has no tag yet, it tags the tested commit and calls `.github/workflows/docker-publish.yml`, which builds the image, pushes `<version>` to Docker Hub (and `latest` only if it is the highest version tag) and creates the GitHub Release from the CHANGELOG section.
+6. Fallback: run the Release workflow by hand from the Actions tab. It tags master if needed and republishes the current version.
 
 ## Conventions
 

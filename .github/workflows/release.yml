@@ -1,0 +1,87 @@
+name: Release
+
+# Tags and publishes a release without anyone pushing a tag by hand. After CI
+# passes on master, reads the version from Cargo.toml (must match VERSION and
+# have a ## [<version>] section in CHANGELOG.md). If that version has no tag
+# yet, it tags the tested commit and hands over to docker-publish.yml, which
+# builds the image and creates the GitHub Release.
+#
+# Tags created with GITHUB_TOKEN don't trigger other workflows, so the publish
+# workflow is called directly instead of reacting to the tag push.
+#
+# Manual fallback: run this workflow from the Actions tab. It tags the current
+# master if needed and (re)publishes that version even if the tag exists.
+on:
+  workflow_run:
+    workflows: [CI]
+    types: [completed]
+    branches: [master]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+jobs:
+  tag:
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      (github.event.workflow_run.conclusion == 'success' &&
+       github.event.workflow_run.event == 'push' &&
+       github.event.workflow_run.head_repository.full_name == github.repository)
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+      publish: ${{ steps.tag.outputs.publish }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.workflow_run.head_sha || github.sha }}
+          fetch-depth: 0
+
+      - name: Read version
+        id: version
+        run: |
+          VERSION=$(sed -nE 's/^version = "([^"]+)"/\1/p' Cargo.toml | head -1)
+          FILE_VERSION=$(tr -d '[:space:]' < VERSION)
+          if [[ ! "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "::error::Cargo.toml version '$VERSION' is not X.Y.Z"; exit 1
+          fi
+          if [ "$VERSION" != "$FILE_VERSION" ]; then
+            echo "::error::Cargo.toml says $VERSION but VERSION says $FILE_VERSION"; exit 1
+          fi
+          if ! grep -qF "## [$VERSION]" CHANGELOG.md; then
+            echo "::error::CHANGELOG.md has no ## [$VERSION] section"; exit 1
+          fi
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+
+      - name: Create tag if missing
+        id: tag
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          if git ls-remote --exit-code --tags origin "refs/tags/$VERSION" >/dev/null; then
+            echo "Tag $VERSION already exists"
+            if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+              echo "publish=true" >> "$GITHUB_OUTPUT"
+            else
+              echo "publish=false" >> "$GITHUB_OUTPUT"
+            fi
+          else
+            git tag "$VERSION" HEAD
+            git push origin "refs/tags/$VERSION"
+            echo "Tagged $(git rev-parse --short HEAD) as $VERSION"
+            echo "publish=true" >> "$GITHUB_OUTPUT"
+          fi
+
+  publish:
+    needs: tag
+    if: needs.tag.outputs.publish == 'true'
+    uses: ./.github/workflows/docker-publish.yml
+    with:
+      version: ${{ needs.tag.outputs.version }}
+    secrets: inherit
