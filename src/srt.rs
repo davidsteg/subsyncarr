@@ -24,6 +24,14 @@ static ANY_CUE: LazyLock<BytesRegex> = LazyLock::new(|| BytesRegex::new(r"\d{2}:
 static TIMING: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"(\d{2}):(\d{2}):(\d{2}),(\d{3})\s*-->\s*(\d{2}):(\d{2}):(\d{2}),(\d{3})").unwrap());
 static BLOCK_SPLIT: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"\n\s*\n").unwrap());
+/// A cue timing line, both timestamps captured with their separators so a
+/// shift rewrites only the digits.
+static TIMING_LINE: LazyLock<BytesRegex> = LazyLock::new(|| {
+    BytesRegex::new(
+        r"(?m)^([ \t]*)(\d{1,3}):(\d{2}):(\d{2})([,.])(\d{3})([ \t]*-->[ \t]*)(\d{1,3}):(\d{2}):(\d{2})([,.])(\d{3})",
+    )
+    .unwrap()
+});
 
 fn ms(h: &[u8], m: &[u8], s: &[u8], f: &[u8]) -> i64 {
     let n = |b: &[u8]| -> i64 { std::str::from_utf8(b).ok().and_then(|x| x.parse().ok()).unwrap_or(0) };
@@ -122,20 +130,45 @@ fn median(values: &mut [i64]) -> f64 {
     }
 }
 
-/// Median start-time shift (ms) between original and synced content, matching
-/// cues by position. Positive = synced is later. 0 when either side is empty.
-pub fn subtitle_offset_ms(original: &[u8], synced: &[u8]) -> i64 {
+/// Per-cue start-time shift (ms) between original and synced content, matching
+/// cues by position. Engines keep every cue, so position is identity.
+pub fn cue_offsets_ms(original: &[u8], synced: &[u8]) -> Vec<i64> {
     let a = parse_entries(&String::from_utf8_lossy(original));
     let b = parse_entries(&String::from_utf8_lossy(synced));
-    if a.is_empty() || b.is_empty() {
-        return 0;
-    }
-    let mut offsets: Vec<i64> = a
-        .iter()
+    a.iter()
         .zip(b.iter())
         .filter(|(x, y)| x.start_ms > 0 || y.start_ms > 0)
         .map(|(x, y)| y.start_ms - x.start_ms)
-        .collect();
+        .collect()
+}
+
+/// Every cue moved by `offset_ms` (negative = earlier, clamped at 0). Only
+/// the timing digits change; text, encoding and line endings stay byte for
+/// byte.
+pub fn shift_timestamps(content: &[u8], offset_ms: i64) -> Vec<u8> {
+    fn stamp(out: &mut Vec<u8>, h: &[u8], m: &[u8], s: &[u8], sep: &[u8], f: &[u8], offset: i64) {
+        let t = (ms(h, m, s, f) + offset).max(0);
+        let (h, rest) = (t / 3_600_000, t % 3_600_000);
+        let text = format!("{h:02}:{:02}:{:02}", rest / 60_000, rest % 60_000 / 1000);
+        out.extend_from_slice(text.as_bytes());
+        out.extend_from_slice(sep);
+        out.extend_from_slice(format!("{:03}", rest % 1000).as_bytes());
+    }
+    TIMING_LINE
+        .replace_all(content, |c: &regex::bytes::Captures| {
+            let mut out = c[1].to_vec();
+            stamp(&mut out, &c[2], &c[3], &c[4], &c[5], &c[6], offset_ms);
+            out.extend_from_slice(&c[7]);
+            stamp(&mut out, &c[8], &c[9], &c[10], &c[11], &c[12], offset_ms);
+            out
+        })
+        .into_owned()
+}
+
+/// Median start-time shift (ms) between original and synced content, matching
+/// cues by position. Positive = synced is later. 0 when either side is empty.
+pub fn subtitle_offset_ms(original: &[u8], synced: &[u8]) -> i64 {
+    let mut offsets = cue_offsets_ms(original, synced);
     median(&mut offsets).round() as i64
 }
 
@@ -200,6 +233,26 @@ mod tests {
         assert!(has_legacy_header(with));
         assert_eq!(strip_legacy_header(with).unwrap(), b"1\n00:00:01,000 --> 00:00:02,000\nx\n");
         assert!(strip_legacy_header(ORIG.as_bytes()).is_none());
+    }
+
+    #[test]
+    fn shift_moves_every_cue() {
+        assert_eq!(String::from_utf8(shift_timestamps(ORIG.as_bytes(), 2000)).unwrap(), SHIFTED);
+        assert_eq!(String::from_utf8(shift_timestamps(SHIFTED.as_bytes(), -2000)).unwrap(), ORIG);
+    }
+
+    #[test]
+    fn shift_clamps_and_keeps_bytes() {
+        let src = b"1\r\n00:00:00,500 --> 01:59:59.999\r\ncaf\xe9 00:00:01,000\r\n".to_vec();
+        let out = shift_timestamps(&src, -1000);
+        assert_eq!(out, b"1\r\n00:00:00,000 --> 01:59:58.999\r\ncaf\xe9 00:00:01,000\r\n".to_vec());
+        let out = shift_timestamps(&src, 1);
+        assert!(out.starts_with(b"1\r\n00:00:00,501 --> 02:00:00.000"));
+    }
+
+    #[test]
+    fn per_cue_offsets() {
+        assert_eq!(cue_offsets_ms(ORIG.as_bytes(), SHIFTED.as_bytes()), vec![2000, 2000, 2000]);
     }
 
     #[test]

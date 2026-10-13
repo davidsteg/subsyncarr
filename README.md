@@ -17,6 +17,8 @@ This is a fork of [johnpc/subsyncarr](https://github.com/johnpc/subsyncarr). Sin
 - **Change detection.** A content hash per file means that replacing a subtitle (for example via Bazarr) clears its strikes, engine skips and parking.
 - **Engine safety.** Engines are started without a shell, so odd file names are safe. Each runs in its own process group, so a timeout or Skip also kills ffmpeg children.
 - **Integrations.** Sonarr, Radarr and Bazarr can trigger a sync of new files right away, run summaries go to Apprise or Discord, and Jellyfin or Plex refresh the folders that changed. All off by default.
+- **Sync confidence.** Every kept sync gets a 0–100 score from engine agreement, how many engines aligned, offset spread and split points, cue count, shift size and framerate correction. Syncs scoring below 50 are flagged for review on the Library page.
+- **Manual fixes from the library.** Open any subtitle in the Library to re-sync it on demand or shift every cue by a fixed offset. Each change is written in place, kept by later scans, and can be undone (the last 10 changes per file).
 - **Live web UI.** Dashboard, live run view with per-file progress, run history, library browser, server logs, settings and changelog. Light and dark themes, and it works on a phone.
 - **Low footprint.** One process with no runtime dependencies besides the engines, using about 15 MB of RAM when idle.
 

@@ -40,6 +40,7 @@ export interface EngineResult {
   offsetMs?: number;
   shiftTooLarge?: boolean;
   originalShiftMs?: number;
+  framerateScale?: number;
 }
 
 export interface FileResult {
@@ -52,6 +53,7 @@ export interface FileResult {
   engines: Record<string, EngineResult>;
   sync_mode: SyncMode | null;
   anchor_path: string | null;
+  quality_score: number | null;
   created_at: number;
   updated_at: number;
 }
@@ -199,7 +201,45 @@ export interface SyncHistoryEntry {
   engines: Record<string, EngineResult>;
   syncMode: SyncMode | null;
   anchorPath: string | null;
+  qualityScore: number | null;
   updatedAt: number;
+}
+
+export type QualityLevel = 'good' | 'fair' | 'weak';
+
+export interface QualityFactor {
+  label: string;
+  penalty: number;
+}
+
+export interface QualityDetails {
+  score: number;
+  level: QualityLevel;
+  enginesAligned: number;
+  disagreementMs: number | null;
+  shiftMs: number;
+  spreadMs: number;
+  splitPoints: number;
+  cues: number;
+  factors: QualityFactor[];
+}
+
+export interface SyncQuality {
+  /** null when only a manual offset is known (synced before scoring existed). */
+  score: number | null;
+  level: QualityLevel | null;
+  details: QualityDetails | null;
+  source: 'run' | 'resync' | 'offset';
+  manualOffsetMs: number;
+  reviewed: boolean;
+  needsReview: boolean;
+  updatedAt: number;
+}
+
+export interface UndoStep {
+  action: 'resync' | 'offset';
+  offsetMs: number | null;
+  createdAt: number;
 }
 
 export interface MediaDetail {
@@ -207,6 +247,23 @@ export interface MediaDetail {
   notFittingStrikes: number;
   failureTracking: FailureTracking[];
   syncHistory: SyncHistoryEntry[];
+  quality: SyncQuality | null;
+  /** Newest first. */
+  undo: UndoStep[];
+}
+
+export interface LibraryFile {
+  name: string;
+  filePath: string;
+  sizeBytes: number;
+  synced: boolean;
+  quality: SyncQuality | null;
+  undoSteps: number;
+}
+
+export interface ReviewQueue {
+  total: number;
+  files: { filePath: string; quality: SyncQuality }[];
 }
 
 export type ThemeSetting = 'light' | 'dark' | 'system';

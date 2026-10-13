@@ -20,6 +20,9 @@ use crate::video::srt_stem;
 /// Output kept from an engine's stdout/stderr while it runs (the rest is
 /// drained and discarded so a chatty engine can never block on a full pipe).
 const CAPTURE_LIMIT: usize = 64 * 1024;
+/// The end of the output is kept too: ffsubsync prints its result last,
+/// after however much progress output.
+const TAIL_LIMIT: usize = 4 * 1024;
 /// What gets persisted per engine result.
 const PERSIST_LIMIT: usize = 1000;
 
@@ -32,6 +35,8 @@ pub enum Exec {
 
 async fn capture<R: AsyncRead + Unpin>(mut r: R) -> String {
     let mut kept = Vec::new();
+    let mut tail: Vec<u8> = Vec::new();
+    let mut dropped = false;
     let mut buf = [0u8; 8192];
     loop {
         match r.read(&mut buf).await {
@@ -39,10 +44,27 @@ async fn capture<R: AsyncRead + Unpin>(mut r: R) -> String {
             Ok(n) => {
                 let room = CAPTURE_LIMIT.saturating_sub(kept.len());
                 kept.extend_from_slice(&buf[..n.min(room)]);
+                if n > room {
+                    dropped = true;
+                    tail.extend_from_slice(&buf[room..n]);
+                    if tail.len() > TAIL_LIMIT {
+                        tail.drain(..tail.len() - TAIL_LIMIT);
+                    }
+                }
             }
         }
     }
+    if dropped {
+        kept.extend_from_slice(b"\n...\n");
+        kept.extend_from_slice(&tail);
+    }
     String::from_utf8_lossy(&kept).into_owned()
+}
+
+/// ffsubsync logs `framerate scale factor: 1.001` once it has aligned.
+pub fn parse_framerate_scale(output: &str) -> Option<f64> {
+    let at = output.rfind("framerate scale factor:")?;
+    output[at + "framerate scale factor:".len()..].split_whitespace().next()?.parse().ok()
 }
 
 fn kill_group(pid: Option<u32>, sig: libc::c_int) {
@@ -239,6 +261,7 @@ pub async fn run_in_place(
                 EngineResult {
                     success: true,
                     message: format!("Successfully synced: {name}"),
+                    framerate_scale: parse_framerate_scale(&stderr).or_else(|| parse_framerate_scale(&stdout)),
                     stdout: clip(&stdout, PERSIST_LIMIT),
                     stderr: clip(&stderr, PERSIST_LIMIT),
                     ..Default::default()
@@ -301,5 +324,17 @@ pub async fn run_autosubsync(
             },
             false,
         ),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn framerate_scale_from_ffsubsync_log() {
+        let log = "INFO|score: 3076.000\nINFO|offset seconds: -0.840\nINFO|framerate scale factor: 1.001\n";
+        assert_eq!(parse_framerate_scale(log), Some(1.001));
+        assert_eq!(parse_framerate_scale("nothing here"), None);
     }
 }

@@ -1,9 +1,12 @@
 <script lang="ts">
   import Icon from '../lib/components/Icon.svelte';
   import ProgressBar from '../lib/components/ProgressBar.svelte';
+  import QualityBadge from '../lib/components/QualityBadge.svelte';
   import { api, errorText } from '../lib/api';
-  import { num } from '../lib/format';
-  import type { FolderInfo } from '../lib/types';
+  import { basename, num } from '../lib/format';
+  import { live } from '../lib/live.svelte';
+  import { mediaDrawer } from '../lib/ui.svelte';
+  import type { FolderInfo, LibraryFile, ReviewQueue } from '../lib/types';
 
   const STORAGE_KEY = 'subsyncarr-library-path';
 
@@ -18,6 +21,8 @@
   let parent = $state<string | null>(storedPath());
   let folders = $state<FolderInfo[] | null>(null);
   let error = $state<string | null>(null);
+  let files = $state<LibraryFile[]>([]);
+  let review = $state<ReviewQueue | null>(null);
   let loading = $state(false);
   let seq = 0;
 
@@ -26,8 +31,16 @@
     loading = true;
     error = null;
     try {
-      const r = await api.folders(p);
-      if (my === seq) folders = r;
+      const [r, f, q] = await Promise.all([
+        api.folders(p),
+        p ? api.libraryFiles(p) : Promise.resolve([]),
+        p ? Promise.resolve(null) : api.reviewQueue(20).catch(() => null),
+      ]);
+      if (my === seq) {
+        folders = r;
+        files = f;
+        review = q;
+      }
     } catch (e) {
       if (my === seq) error = errorText(e);
     } finally {
@@ -46,6 +59,24 @@
     void load(p);
   });
 
+  // Quality and undo state change after a run or a change made in the drawer.
+  let lastTick = live.runFinishedTick;
+  let drawerWasOpen = false;
+  $effect(() => {
+    const tick = live.runFinishedTick;
+    const open = mediaDrawer.path !== null;
+    const closed = drawerWasOpen && !open;
+    drawerWasOpen = open;
+    if (tick !== lastTick || closed) {
+      lastTick = tick;
+      void load(parent);
+    }
+  });
+
+  function dirOf(path: string): string {
+    return path.slice(0, path.lastIndexOf('/')) || '/';
+  }
+
   const crumbs = $derived.by(() => {
     if (!parent) return [];
     const parts = parent.split('/').filter(Boolean);
@@ -63,7 +94,7 @@
   <header class="page-head">
     <div>
       <h1>Library</h1>
-      <p class="sub">Sync coverage per folder</p>
+      <p class="sub">Sync coverage per folder. Open a subtitle to re-sync or shift it.</p>
     </div>
     <button class="icon-btn" aria-label="Refresh folders" title="Refresh" onclick={() => load(parent)}>
       <Icon name="refresh" />
@@ -99,7 +130,7 @@
     </div>
   {:else if folders === null}
     <div class="card"><div class="skeleton" style="height: 200px"></div></div>
-  {:else if folders.length === 0}
+  {:else if folders.length === 0 && files.length === 0}
     <div class="card">
       <div class="empty">
         <Icon name="folder" size={32} />
@@ -114,6 +145,60 @@
       </div>
     </div>
   {:else}
+    {#if review && review.total > 0}
+      <section class="card flush review" aria-labelledby="review-title">
+        <div class="review-head">
+          <Icon name="alert" size={16} />
+          <h2 id="review-title" class="section-title">
+            {num(review.total)} weak sync{review.total === 1 ? '' : 's'} to review
+          </h2>
+        </div>
+        <ul class="files">
+          {#each review.files as r (r.filePath)}
+            <li>
+              <button class="file-row" onclick={() => mediaDrawer.open(r.filePath)}>
+                <QualityBadge score={r.quality.score} level={r.quality.level} />
+                <span class="fname truncate" title={r.filePath}>{basename(r.filePath)}</span>
+                <span class="subtle small truncate dir">{dirOf(r.filePath)}</span>
+              </button>
+            </li>
+          {/each}
+        </ul>
+        {#if review.total > review.files.length}
+          <p class="small subtle more">Showing the {review.files.length} weakest.</p>
+        {/if}
+      </section>
+    {/if}
+
+    {#if files.length > 0}
+      <section class="card flush" class:dim={loading} aria-labelledby="files-title">
+        <h2 id="files-title" class="section-title files-title">Subtitles in this folder</h2>
+        <ul class="files">
+          {#each files as f (f.filePath)}
+            <li>
+              <button class="file-row" onclick={() => mediaDrawer.open(f.filePath)}>
+                <Icon name="file" size={16} />
+                <span class="fname truncate" title={f.filePath}>{f.name}</span>
+                <span class="tags">
+                  {#if f.quality?.manualOffsetMs}
+                    <span class="chip" title="Shifted by hand">{f.quality.manualOffsetMs > 0 ? '+' : ''}{(f.quality.manualOffsetMs / 1000).toFixed(2)} s</span>
+                  {/if}
+                  <QualityBadge score={f.quality?.score} level={f.quality?.level} flagged={f.quality?.needsReview} />
+                  {#if f.synced}
+                    <span class="badge ok">Synced</span>
+                  {:else}
+                    <span class="badge">Not synced</span>
+                  {/if}
+                </span>
+                <span class="chev"><Icon name="chevron-right" size={16} /></span>
+              </button>
+            </li>
+          {/each}
+        </ul>
+      </section>
+    {/if}
+
+    {#if folders.length > 0}
     <div class="card flush" class:dim={loading}>
       <div class="list-head small subtle" aria-hidden="true">
         <span>Folder</span>
@@ -138,21 +223,16 @@
               <span class="r tnum"><span class="m-label">Synced </span>{num(f.synced)}<span class="subtle"> / {num(f.total)}</span></span>
               <span class="r tnum"><span class="m-label">Pending </span>{num(f.pending)}</span>
               <span class="r tnum"><span class="m-label">Skipped </span>{num(f.skipped)}</span>
-              <span class="chev">
-                {#if f.hasChildren}<Icon name="chevron-right" size={16} />{/if}
-              </span>
+              <span class="chev"><Icon name="chevron-right" size={16} /></span>
             {/snippet}
-            {#if f.hasChildren}
-              <button class="frow clickable" onclick={() => (parent = f.fullPath)}>
-                {@render content()}
-              </button>
-            {:else}
-              <div class="frow">{@render content()}</div>
-            {/if}
+            <button class="frow clickable" onclick={() => (parent = f.fullPath)}>
+              {@render content()}
+            </button>
           </li>
         {/each}
       </ul>
     </div>
+    {/if}
   {/if}
 </div>
 
@@ -288,6 +368,80 @@
     display: none;
   }
 
+  .review-head,
+  .files-title {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin: 0;
+    padding: 12px 18px;
+    border-bottom: 1px solid var(--border);
+  }
+
+  .review-head {
+    color: var(--warn-text);
+  }
+
+  .review-head .section-title {
+    margin: 0;
+  }
+
+  .files {
+    list-style: none;
+    margin: 0;
+    padding: 0;
+  }
+
+  .files li + li {
+    border-top: 1px solid var(--border);
+  }
+
+  .file-row {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    width: 100%;
+    padding: 10px 18px;
+    font: inherit;
+    color: inherit;
+    text-align: left;
+    background: none;
+    border: none;
+    cursor: pointer;
+    min-width: 0;
+  }
+
+  .file-row:hover {
+    background: var(--surface-2);
+  }
+
+  .file-row :global(.icon) {
+    color: var(--text-3);
+    flex-shrink: 0;
+  }
+
+  .file-row .fname {
+    font-weight: 550;
+    flex: 1;
+    min-width: 0;
+  }
+
+  .file-row .dir {
+    max-width: 40%;
+  }
+
+  .tags {
+    display: flex;
+    gap: 6px;
+    align-items: center;
+    flex-shrink: 0;
+  }
+
+  .more {
+    margin: 0;
+    padding: 8px 18px 12px;
+  }
+
   @media (max-width: 860px) {
     .list-head {
       display: none;
@@ -321,6 +475,17 @@
     }
     .chev {
       grid-area: chev;
+    }
+    .file-row {
+      flex-wrap: wrap;
+      padding: 10px 14px;
+    }
+    .file-row .fname {
+      flex-basis: calc(100% - 60px);
+    }
+    .file-row .dir {
+      max-width: 100%;
+      flex-basis: 100%;
     }
     .m-label {
       display: inline;

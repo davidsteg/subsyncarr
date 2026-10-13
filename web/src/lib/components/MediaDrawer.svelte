@@ -1,12 +1,15 @@
 <script lang="ts">
+  import { untrack } from 'svelte';
   import Dialog from './Dialog.svelte';
   import Icon from './Icon.svelte';
   import StatusTag from './StatusTag.svelte';
   import ModeChip from './ModeChip.svelte';
   import EngineBadges from './EngineBadges.svelte';
   import OffsetChart from './OffsetChart.svelte';
+  import QualityBadge from './QualityBadge.svelte';
   import { api } from '../api';
-  import { basename, dateTime, num } from '../format';
+  import { basename, dateTime, num, signedSeconds } from '../format';
+  import { live } from '../live.svelte';
   import { mediaDrawer, toasts } from '../ui.svelte';
   import { href } from '../router.svelte';
   import type { FailureTracking, MediaDetail } from '../types';
@@ -27,6 +30,84 @@
     const p = mediaDrawer.path;
     if (p) void load(p);
   });
+
+  // A re-sync started here is a run: reload when any run finishes.
+  let lastTick = untrack(() => live.runFinishedTick);
+  $effect(() => {
+    const t = live.runFinishedTick;
+    if (t === lastTick) return;
+    lastTick = t;
+    const p = untrack(() => mediaDrawer.path);
+    if (p) void load(p);
+  });
+
+  const NUDGES = [
+    { ms: -1000, label: '−1 s' },
+    { ms: -100, label: '−0.1 s' },
+    { ms: 100, label: '+0.1 s' },
+    { ms: 1000, label: '+1 s' },
+  ];
+  let custom = $state<number | null>(null);
+
+  async function act(key: string, fn: (path: string) => Promise<string | void>, failure: string) {
+    if (!detail) return;
+    const path = detail.filePath;
+    busy = key;
+    try {
+      const msg = await fn(path);
+      if (msg) toasts.success(msg);
+      await load(path);
+    } catch (e) {
+      toasts.error(failure, e);
+    } finally {
+      busy = null;
+    }
+  }
+
+  const resync = () =>
+    act(
+      'resync',
+      async (p) => {
+        await api.resyncFile(p);
+        return 'Re-sync started. This drawer refreshes when it finishes.';
+      },
+      'Could not start re-sync',
+    );
+
+  const shift = (ms: number) =>
+    act(
+      'offset',
+      async (p) => {
+        await api.offsetFile(p, ms);
+        return `Shifted ${signedSeconds(ms)}`;
+      },
+      'Could not shift subtitle',
+    );
+
+  function applyCustom(e: SubmitEvent) {
+    e.preventDefault();
+    if (custom === null || !Number.isFinite(custom) || custom === 0) return;
+    void shift(Math.round(custom * 1000)).then(() => (custom = null));
+  }
+
+  const undo = () =>
+    act(
+      'undo',
+      async (p) => {
+        const r = await api.undoFile(p);
+        return r.undone === 'offset' ? 'Shift undone' : 'Re-sync undone';
+      },
+      'Could not undo',
+    );
+
+  const setReviewed = (reviewed: boolean) =>
+    act(
+      'review',
+      async (p) => {
+        await api.reviewFile(p, reviewed);
+      },
+      'Could not update review state',
+    );
 
   async function load(path: string) {
     const seq = ++loadSeq;
@@ -64,6 +145,14 @@
   }
 
   const title = $derived(basename(mediaDrawer.path) || 'Media detail');
+  const lastUndo = $derived(detail?.undo[0] ?? null);
+  const undoLabel = $derived(
+    !lastUndo
+      ? 'Undo'
+      : lastUndo.action === 'offset' && lastUndo.offsetMs !== null
+        ? `Undo shift ${signedSeconds(lastUndo.offsetMs)}`
+        : 'Undo re-sync',
+  );
   const anySkipped = $derived(detail?.failureTracking.some((f) => f.is_skipped || f.consecutive_failures > 0) ?? false);
 </script>
 
@@ -99,6 +188,88 @@
           <span class="subtle small">Runs touching this file</span>
           <span class="tnum strong">{num(detail.syncHistory.length)}</span>
         </div>
+      </section>
+
+      <section>
+        <div class="sec-head">
+          <h3 class="section-title">Sync quality</h3>
+          {#if detail.quality && detail.quality.score !== null && (detail.quality.needsReview || detail.quality.reviewed)}
+            <button class="btn xs" disabled={busy !== null} onclick={() => setReviewed(!detail?.quality?.reviewed)}>
+              <Icon name="check" size={12} />
+              {detail.quality.reviewed ? 'Unmark reviewed' : 'Mark reviewed'}
+            </button>
+          {/if}
+        </div>
+        {#if !detail.quality || detail.quality.score === null}
+          <p class="muted small">No confidence score yet. One is recorded the next time this subtitle is synced.</p>
+        {:else}
+          {@const q = detail.quality}
+          <div class="q-top">
+            <QualityBadge score={q.score} level={q.level} flagged={q.needsReview} />
+            {#if q.needsReview}
+              <span class="small warn-text">Weak sync. Worth a listen, then shift, re-sync or mark it reviewed.</span>
+            {:else if q.reviewed}
+              <span class="small subtle">Reviewed</span>
+            {/if}
+          </div>
+          {#if q.details}
+            <dl class="meta small">
+              <div><dt>Engines aligned</dt><dd class="tnum">{q.details.enginesAligned}</dd></div>
+              {#if q.details.disagreementMs !== null}
+                <div><dt>Engine gap</dt><dd class="tnum">{num(q.details.disagreementMs)} ms</dd></div>
+              {/if}
+              <div><dt>Shift</dt><dd class="tnum">{signedSeconds(q.details.shiftMs)}</dd></div>
+              <div><dt>Offset spread</dt><dd class="tnum">{num(q.details.spreadMs)} ms</dd></div>
+              <div><dt>Cues</dt><dd class="tnum">{num(q.details.cues)}</dd></div>
+            </dl>
+            {#if q.details.factors.length}
+              <ul class="factors small">
+                {#each q.details.factors as f (f.label)}
+                  <li><span>{f.label}</span><span class="tnum subtle">−{f.penalty}</span></li>
+                {/each}
+              </ul>
+            {/if}
+          {/if}
+        {/if}
+        {#if detail.quality && detail.quality.manualOffsetMs !== 0}
+          <p class="small subtle note">Shifted {signedSeconds(detail.quality.manualOffsetMs)} by hand since the last sync.</p>
+        {/if}
+      </section>
+
+      <section>
+        <h3 class="section-title sec-head">Adjust</h3>
+        <div class="adjust">
+          <button
+            class="btn sm"
+            disabled={busy !== null || live.isRunning}
+            title={live.isRunning ? 'Available once the current run has finished' : 'Run both engines on this subtitle again'}
+            onclick={resync}
+          >
+            <Icon name="refresh" size={14} /> Re-sync now
+          </button>
+          <button class="btn sm" disabled={busy !== null || !lastUndo} onclick={undo}>{undoLabel}</button>
+        </div>
+        <div class="nudge" role="group" aria-label="Shift all cues">
+          <span class="small subtle">Shift</span>
+          {#each NUDGES as n (n.ms)}
+            <button class="btn xs" disabled={busy !== null} onclick={() => shift(n.ms)}>{n.label}</button>
+          {/each}
+          <form class="custom" onsubmit={applyCustom}>
+            <input
+              class="input"
+              type="number"
+              step="0.05"
+              placeholder="± seconds"
+              aria-label="Custom shift in seconds"
+              bind:value={custom}
+            />
+            <button class="btn xs" type="submit" disabled={busy !== null || !custom}>Apply</button>
+          </form>
+        </div>
+        <p class="small subtle note">
+          Shifts are written to the file straight away and the next scan keeps them. Undo goes back up to
+          10 changes.
+        </p>
       </section>
 
       <section>
@@ -160,6 +331,7 @@
                     <a class="small" href={href('run-detail', h.runId)} onclick={() => mediaDrawer.close()}>{dateTime(h.runStartTime)}</a>
                     <StatusTag status={h.fileStatus} />
                     <ModeChip mode={h.syncMode} filePath={detail.filePath} anchorPath={h.anchorPath} showAnchor />
+                    <QualityBadge score={h.qualityScore} />
                   </div>
                   <EngineBadges engines={h.engines} />
                 </div>
@@ -321,6 +493,64 @@
   }
   .tl-dot.processing {
     background: var(--info);
+  }
+
+  .q-top {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    flex-wrap: wrap;
+  }
+
+  .warn-text {
+    color: var(--warn-text);
+  }
+
+  .factors {
+    list-style: none;
+    margin: 8px 0 0;
+    padding: 0;
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+  }
+
+  .factors li {
+    display: flex;
+    justify-content: space-between;
+    gap: 10px;
+    padding: 6px 10px;
+    border-top: 1px solid var(--border);
+  }
+
+  .factors li:first-child {
+    border-top: none;
+  }
+
+  .note {
+    margin: 8px 0 0;
+  }
+
+  .adjust,
+  .nudge {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    flex-wrap: wrap;
+  }
+
+  .nudge {
+    margin-top: 10px;
+  }
+
+  .custom {
+    display: flex;
+    gap: 6px;
+    align-items: center;
+  }
+
+  .custom .input {
+    width: 110px;
+    height: 28px;
   }
 
   .tl-body {

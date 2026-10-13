@@ -43,6 +43,7 @@ interface EngineResult {
   offsetMs?: number;
   shiftTooLarge?: boolean;
   originalShiftMs?: number;
+  framerateScale?: number; // ffsubsync's framerate scale factor
 }
 
 interface FileResult {
@@ -55,8 +56,30 @@ interface FileResult {
   engines: Record<string, EngineResult>;
   sync_mode: SyncMode | null;
   anchor_path: string | null;
+  quality_score: number | null; // set once the file is kept
   created_at: number;
   updated_at: number;
+}
+
+interface SyncQuality {
+  score: number | null;           // 0–100; null when only a manual offset is known
+  level: 'good' | 'fair' | 'weak' | null; // good ≥ 80, weak < 50
+  details: {
+    score: number;
+    level: 'good' | 'fair' | 'weak';
+    enginesAligned: number;
+    disagreementMs: number | null;
+    shiftMs: number;
+    spreadMs: number;             // p90 − p10 of per-cue offsets
+    splitPoints: number;          // jumps > 1 s between neighbouring cue offsets
+    cues: number;
+    factors: { label: string; penalty: number }[];
+  } | null;
+  source: 'run' | 'resync' | 'offset';
+  manualOffsetMs: number;         // sum of manual shifts since the last sync
+  reviewed: boolean;
+  needsReview: boolean;           // weak and not reviewed
+  updatedAt: number;
 }
 
 interface ScanProgress {
@@ -89,7 +112,13 @@ interface ScanProgress {
 | GET | `/api/diagnostics?limit=200` | `{ lastRunSummary: { runId, startedAt, finishedAt, dryRun, scan: { found, needSync, alreadySynced, parked }, counts: Record<Category, number>, samples: Record<Category, string[]> } \| null, strikes: [{ file_path, consecutive_strikes, last_strike_time }], skippedEngines: [{ file_path, engine, consecutive_failures, last_failure_time }], parked: [{ file_path, reason, parked_at }], totals: { strikes, skippedEngines, parked } }`. `Category` is one of `synced, synced_single_engine, not_fitting_disagree, not_fitting_shift, deleted, forced_kept, forced_parked, failed_timeout, failed_error, failed_engines_skipped, no_video, cancelled`; `samples` lists up to 25 problem files per category |
 | GET | `/api/skip-status` | `{ totalSkipped, skippedByEngine: Record<string, number> }` |
 | POST | `/api/skip-status/reset` | body `{ filePath, engine? }` → `{ success: true }` |
-| GET | `/api/media?path=<abs path>` (also `/api/media/<abs path>`) | `{ filePath, notFittingStrikes, failureTracking: [{ engine, consecutive_failures, last_failure_time, last_success_time, is_skipped }], syncHistory: [{ runId, runStartTime, runStatus, fileStatus, engines: Record<string, EngineResult>, syncMode, anchorPath, updatedAt }] }` |
+| GET | `/api/media?path=<abs path>` (also `/api/media/<abs path>`) | `{ filePath, notFittingStrikes, failureTracking: [{ engine, consecutive_failures, last_failure_time, last_success_time, is_skipped }], syncHistory: [{ runId, runStartTime, runStatus, fileStatus, engines: Record<string, EngineResult>, syncMode, anchorPath, qualityScore, updatedAt }], quality: SyncQuality \| null, undo: [{ action, offsetMs, createdAt }] }` (`undo` newest first) |
+| GET | `/api/library/files?dir=<abs dir>` | `[{ name, filePath, sizeBytes, synced, quality: SyncQuality \| null, undoSteps }]` — `.srt` files directly in `dir` (must be inside `SCAN_PATHS`, else `[]`) |
+| POST | `/api/file/resync` | body `{ filePath }` → `{ runId }` — one-file run past the sync cache; resets engine skips, never strikes or deletes; `409` if a run is active |
+| POST | `/api/file/offset` | body `{ filePath, offsetMs }` (non-zero, within ±600000) → `{ success: true }` — shifts every cue in place, counts as reviewed; `409` while an engine is working on the file |
+| POST | `/api/file/undo` | body `{ filePath }` → `{ success: true, undone: 'resync' \| 'offset' }`; `404` nothing to undo, `409` file changed on disk since |
+| POST | `/api/file/review` | body `{ filePath, reviewed?: boolean }` → `{ success: true }`; `404` without a quality record |
+| GET | `/api/quality/review?limit=50` | `{ total, files: [{ filePath, quality: SyncQuality }] }` — weak, unreviewed syncs, weakest first |
 | GET | `/api/settings` | `{ maxSubtitleShiftMs, engineAgreementThresholdMs, notFittingDeleteThreshold, engineTimeouts: { alass, ffsubsync, autosubsync }, maxConcurrentTasks, defaultEngine, fallbackEngine, dryRun, anchorAlignment, embeddedSubtitleReference, cronSchedule, includeEngines, theme, integrations: { webhookEnabled, webhookToken, webhookPathMap, notifyUrl, notifyKind, notifyOn, mediaServer, mediaServerUrl, mediaServerToken, mediaPathMap } }` |
 | POST | `/api/settings` | body: any of `max_subtitle_shift_ms, engine_agreement_threshold_ms, not_fitting_delete_threshold, engine_timeout_alass, engine_timeout_ffsubsync, engine_timeout_autosubsync, max_concurrent_tasks, default_engine, fallback_engine, dry_run, anchor_alignment, embedded_subtitle_reference, theme, webhook_enabled, webhook_token, webhook_path_map, notify_url, notify_kind (apprise\|discord\|json), notify_on (always\|changes\|issues), media_server (none\|jellyfin\|plex), media_server_url, media_server_token, media_path_map` (string or number/bool values; text keys may be empty to clear) → `{ success: true }` |
 | POST | `/api/integrations/test` | body `{ target: "notify" \| "media" }` → `{ ok: true, message }`; `502` with `{ error }` if the endpoint failed. Uses the saved settings |

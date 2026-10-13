@@ -142,6 +142,9 @@ pub struct EngineResult {
     pub shift_too_large: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub original_shift_ms: Option<i64>,
+    /// ffsubsync's "framerate scale factor" (1.0 = no stretch).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub framerate_scale: Option<f64>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -155,6 +158,7 @@ pub struct FileResult {
     pub engines: BTreeMap<String, Value>,
     pub sync_mode: Option<String>,
     pub anchor_path: Option<String>,
+    pub quality_score: Option<i64>,
     pub created_at: i64,
     pub updated_at: i64,
 }
@@ -170,6 +174,7 @@ pub struct FileResultRow {
     pub engines: Option<String>,
     pub sync_mode: Option<String>,
     pub anchor_path: Option<String>,
+    pub quality_score: Option<i64>,
     pub created_at: i64,
     pub updated_at: i64,
 }
@@ -186,6 +191,7 @@ impl From<FileResultRow> for FileResult {
             engines: r.engines.and_then(|s| serde_json::from_str(&s).ok()).unwrap_or_default(),
             sync_mode: r.sync_mode,
             anchor_path: r.anchor_path,
+            quality_score: r.quality_score,
             created_at: r.created_at,
             updated_at: r.updated_at,
         }

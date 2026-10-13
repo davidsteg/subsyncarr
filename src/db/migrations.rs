@@ -195,6 +195,39 @@ const MIGRATIONS: &[Migration] = &[
             ("synced_files", "cues_verified", "INTEGER DEFAULT 0"),
         ],
     },
+    Migration {
+        version: 17,
+        name: "sync_quality_and_subtitle_backups",
+        sql: &[
+            // Confidence of the sync currently on disk. score is NULL when
+            // only a manual offset is known (file synced before 2.1).
+            "CREATE TABLE IF NOT EXISTS sync_quality (
+                file_path TEXT PRIMARY KEY,
+                score INTEGER,
+                level TEXT,
+                details TEXT,
+                source TEXT NOT NULL,
+                manual_offset_ms INTEGER NOT NULL DEFAULT 0,
+                reviewed INTEGER NOT NULL DEFAULT 0,
+                updated_at INTEGER NOT NULL
+            )",
+            "CREATE INDEX IF NOT EXISTS idx_sync_quality_review ON sync_quality(reviewed, score)",
+            // Undo stack for manual re-sync / offset changes: the file as it
+            // was before each action.
+            "CREATE TABLE IF NOT EXISTS subtitle_backups (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                file_path TEXT NOT NULL,
+                content BLOB NOT NULL,
+                action TEXT NOT NULL,
+                offset_ms INTEGER,
+                quality TEXT,
+                after_hash TEXT,
+                created_at INTEGER NOT NULL
+            )",
+            "CREATE INDEX IF NOT EXISTS idx_subtitle_backups_path ON subtitle_backups(file_path, id)",
+        ],
+        add_columns: &[("file_results", "quality_score", "INTEGER")],
+    },
 ];
 
 async fn has_column(pool: &SqlitePool, table: &str, column: &str) -> sqlx::Result<bool> {

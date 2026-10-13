@@ -23,6 +23,7 @@ use crate::embedded;
 use crate::engines::{self, sidecar_path, EngineRun};
 use crate::events::{Event, EventBus};
 use crate::models::{EngineResult, FileStatus, Run, ScanProgress, SyncMode};
+use crate::quality;
 use crate::runlog::RunLogs;
 use crate::scanner::{self, mtime_ms, ScanOptions};
 use crate::settings::Settings;
@@ -53,6 +54,8 @@ impl std::fmt::Display for RunError {
 pub struct ActiveRun {
     pub id: String,
     pub dry_run: bool,
+    /// A re-sync started from the library: never strikes or deletes.
+    pub manual: bool,
     stop: CancellationToken,
     stop_flag: AtomicBool,
     cancelled_files: Mutex<HashSet<PathBuf>>,
@@ -91,8 +94,19 @@ struct EmbeddedRefs {
 struct ChainPass {
     alignments: Vec<(String, Vec<u8>, i64)>,
     mismatch_reports: usize,
+    /// An aligned engine stretched the timeline (ffsubsync framerate fix).
+    framerate_scaled: bool,
     results: Vec<(String, EngineResult)>,
     attempts: Vec<Attempt>,
+}
+
+impl EmbeddedRefs {
+    fn for_run(settings: &Settings, run_id: &str) -> Option<Self> {
+        (settings.embedded_subtitle_reference && srt_reference_chain(settings)).then(|| EmbeddedRefs {
+            dir: std::env::temp_dir().join(format!("subsyncarr-ref-{run_id}")),
+            by_video: Mutex::new(HashMap::new()),
+        })
+    }
 }
 
 impl ChainPass {
@@ -151,6 +165,10 @@ fn srt_reference_chain(s: &Settings) -> bool {
         && SRT_REFERENCE_CAPABLE.contains(&s.fallback_engine.as_str())
 }
 
+pub(crate) fn content_hash(bytes: &[u8]) -> String {
+    sha1_smol::Sha1::from(bytes).digest().to_string()
+}
+
 impl Processor {
     pub fn new(
         db: Db,
@@ -192,17 +210,13 @@ impl Processor {
 
     // ------------------------------------------------------------ lifecycle
 
-    pub async fn start_run(
-        self: &Arc<Self>,
-        paths: Option<Vec<PathBuf>>,
-        dry_run: Option<bool>,
-    ) -> Result<String, RunError> {
-        let settings = self.settings.read().unwrap().clone();
-        let dry_run = dry_run.unwrap_or(settings.dry_run);
+    /// Register a new run as the current one and announce it.
+    async fn begin_run(&self, dry_run: bool, manual: bool) -> Result<Arc<ActiveRun>, RunError> {
         let id = uuid::Uuid::new_v4().to_string();
         let run = Arc::new(ActiveRun {
             id: id.clone(),
             dry_run,
+            manual,
             stop: CancellationToken::new(),
             stop_flag: AtomicBool::new(false),
             cancelled_files: Mutex::new(HashSet::new()),
@@ -229,15 +243,22 @@ impl Processor {
         if let Ok(Some(r)) = self.db.get_run(&id).await {
             self.events.send(Event::RunStarted(r));
         }
+        Ok(run)
+    }
 
+    pub async fn start_run(
+        self: &Arc<Self>,
+        paths: Option<Vec<PathBuf>>,
+        dry_run: Option<bool>,
+    ) -> Result<String, RunError> {
+        let settings = self.settings.read().unwrap().clone();
+        let run = self.begin_run(dry_run.unwrap_or(settings.dry_run), false).await?;
+        let id = run.id.clone();
         let scan = match paths {
             Some(p) if !p.is_empty() => ScanConfig { include_paths: p, exclude_paths: Vec::new() },
             _ => self.cfg.scan.clone(),
         };
-        let embedded = (settings.embedded_subtitle_reference && srt_reference_chain(&settings)).then(|| EmbeddedRefs {
-            dir: std::env::temp_dir().join(format!("subsyncarr-ref-{id}")),
-            by_video: Mutex::new(HashMap::new()),
-        });
+        let embedded = EmbeddedRefs::for_run(&settings, &id);
         let this = self.clone();
         tokio::spawn(async move {
             let ctx = Arc::new(RunCtx {
@@ -257,6 +278,88 @@ impl Processor {
             this.finish(&run).await;
         });
         Ok(id)
+    }
+
+    /// Re-sync one subtitle on request, as a one-file run that skips the
+    /// scan and the sync cache. The file as it was goes on the undo stack.
+    pub async fn resync_file(self: &Arc<Self>, path: PathBuf) -> Result<String, RunError> {
+        let settings = self.settings.read().unwrap().clone();
+        let run = self.begin_run(settings.dry_run, true).await?;
+        let id = run.id.clone();
+        let embedded = EmbeddedRefs::for_run(&settings, &id);
+        let this = self.clone();
+        tokio::spawn(async move {
+            // The summary is not published: /api/diagnostics keeps describing
+            // the last library run, not a one-file re-sync.
+            let ctx = Arc::new(RunCtx {
+                run: run.clone(),
+                settings,
+                dir_cache: DirectoryCache::new(),
+                summary: Mutex::new(RunSummary::new(&run.id, run.dry_run)),
+                embedded,
+            });
+            if let Err(e) = this.process_manual(&ctx, &path).await {
+                error!("Run {} failed: {e:#}", run.id);
+                this.log(format!("Run failed: {e:#}"));
+            }
+            if let Some(e) = &ctx.embedded {
+                let _ = std::fs::remove_dir_all(&e.dir);
+            }
+            this.finish(&run).await;
+        });
+        Ok(id)
+    }
+
+    async fn process_manual(&self, ctx: &RunCtx, path: &Path) -> anyhow::Result<()> {
+        let run = &ctx.run;
+        let p = ps(path);
+        self.log(format!("Manual re-sync: {p}"));
+        self.db.set_run_totals(&run.id, 1, self.cfg.include_engines.len() as i64).await?;
+        self.db.insert_pending_files(&run.id, std::slice::from_ref(&p)).await?;
+        if let Ok(Some(r)) = self.db.get_run(&run.id).await {
+            self.events.send(Event::RunStarted(r));
+        }
+        let before = std::fs::read(path).ok();
+        let mut backup = None;
+        if !run.dry_run {
+            // Asked for explicitly: give every engine a chance again.
+            self.db.reset_engine_skip(&p, None).await?;
+            if let Some(b) = &before {
+                // Same file, not a replacement: keep its quality and history.
+                self.db.set_fingerprint(&p, &content_hash(b)).await?;
+                let snapshot = self.db.quality(&p).await?;
+                backup = Some(self.db.push_backup(&p, b, "resync", None, snapshot.as_ref(), None).await?);
+            }
+        }
+        self.process_file(ctx, path, None).await;
+        if let Some(id) = backup {
+            match std::fs::read(path) {
+                Ok(after) if before.as_ref() != Some(&after) => {
+                    self.db.set_backup_after_hash(id, &content_hash(&after)).await?;
+                }
+                // Nothing changed on disk: nothing to undo.
+                _ => self.db.delete_backup(id).await?,
+            }
+        }
+        Ok(())
+    }
+
+    /// Before a manual change to `path`: refuse while an engine is working on
+    /// it, and make a running library run skip it so it doesn't overwrite
+    /// the change.
+    pub(crate) fn claim_file(&self, path: &Path) -> bool {
+        let Some(run) = self.current() else {
+            return true;
+        };
+        if run.file_tokens.lock().unwrap().contains_key(path) {
+            return false;
+        }
+        run.cancelled_files.lock().unwrap().insert(path.to_path_buf());
+        true
+    }
+
+    pub(crate) fn db(&self) -> &Db {
+        &self.db
     }
 
     async fn finish(&self, run: &Arc<ActiveRun>) {
@@ -779,7 +882,7 @@ impl Processor {
         // subtitle now sits here (Bazarr upgrade), that state belongs to the
         // old file and is reset so the new one gets a fair run.
         if let (false, Some(bytes)) = (ctx.run.dry_run, original.as_deref()) {
-            let hash = sha1_smol::Sha1::from(bytes).digest().to_string();
+            let hash = content_hash(bytes);
             if let Err(e) = self.db.refresh_fingerprint(&ps(path), &hash).await {
                 error!("fingerprint update failed: {e}");
             }
@@ -907,6 +1010,20 @@ impl Processor {
                         data[0].engine, data[1].engine
                     ));
                 }
+                let aligned: Vec<(String, i64)> = std::iter::once((engine.clone(), shift))
+                    .chain(alignments.iter().map(|(e, _, s)| (e.clone(), *s)))
+                    .collect();
+                let cue_offsets = original.as_deref().map(|o| srt::cue_offsets_ms(o, &content)).unwrap_or_default();
+                let q = quality::score(&quality::Input {
+                    alignments: &aligned,
+                    agreement_threshold_ms: threshold,
+                    mismatch_reports: pass.mismatch_reports,
+                    cue_offsets: &cue_offsets,
+                    cues: srt::count_cues(&content),
+                    max_shift_ms: s.max_subtitle_shift_ms,
+                    framerate_scaled: pass.framerate_scaled,
+                });
+                self.log(format!("Sync confidence {} ({}): {name}", q.score, q.level.as_str()));
                 let via = match mode {
                     SyncMode::Follower => ", via anchor",
                     _ if via_embedded => ", via embedded track",
@@ -916,6 +1033,13 @@ impl Processor {
                 let category = if data.len() == 1 { Category::SyncedSingleEngine } else { Category::Synced };
                 extra.insert(0, format!("kept {engine}"));
                 self.log_decision(ctx, path, category, &attempts, &extra);
+                if !ctx.run.dry_run {
+                    let source = if ctx.run.manual { "resync" } else { "run" };
+                    if let Err(e) = self.db.upsert_quality(&ps(path), &q, source).await {
+                        error!("quality update failed: {e}");
+                    }
+                }
+                self.mark(ctx, path, FileUpdate { quality_score: Some(q.score), ..Default::default() }).await;
                 self.finish_file(ctx, path, FileStatus::Completed, RunCounter::Completed, Some(sync_info)).await;
                 FileOutcome {
                     kind: FileOutcomeKind::Completed,
@@ -942,8 +1066,13 @@ impl Processor {
     ) -> Result<ChainPass, FileOutcome> {
         let name = name_of(path);
         let s = &ctx.settings;
-        let mut pass =
-            ChainPass { alignments: Vec::new(), mismatch_reports: 0, results: Vec::new(), attempts: Vec::new() };
+        let mut pass = ChainPass {
+            alignments: Vec::new(),
+            mismatch_reports: 0,
+            framerate_scaled: false,
+            results: Vec::new(),
+            attempts: Vec::new(),
+        };
         for engine in [&s.default_engine, &s.fallback_engine] {
             if ctx.run.is_cancelled(path) || token.is_cancelled() {
                 self.restore(path, original);
@@ -986,6 +1115,7 @@ impl Processor {
             match content {
                 Some(c) => {
                     let shift = run.result.offset_ms.unwrap_or(0);
+                    pass.framerate_scaled |= run.result.framerate_scale.is_some_and(|f| (f - 1.0).abs() > 0.0005);
                     self.log(format!("{engine} aligned (shift {shift}ms): {name}"));
                     pass.attempts.push(Attempt::ok(engine, shift));
                     pass.alignments.push((engine.clone(), c, shift));
@@ -1110,6 +1240,14 @@ impl Processor {
             self.log(format!("[DRY RUN] Would record not-fitting strike (threshold: {threshold}): {name}"));
             return (base, "no strike recorded".into());
         }
+        if ctx.run.manual {
+            // Someone asked for this file by hand: report, never punish.
+            self.restore(path, original);
+            self.log(format!(
+                "⚠ Re-sync didn't fit — keeping subtitle unchanged (no strike for a manual re-sync): {name}"
+            ));
+            return (base, "manual re-sync, no strike recorded".into());
+        }
         let p = ps(path);
         let strikes = self.db.record_not_fitting_strike(&p).await.unwrap_or(1);
         if anchor::is_forced_subtitle(path) {
@@ -1141,6 +1279,7 @@ impl Processor {
                 Err(e) => self.log(format!("Failed to delete subtitle {name}: {e}")),
             }
             let _ = self.db.reset_not_fitting_strikes(&p).await;
+            let _ = self.db.forget_file(&p).await;
             let _ = self.db.remove_from_sync_cache(&[p]).await;
             (Category::Deleted, format!("strike {strikes}/{threshold}, deleted"))
         } else {
