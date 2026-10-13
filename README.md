@@ -8,9 +8,10 @@ This is a fork of [johnpc/subsyncarr](https://github.com/johnpc/subsyncarr). Sin
 
 - **In-place sync.** Each subtitle is aligned against its video and overwritten. Already-synced files are tracked in SQLite (path, mtime and size), so files are left byte-for-byte clean for Plex, Jellyfin and ffprobe.
 - **Two-engine agreement check.** The default and fallback engines run independently. The result is kept only if they agree within `ENGINE_AGREEMENT_THRESHOLD_MS`.
-- **Three outcomes, not two.**
+- **Clear outcomes.**
   - **Synced:** the engines agree.
-  - **Not fitting:** the engines disagree, or the shift is larger than `MAX_SUBTITLE_SHIFT_MS`. The subtitle probably belongs to another release. This earns a strike, and after `NOT_FITTING_DELETE_THRESHOLD` consecutive strikes the subtitle is deleted.
+  - **Already in sync:** the engines disagree, but ffsubsync finds a shift under 1 s. The subtitle is left untouched and gets no strike.
+  - **Not fitting:** both engines want a shift of 1 s or more and disagree, or both reject a shift larger than `MAX_SUBTITLE_SHIFT_MS`. The subtitle probably belongs to another release. This earns a strike, and after `NOT_FITTING_DELETE_THRESHOLD` consecutive strikes the subtitle is deleted. When only one engine wants a large shift, the subtitle is kept without a strike. Strikes count only when the run completes, so a stopped run or a restart never adds any.
   - **Failed:** the engines crashed or timed out. No strike is recorded and the file is never touched.
 - **Forced subtitles are never deleted.** `*.forced.srt` and `*.foreign.srt` are aligned with a single global offset (`alass --no-split`). When they don't fit they are restored and parked until the file changes.
 - **Fast path for multi-language releases.** The largest subtitle of a video is synced against the audio. The other languages are aligned to it subtitle-to-subtitle, which takes milliseconds instead of minutes.
