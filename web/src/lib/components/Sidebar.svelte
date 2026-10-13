@@ -18,6 +18,7 @@
     { name: 'run', label: 'Live run', icon: 'activity' },
     { name: 'history', label: 'History', icon: 'history', match: ['history', 'run-detail'] },
     { name: 'library', label: 'Library', icon: 'folder' },
+    { name: 'statistics', label: 'Statistics', icon: 'chart' },
     { name: 'logs', label: 'Server logs', icon: 'terminal' },
     { name: 'settings', label: 'Settings', icon: 'settings' },
     { name: 'changelog', label: 'Changelog', icon: 'changelog' },

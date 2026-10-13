@@ -18,6 +18,8 @@ pub struct ScanConfig {
 #[derive(Debug, Clone)]
 pub struct Retention {
     pub keep_runs_days: i64,
+    /// Statistics history (one small row per decision), kept longer than runs.
+    pub keep_stats_days: i64,
     pub trim_logs_days: i64,
     pub max_log_size_bytes: i64,
     pub cleanup_interval_hours: u64,
@@ -152,6 +154,7 @@ impl Config {
             include_engines,
             retention: Retention {
                 keep_runs_days: env_pos("RETENTION_KEEP_RUNS_DAYS").unwrap_or(30),
+                keep_stats_days: env_pos("RETENTION_KEEP_STATS_DAYS").unwrap_or(365),
                 trim_logs_days: env_pos("RETENTION_TRIM_LOGS_DAYS").unwrap_or(7),
                 max_log_size_bytes: env_pos("RETENTION_MAX_LOG_SIZE").unwrap_or(10_000),
                 cleanup_interval_hours: env_pos("RETENTION_CLEANUP_INTERVAL_HOURS").unwrap_or(24),

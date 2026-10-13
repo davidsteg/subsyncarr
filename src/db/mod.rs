@@ -4,8 +4,10 @@
 
 mod manual;
 mod migrations;
+mod stats;
 
 pub use manual::{Backup, LibraryEntry, QualityRecord};
+pub use stats::{EngineRunRecord, OutcomeRecord, StatsQuery};
 
 use std::collections::{BTreeMap, HashMap};
 use std::path::Path;

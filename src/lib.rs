@@ -20,6 +20,7 @@ pub mod schedule;
 pub mod server;
 pub mod settings;
 pub mod srt;
+pub mod stats;
 pub mod summary;
 pub mod video;
 pub mod web;
@@ -55,6 +56,15 @@ pub async fn build(cfg: config::Config, logs: logbuf::LogBuffer) -> anyhow::Resu
     integrations::spawn(db.clone(), settings.clone(), &events);
     let webhooks =
         integrations::webhook::TriggerQueue::spawn(processor.clone(), integrations::webhook::DEFAULT_DEBOUNCE);
+    // Copy the run history from before the statistics tables existed, once.
+    let (bdb, roots) = (db.clone(), cfg.scan.include_paths.clone());
+    tokio::spawn(async move {
+        match bdb.backfill_stats(&roots).await {
+            Ok(n) if n > 0 => info!("Statistics: imported {n} decisions from earlier runs"),
+            Err(e) => error!("Statistics backfill failed: {e}"),
+            _ => {}
+        }
+    });
     let state = server::AppState::new(db, cfg, settings, processor, events, logs, runlogs, webhooks);
     Ok(App { state })
 }
@@ -94,6 +104,11 @@ async fn cleanup(state: &server::AppState) {
     match db.delete_old_runs(r.keep_runs_days).await {
         Ok(n) if n > 0 => info!("Deleted {n} old runs"),
         Err(e) => error!("Run cleanup failed: {e}"),
+        _ => {}
+    }
+    match db.delete_old_stats(r.keep_stats_days).await {
+        Ok(n) if n > 0 => info!("Deleted {n} old statistics rows"),
+        Err(e) => error!("Statistics cleanup failed: {e}"),
         _ => {}
     }
     if let Err(e) = db.vacuum().await {

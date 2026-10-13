@@ -283,6 +283,46 @@ async fn full_pipeline() {
     let reset = st.db.get_run(res["runId"].as_str().unwrap()).await.unwrap().unwrap();
     assert_eq!(reset.total_files, 7, "the forced sub is back in");
     assert!(st.runlogs.read(&reset.id).contains("cleared 1 strike(s)"), "{}", st.runlogs.read(&reset.id));
+
+    // Statistics history: a subtitle with no video next to it is an orphan.
+    let orphan = tmp.path().join("media/Loose/Lost.en.srt");
+    std::fs::create_dir_all(orphan.parent().unwrap()).unwrap();
+    std::fs::write(&orphan, srt(10)).unwrap();
+    st.processor.start_run(None, None).await.unwrap();
+    wait_idle(&st.processor).await;
+    let (code, deep) = api("GET", "/api/stats/deep?days=7&tzOffset=120", None).await;
+    assert_eq!(code, 200, "{deep}");
+    let t = &deep["totals"];
+    assert_eq!(t["deleted"], 2, "mismatch and wrong: {t}");
+    assert!(t["parked"].as_i64().unwrap() >= 1, "{t}");
+    assert!(t["categories"]["failed_error"].as_i64().unwrap() >= 1, "{t}");
+    assert_eq!(t["noVideo"], 1, "{t}");
+    assert_eq!(deep["orphans"]["count"], 1, "{}", deep["orphans"]);
+    assert_eq!(deep["orphans"]["items"][0]["filePath"], orphan.display().to_string());
+    // Engines in a fixed order on the axes; a 20 s disagreement tops the list.
+    // The chain changed to ffsubsync twice above: one block per engine pair.
+    let ag = deep["agreement"]["pairs"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|b| b["engines"] == serde_json::json!(["alass", "ffsubsync"]))
+        .unwrap_or_else(|| panic!("{}", deep["agreement"]));
+    let m = ag["worst"].as_array().unwrap().iter().find(|w| w["filePath"] == mismatch[0].display().to_string());
+    let m = m.unwrap_or_else(|| panic!("{ag}"));
+    assert_eq!((m["a"].as_i64(), m["b"].as_i64(), m["category"].as_str()), (Some(5000), Some(20000), Some("deleted")));
+    assert_eq!(ag["worst"][0]["a"].as_i64().unwrap().abs_diff(ag["worst"][0]["b"].as_i64().unwrap()), 20000);
+    let engines = deep["engines"].as_array().unwrap();
+    let alass = engines.iter().find(|e| e["engine"] == "alass").unwrap();
+    assert!(alass["results"]["ok"].as_i64().unwrap() > 0 && alass["results"]["error"].as_i64().unwrap() > 0);
+    assert_eq!(alass["results"]["shift"], 2, "wrong, and the forced sub: {alass}");
+    let langs = deep["breakdowns"]["language"].as_array().unwrap();
+    assert_eq!(langs[0]["key"], "English", "{langs:?}");
+    let forced = deep["breakdowns"]["forced"].as_array().unwrap();
+    assert!(forced.iter().any(|r| r["key"] == "forced"), "{forced:?}");
+    let titles = deep["breakdowns"]["titles"].as_array().unwrap();
+    assert!(titles.iter().any(|r| r["key"] == "Mismatch" && r["deleted"] == 1), "{titles:?}");
+    assert!(deep["runs"].as_array().unwrap().len() >= 6, "{}", deep["runs"]);
+    assert!(!deep["timeline"].as_array().unwrap().is_empty());
 }
 
 fn walk(dir: &Path) -> Vec<PathBuf> {

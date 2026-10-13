@@ -353,3 +353,124 @@ export type WsEvent =
   | { type: 'scan:progress'; data: ScanProgress | null };
 
 export type WsMessage = { type: 'state'; data: LiveState } | { type: 'batch'; messages: WsEvent[] };
+
+// Deep statistics (GET /api/stats/deep)
+export interface ClassCounts {
+  total: number;
+  synced: number;
+  notFitting: number;
+  failed: number;
+  deleted: number;
+  parked: number;
+  noVideo: number;
+  avgQuality: number | null;
+}
+
+export interface Spread {
+  p10: number | null;
+  p50: number | null;
+  p90: number | null;
+  p99: number | null;
+  max: number | null;
+  mean: number | null;
+}
+
+export interface HistogramBucket {
+  label: string;
+  lo: number | null;
+  hi: number | null;
+  count: number;
+}
+
+export type EngineResultKind = 'ok' | 'shift' | 'timeout' | 'skipped' | 'no_output' | 'error';
+
+export interface EngineDeepStats {
+  engine: string;
+  runs: number;
+  results: Partial<Record<EngineResultKind, number>>;
+  byReference: Record<string, Partial<Record<EngineResultKind, number>>>;
+  totalMs: number;
+  durationMs: Spread;
+  shiftMs: Spread;
+  absShiftMs: Spread;
+  shiftHistogram: HistogramBucket[];
+  framerateScaled: number;
+}
+
+export interface AgreementPair {
+  engines: [string, string];
+  pairs: number;
+  withinThreshold: number;
+  absDiffMs: Spread;
+  biasMs: number | null;
+  histogram: HistogramBucket[];
+  onlyFirstMoves: number;
+  onlySecondMoves: number;
+  /** [shift of engines[0], shift of engines[1], kept] */
+  scatter: [number, number, boolean][];
+  worst: { filePath: string; ts: number; category: string; a: number; b: number }[];
+}
+
+export interface StatsRun {
+  runId: string;
+  start: number;
+  end: number;
+  status: string | null;
+  durationMs: number;
+  decisions: number;
+  synced: number;
+  notFitting: number;
+  failed: number;
+  deleted: number;
+  parked: number;
+  noVideo: number;
+  avgQuality: number | null;
+  engineMs: number;
+  filesPerHour: number | null;
+  dryRun: boolean;
+  manual: boolean;
+}
+
+export type BreakdownRow = ClassCounts & { key: string };
+
+export interface DeepStats {
+  window: {
+    days: number;
+    from: number;
+    to: number;
+    bucketMs: number;
+    firstRecord: number | null;
+    includeDryRuns: boolean;
+  };
+  totals: Omit<ClassCounts, 'total' | 'avgQuality'> & {
+    decisions: number;
+    files: number;
+    keepRate: number | null;
+    avgQuality: number | null;
+    categories: Record<string, number>;
+  };
+  throughput: { filesPerHour: number | null; runMs: number };
+  timeline: (ClassCounts & { t: number; medianDisagreementMs: number | null })[];
+  runs: StatsRun[];
+  engines: EngineDeepStats[];
+  agreement: { thresholdMs: number; pairs: AgreementPair[] };
+  quality: {
+    histogram: { label: string; lo: number; count: number }[];
+    levels: { weak: number; fair: number; good: number };
+    unscored: number;
+    needsReview: number;
+    reviewed: number;
+    average: number | null;
+    weakBelow: number;
+    goodFrom: number;
+  };
+  strikes: {
+    threshold: number;
+    distribution: { strikes: number; count: number }[];
+    parked: number;
+    skippedEngineFiles: number;
+    skippedByEngine: Record<string, number>;
+  };
+  breakdowns: Record<'language' | 'forced' | 'kind' | 'reference' | 'mode' | 'library' | 'titles', BreakdownRow[]>;
+  orphans: { count: number; truncated: boolean; items: { filePath: string; lastSeen: number }[] };
+}

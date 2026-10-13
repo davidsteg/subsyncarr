@@ -1,6 +1,7 @@
 import type {
   ChangelogEntry,
   ConfigInfo,
+  DeepStats,
   FileStatus,
   FolderInfo,
   IntegrationTestResult,
@@ -92,6 +93,13 @@ export const api = {
   config: () => getJson<ConfigInfo>('/api/config'),
   changelog: () => getJson<ChangelogEntry[]>('/api/changelog'),
   stats: () => getJson<Stats>('/api/stats'),
+  deepStats: (opts: { days: number; includeDry?: boolean }) =>
+    getJson<DeepStats>('/api/stats/deep', {
+      days: opts.days,
+      includeDry: opts.includeDry || undefined,
+      // Minutes east of UTC, so day buckets start at local midnight.
+      tzOffset: -new Date().getTimezoneOffset(),
+    }),
   folders: (parent?: string | null) => getJson<FolderInfo[]>('/api/folders', { parent: parent ?? undefined }),
   status: (opts: { brief?: boolean; limit?: number } = {}) =>
     getJson<StatusResponse>('/api/status', { brief: opts.brief, limit: opts.limit }),

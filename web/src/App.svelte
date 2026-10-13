@@ -8,6 +8,7 @@
   import History from './pages/History.svelte';
   import RunDetail from './pages/RunDetail.svelte';
   import Library from './pages/Library.svelte';
+  import Statistics from './pages/Statistics.svelte';
   import Logs from './pages/Logs.svelte';
   import Settings from './pages/Settings.svelte';
   import Changelog from './pages/Changelog.svelte';
@@ -23,6 +24,7 @@
     history: 'History',
     'run-detail': 'Run',
     library: 'Library',
+    statistics: 'Statistics',
     logs: 'Server logs',
     settings: 'Settings',
     changelog: 'Changelog',
@@ -62,6 +64,8 @@
       <RunDetail id={router.route.params.id} />
     {:else if router.route.name === 'library'}
       <Library />
+    {:else if router.route.name === 'statistics'}
+      <Statistics />
     {:else if router.route.name === 'logs'}
       <Logs />
     {:else if router.route.name === 'settings'}
