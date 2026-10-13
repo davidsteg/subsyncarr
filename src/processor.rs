@@ -18,7 +18,7 @@ use tracing::{error, info};
 use crate::anchor::{self, VideoGroup};
 use crate::config::{Config, ScanConfig};
 use crate::db::{Db, FileUpdate, RunCounter};
-use crate::decide::{decide_outcome, Alignment, Outcome};
+use crate::decide::{decide_outcome, Alignment, Outcome, IN_SYNC_MS};
 use crate::embedded;
 use crate::engines::{self, sidecar_path, EngineRun};
 use crate::events::{Event, EventBus};
@@ -80,6 +80,18 @@ struct RunCtx {
     dir_cache: DirectoryCache,
     summary: Mutex<RunSummary>,
     embedded: Option<EmbeddedRefs>,
+    /// Not-fitting verdicts of this run. Their strikes count only once the
+    /// run completes, so a stopped or interrupted run never adds any.
+    pending_strikes: Mutex<Vec<PendingStrike>>,
+}
+
+struct PendingStrike {
+    path: PathBuf,
+    /// Content the verdict was about: a file replaced during the run gets no strike.
+    hash: String,
+    base: Category,
+    attempts: Vec<Attempt>,
+    extra: Vec<String>,
 }
 
 /// Embedded-track references extracted during one run: at most one ffmpeg
@@ -284,6 +296,7 @@ impl Processor {
                 dir_cache: DirectoryCache::new(),
                 summary: Mutex::new(RunSummary::new(&run.id, run.dry_run)),
                 embedded,
+                pending_strikes: Mutex::new(Vec::new()),
             });
             if let Err(e) = this.clone().process_run(ctx.clone(), scan, fresh).await {
                 error!("Run {} failed: {e:#}", run.id);
@@ -314,6 +327,7 @@ impl Processor {
                 dir_cache: DirectoryCache::new(),
                 summary: Mutex::new(RunSummary::new(&run.id, run.dry_run)),
                 embedded,
+                pending_strikes: Mutex::new(Vec::new()),
             });
             if let Err(e) = this.process_manual(&ctx, &path).await {
                 error!("Run {} failed: {e:#}", run.id);
@@ -618,6 +632,7 @@ impl Processor {
             .await;
 
         self.log("All files processed");
+        self.apply_strikes(&ctx).await;
         self.finish_summary(&ctx).await;
         Ok(())
     }
@@ -970,7 +985,7 @@ impl Processor {
         };
         let mut outcome = decide_outcome(&pass.data(), threshold, pass.mismatch_reports);
         let mut retried = false;
-        if via_embedded && outcome != Outcome::Keep {
+        if via_embedded && !matches!(outcome, Outcome::Keep | Outcome::InSync) {
             // The embedded track may itself be off (a different cut, a
             // mislabeled commentary): never strike or delete on its word alone.
             self.log(format!(
@@ -1017,7 +1032,29 @@ impl Processor {
                 self.finish_file(ctx, path, FileStatus::Error, RunCounter::Failed, Some(sync_info)).await;
                 FileOutcome::other("failed")
             }
-            Outcome::NotFitting => {
+            Outcome::InSync => {
+                let (a, b) = (&alignments[0], &alignments[1]);
+                self.log(format!(
+                    "✓ {} sees a shift under {IN_SYNC_MS}ms ({} {}ms vs {} {}ms) — already in sync, leaving it unchanged: {name}",
+                    if a.0 == "ffsubsync" { &a.0 } else { &b.0 },
+                    a.0,
+                    a.2,
+                    b.0,
+                    b.2
+                ));
+                self.restore(path, original.as_deref());
+                if !ctx.run.dry_run {
+                    if let Ok(m) = std::fs::metadata(path) {
+                        let _ = self.db.upsert_sync_cache(&[(ps(path), mtime_ms(&m), m.len() as i64)]).await;
+                    }
+                    let _ = self.db.reset_not_fitting_strikes(&ps(path)).await;
+                }
+                extra.insert(0, "left unchanged".into());
+                self.log_decision(ctx, path, Category::AlreadyInSync, &attempts, &extra);
+                self.finish_file(ctx, path, FileStatus::Completed, RunCounter::Completed, Some(sync_info)).await;
+                FileOutcome::other("in_sync")
+            }
+            Outcome::NotFitting | Outcome::Unconfirmed => {
                 if alignments.is_empty() {
                     self.log(format!("✗ No engine could sync: {name}"));
                 } else {
@@ -1026,10 +1063,18 @@ impl Processor {
                         alignments[0].0, alignments[1].0
                     ));
                 }
-                let base = if alignments.is_empty() { Category::NotFittingShift } else { Category::NotFittingDisagree };
-                let (category, note) = self.handle_not_fitting(ctx, path, original.as_deref(), base).await;
-                extra.insert(0, note);
-                self.log_decision(ctx, path, category, &attempts, &extra);
+                self.restore(path, original.as_deref());
+                if outcome == Outcome::Unconfirmed {
+                    self.log(format!(
+                        "⚠ Not fitting, but only one engine wants a large shift — keeping subtitle, no strike: {name}"
+                    ));
+                    extra.insert(0, "no strike".into());
+                    self.log_decision(ctx, path, Category::NotFittingUnconfirmed, &attempts, &extra);
+                } else {
+                    let base =
+                        if alignments.is_empty() { Category::NotFittingShift } else { Category::NotFittingDisagree };
+                    self.defer_strike(ctx, path, original.as_deref(), base, attempts, extra);
+                }
                 self.finish_file(ctx, path, FileStatus::NotFitting, RunCounter::NotFitting, Some(sync_info)).await;
                 FileOutcome::other("not_fitting")
             }
@@ -1259,30 +1304,68 @@ impl Processor {
         }
     }
 
-    /// Strike system: delete only after N consecutive not-fitting runs, so a
-    /// one-off transient failure never deletes a good subtitle.
-    async fn handle_not_fitting(
+    /// A not-fitting verdict: dry runs and manual re-syncs never strike;
+    /// otherwise the strike waits for the run to complete.
+    fn defer_strike(
         &self,
         ctx: &RunCtx,
         path: &Path,
         original: Option<&[u8]>,
         base: Category,
-    ) -> (Category, String) {
+        attempts: Vec<Attempt>,
+        mut extra: Vec<String>,
+    ) {
         let name = name_of(path);
         let threshold = ctx.settings.not_fitting_delete_threshold;
-        if ctx.run.dry_run {
-            self.restore(path, original);
+        let note = if ctx.run.dry_run {
             self.log(format!("[DRY RUN] Would record not-fitting strike (threshold: {threshold}): {name}"));
-            return (base, "no strike recorded".into());
-        }
-        if ctx.run.manual {
+            "no strike recorded"
+        } else if ctx.run.manual {
             // Someone asked for this file by hand: report, never punish.
-            self.restore(path, original);
             self.log(format!(
                 "⚠ Re-sync didn't fit — keeping subtitle unchanged (no strike for a manual re-sync): {name}"
             ));
-            return (base, "manual re-sync, no strike recorded".into());
+            "manual re-sync, no strike recorded"
+        } else if let Some(bytes) = original {
+            self.log(format!("⚠ Not fitting — keeping subtitle, strike counts once the run completes: {name}"));
+            ctx.pending_strikes.lock().unwrap().push(PendingStrike {
+                path: path.to_path_buf(),
+                hash: content_hash(bytes),
+                base,
+                attempts,
+                extra,
+            });
+            return;
+        } else {
+            "original unreadable, no strike recorded"
+        };
+        extra.insert(0, note.into());
+        self.log_decision(ctx, path, base, &attempts, &extra);
+    }
+
+    /// End of a run: count the strikes it found, unless it was stopped.
+    async fn apply_strikes(&self, ctx: &RunCtx) {
+        let pending = std::mem::take(&mut *ctx.pending_strikes.lock().unwrap());
+        for mut p in pending {
+            let current = std::fs::read(&p.path).ok().map(|c| content_hash(&c));
+            let (category, note) = if ctx.run.stopped() {
+                (p.base, "run stopped, no strike recorded".to_string())
+            } else if current.as_deref() != Some(p.hash.as_str()) {
+                (p.base, "file changed during the run, no strike recorded".to_string())
+            } else {
+                self.record_strike(ctx, &p.path, p.base).await
+            };
+            p.extra.insert(0, note);
+            self.log_decision(ctx, &p.path, category, &p.attempts, &p.extra);
         }
+    }
+
+    /// Strike system: delete only after N consecutive not-fitting runs, so a
+    /// one-off transient failure never deletes a good subtitle. The file on
+    /// disk is the original (restored when the verdict was made).
+    async fn record_strike(&self, ctx: &RunCtx, path: &Path, base: Category) -> (Category, String) {
+        let name = name_of(path);
+        let threshold = ctx.settings.not_fitting_delete_threshold;
         let p = ps(path);
         let strikes = self.db.record_not_fitting_strike(&p).await.unwrap_or(1);
         if anchor::is_forced_subtitle(path) {
@@ -1291,7 +1374,6 @@ impl Processor {
             // and a deleted forced sub just gets re-downloaded and deleted
             // again. Keep it; at the threshold, park it so the scan stops
             // re-decoding the video until the file changes.
-            self.restore(path, original);
             if strikes >= threshold {
                 if let Ok(m) = std::fs::metadata(path) {
                     let _ = self.db.park_file(&p, mtime_ms(&m), m.len() as i64, "forced_not_fitting").await;
@@ -1318,7 +1400,6 @@ impl Processor {
             let _ = self.db.remove_from_sync_cache(&[p]).await;
             (Category::Deleted, format!("strike {strikes}/{threshold}, deleted"))
         } else {
-            self.restore(path, original);
             self.log(format!(
                 "⚠ Not fitting (strike {strikes}/{threshold}) — keeping subtitle, will retry next run: {name}"
             ));

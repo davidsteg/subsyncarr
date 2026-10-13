@@ -1,17 +1,31 @@
 //! Pure keep-vs-strike decision. No I/O — this governs subtitle deletion, so
 //! it stays isolated and exhaustively tested.
 //!
-//! - 0 alignments, some engine rejected a too-large shift → not fitting (strike)
+//! - 0 alignments, both engines rejected a too-large shift → not fitting (strike)
+//! - 0 alignments, only one engine rejected a too-large shift → unconfirmed
+//!   (no strike: a delete needs both engines to say so)
 //! - 0 alignments, engines only errored / timed out / were skipped → failed
 //!   (no strike: a crash says nothing about whether the subtitle fits)
 //! - 1 alignment: only one engine produced output → keep (a delete needs both)
 //! - 2 alignments within threshold: engines agree → keep
-//! - 2 alignments beyond threshold: engines disagree → not fitting (strike)
+//! - 2 alignments beyond threshold, ffsubsync shift under [`IN_SYNC_MS`] →
+//!   already in sync (left untouched, no strike)
+//! - 2 alignments beyond threshold, both shifts above [`IN_SYNC_MS`] →
+//!   not fitting (strike)
+//! - 2 alignments beyond threshold, otherwise → unconfirmed (no strike)
+
+/// ffsubsync finding less than this shift means the subtitle already fits.
+pub const IN_SYNC_MS: i64 = 1000;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Outcome {
     Keep,
+    /// ffsubsync sees (almost) no shift while the other engine wanders off:
+    /// the subtitle is already in sync and stays as it is.
+    InSync,
     NotFitting,
+    /// The engines disagree, but not both want a large shift: no strike.
+    Unconfirmed,
     Failed,
 }
 
@@ -25,14 +39,19 @@ pub struct Alignment {
 /// too-large shift — evidence the subtitle belongs to a different cut.
 pub fn decide_outcome(alignments: &[Alignment], agreement_threshold_ms: i64, mismatch_reports: usize) -> Outcome {
     match alignments {
-        [] if mismatch_reports > 0 => Outcome::NotFitting,
+        [] if mismatch_reports >= 2 => Outcome::NotFitting,
+        [] if mismatch_reports == 1 => Outcome::Unconfirmed,
         [] => Outcome::Failed,
         [_] => Outcome::Keep,
         [a, b, ..] => {
             if (a.shift_ms - b.shift_ms).abs() <= agreement_threshold_ms {
                 Outcome::Keep
-            } else {
+            } else if [a, b].iter().any(|x| x.engine == "ffsubsync" && x.shift_ms.abs() < IN_SYNC_MS) {
+                Outcome::InSync
+            } else if a.shift_ms.abs() >= IN_SYNC_MS && b.shift_ms.abs() >= IN_SYNC_MS {
                 Outcome::NotFitting
+            } else {
+                Outcome::Unconfirmed
             }
         }
     }
@@ -47,8 +66,13 @@ mod tests {
     }
 
     #[test]
-    fn empty_with_mismatch_is_not_fitting() {
-        assert_eq!(decide_outcome(&[], 5000, 1), Outcome::NotFitting);
+    fn both_rejected_is_not_fitting() {
+        assert_eq!(decide_outcome(&[], 5000, 2), Outcome::NotFitting);
+    }
+
+    #[test]
+    fn one_rejected_is_unconfirmed() {
+        assert_eq!(decide_outcome(&[], 5000, 1), Outcome::Unconfirmed);
     }
 
     #[test]
@@ -77,13 +101,22 @@ mod tests {
     }
 
     #[test]
-    fn disagree_beyond_threshold() {
-        assert_eq!(decide_outcome(&[al("alass", 0), al("ffsubsync", 5001)], 5000, 0), Outcome::NotFitting);
+    fn disagree_with_both_large_is_not_fitting() {
+        assert_eq!(decide_outcome(&[al("alass", 2000), al("ffsubsync", 9000)], 5000, 0), Outcome::NotFitting);
+        assert_eq!(decide_outcome(&[al("alass", -4000), al("ffsubsync", 2000)], 5000, 0), Outcome::NotFitting);
     }
 
     #[test]
-    fn negative_shifts() {
-        assert_eq!(decide_outcome(&[al("alass", -2000), al("ffsubsync", 2000)], 5000, 0), Outcome::Keep);
-        assert_eq!(decide_outcome(&[al("alass", -4000), al("ffsubsync", 2000)], 5000, 0), Outcome::NotFitting);
+    fn ffsubsync_near_zero_is_in_sync() {
+        // The production pattern: alass +15–25 s, ffsubsync ~0.
+        assert_eq!(decide_outcome(&[al("alass", 18_000), al("ffsubsync", 40)], 5000, 0), Outcome::InSync);
+        assert_eq!(decide_outcome(&[al("ffsubsync", -999), al("alass", -25_000)], 5000, 0), Outcome::InSync);
+        assert_eq!(decide_outcome(&[al("alass", 18_000), al("ffsubsync", 1000)], 5000, 0), Outcome::NotFitting);
+    }
+
+    #[test]
+    fn only_alass_near_zero_is_unconfirmed() {
+        assert_eq!(decide_outcome(&[al("alass", 0), al("ffsubsync", 20_000)], 5000, 0), Outcome::Unconfirmed);
+        assert_eq!(decide_outcome(&[al("alass", 0), al("autosubsync", 20_000)], 5000, 0), Outcome::Unconfirmed);
     }
 }

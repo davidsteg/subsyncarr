@@ -29,7 +29,7 @@ One process (since 2.0). axum serves the REST API, WebSocket and embedded UI on 
 - `src/srt.rs` — byte-level SRT helpers, offset calculation, timestamp shifting, legacy header handling
 - `src/quality.rs` — pure function: alignments + per-cue offsets → sync confidence score
 - `src/manual.rs` — manual offset, undo and folder listing for the library browser
-- `src/db/` — `Db` (all queries; quality and undo stack in `manual.rs`) and `migrations.rs` (versions 1–14 identical to 1.x, 15 matches 1.x PR #1, 16+ are 2.x)
+- `src/db/` — `Db` (all queries; quality and undo stack in `manual.rs`) and `migrations.rs` (versions 1–14 identical to 1.x, 15 matches 1.x PR #1, 16+ are 2.x; 18 cleared the strikes of the old not-fitting rule)
 - `src/settings.rs` — UI-editable settings, resolved DB → env → default in one place
 - `src/config.rs` — env var parsing
 - `src/events.rs` — event bus, batches WebSocket updates every 100 ms
@@ -54,7 +54,9 @@ Tracked solely via the database (`synced_files`, keyed by path + mtime + size). 
 2. Group subtitles by video. With anchor alignment on, the largest non-forced subtitle is synced against the video and the others are aligned to it.
    With `EMBEDDED_SUBTITLE_REFERENCE` on, "against the video" means against the video's largest full-length embedded text track (≥ 50 cues, extracted once per video per run to a temp dir) when it has one; if that pass doesn't keep the subtitle, it is re-run against the audio before any strike.
 3. Run `DEFAULT_ENGINE` and `FALLBACK_ENGINE`. Both must agree within `ENGINE_AGREEMENT_THRESHOLD_MS`.
-4. Shift > `MAX_SUBTITLE_SHIFT_MS` or disagreement → not fitting: restore, strike; at the threshold delete (forced: park instead).
+4. Disagreement with ffsubsync's shift < 1 s (`decide::IN_SYNC_MS`) → already in sync: restore, add to sync cache, no strike.
+   Both engines want ≥ 1 s and disagree, or both reject a shift > `MAX_SUBTITLE_SHIFT_MS` → not fitting: restore, strike; at the threshold delete (forced: park instead). Only one engine wants a large shift → restore, no strike.
+   Strikes are collected during the run and recorded when it completes; a stopped or interrupted run records none, and a file whose content changed meanwhile gets none.
 5. Both engines failed (crash/timeout) → failed: restore, no strike.
 6. Success: install output in place, add to sync cache.
 

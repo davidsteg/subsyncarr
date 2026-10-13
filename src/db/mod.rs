@@ -314,11 +314,16 @@ impl Db {
         Ok(())
     }
 
-    /// Runs left `running` by a crash/restart are marked cancelled on startup.
+    /// Runs left `running` by a crash/restart are marked cancelled on startup,
+    /// ending at their last file update (the closest record of when they stopped).
     pub async fn cancel_incomplete_runs(&self) -> sqlx::Result<u64> {
-        let r = sqlx::query("UPDATE runs SET status = 'cancelled', end_time = start_time WHERE status = 'running'")
-            .execute(&self.pool)
-            .await?;
+        let r = sqlx::query(
+            "UPDATE runs SET status = 'cancelled',
+               end_time = COALESCE((SELECT MAX(updated_at) FROM file_results WHERE run_id = runs.id), start_time)
+             WHERE status = 'running'",
+        )
+        .execute(&self.pool)
+        .await?;
         Ok(r.rows_affected())
     }
 

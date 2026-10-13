@@ -4,7 +4,7 @@
 Behaviour is chosen from the subtitle's file name so one run covers every
 outcome. Every invocation is appended to $FAKE_ENGINE_LOG.
 """
-import os, re, sys
+import os, re, sys, time
 
 engine, args = sys.argv[1], sys.argv[2:]
 with open(os.environ["FAKE_ENGINE_LOG"], "a") as log:
@@ -20,8 +20,14 @@ name = os.path.basename(src)
 if "broken" in name:
     sys.stderr.write("could not decode audio\n")
     sys.exit(1)
+if "slow" in name:
+    time.sleep(60)
 if "mismatch" in name:
+    shift = 5000 if engine == "alass" else 20000
+elif "onesided" in name:
     shift = 0 if engine == "alass" else 20000
+elif "insync" in name:
+    shift = 20000 if engine == "alass" else 300
 elif "wrong" in name:
     shift = 60000
 elif "intro" in name:

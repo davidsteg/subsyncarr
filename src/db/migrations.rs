@@ -228,6 +228,22 @@ const MIGRATIONS: &[Migration] = &[
         ],
         add_columns: &[("file_results", "quality_score", "INTEGER")],
     },
+    Migration {
+        version: 18,
+        name: "reset_strikes_from_old_not_fitting_rule",
+        sql: &[
+            // Up to 2.1.0 a subtitle got a strike whenever the engines
+            // disagreed, even when ffsubsync saw it as already in sync. Those
+            // strikes (and the forced subs they parked) start over.
+            "DELETE FROM not_fitting_tracking",
+            "DELETE FROM parked_files WHERE reason = 'forced_not_fitting'",
+            // Runs cancelled by a restart ended at their start time.
+            "UPDATE runs SET end_time = COALESCE(
+               (SELECT MAX(updated_at) FROM file_results WHERE run_id = runs.id), start_time)
+             WHERE status = 'cancelled' AND (end_time IS NULL OR end_time = start_time)",
+        ],
+        add_columns: &[],
+    },
 ];
 
 async fn has_column(pool: &SqlitePool, table: &str, column: &str) -> sqlx::Result<bool> {

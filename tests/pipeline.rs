@@ -57,6 +57,8 @@ async fn full_pipeline() {
 
     let good = write_case(&media, "Good (2020)", "Good.mkv", &["Good.en.srt"]);
     let mismatch = write_case(&media, "Mismatch", "Mismatch.mkv", &["Mismatch.mismatch.en.srt"]);
+    let insync = write_case(&media, "InSync", "InSync.mkv", &["InSync.insync.en.srt"]);
+    let onesided = write_case(&media, "OneSided", "OneSided.mkv", &["OneSided.onesided.en.srt"]);
     let broken = write_case(&media, "Broken", "Broken.mkv", &["Broken.broken.en.srt"]);
     let wrong = write_case(&media, "Wrong", "Wrong.mkv", &["Wrong.wrong.en.srt"]);
     let forced = write_case(&media, "Forced", "Forced.mkv", &["Forced.wrong.en.forced.srt"]);
@@ -86,7 +88,7 @@ async fn full_pipeline() {
 
     let run = st.db.get_run(&run_id).await.unwrap().unwrap();
     assert_eq!(run.status, "completed");
-    assert_eq!(run.total_files, 7);
+    assert_eq!(run.total_files, 9);
     let (files, _) = st.db.files_paginated(&run_id, 100, 0, None).await.unwrap();
     let status_of =
         |p: &PathBuf| files.iter().find(|f| Path::new(&f.file_path) == p).map(|f| f.status.clone()).unwrap_or_default();
@@ -103,11 +105,13 @@ async fn full_pipeline() {
         "Effective config: engines=alass+ffsubsync",
         "▶ synced: Good.en.srt | alass ✓ +1500ms, ffsubsync ✓ +1500ms | kept alass",
         "▶ failed_error: Broken.broken.en.srt | alass ✗ error (could not decode audio), ffsubsync ✗ error (could not decode audio)",
-        "▶ deleted: Mismatch.mismatch.en.srt | alass ✓ +0ms, ffsubsync ✓ +20000ms | strike 1/1, deleted",
+        "▶ deleted: Mismatch.mismatch.en.srt | alass ✓ +5000ms, ffsubsync ✓ +20000ms | strike 1/1, deleted",
+        "▶ already_in_sync: InSync.insync.en.srt | alass ✓ +20000ms, ffsubsync ✓ +300ms | left unchanged",
+        "▶ not_fitting_unconfirmed: OneSided.onesided.en.srt | alass ✓ +0ms, ffsubsync ✓ +20000ms | no strike",
         "▶ deleted: Wrong.wrong.en.srt",
         "▶ forced_parked: Forced.wrong.en.forced.srt",
         "===== Run summary =====",
-        "Scan: 7 subtitle(s) found, 7 needed sync, 0 already synced",
+        "Scan: 9 subtitle(s) found, 9 needed sync, 0 already synced",
         "-- failed: engine error (no strike) (1):",
     ] {
         assert!(log_text.contains(line), "missing {line:?} in run log:\n{log_text}");
@@ -116,6 +120,16 @@ async fn full_pipeline() {
     // Engines disagree: original restored, one strike, threshold 1 → deleted.
     assert_eq!(status_of(&mismatch[0]), "not_fitting");
     assert!(!mismatch[0].exists());
+
+    // ffsubsync sees no shift: already in sync, untouched, cached, no strike.
+    assert_eq!(status_of(&insync[0]), "completed");
+    assert_eq!(std::fs::read_to_string(&insync[0]).unwrap(), srt(10));
+    assert_eq!(st.db.not_fitting_strikes(&insync[0].display().to_string()).await.unwrap(), 0);
+
+    // Only one engine wants a large shift: kept untouched, no strike.
+    assert_eq!(status_of(&onesided[0]), "not_fitting");
+    assert_eq!(std::fs::read_to_string(&onesided[0]).unwrap(), srt(10));
+    assert_eq!(st.db.not_fitting_strikes(&onesided[0].display().to_string()).await.unwrap(), 0);
 
     // Both engines crash: a failure, not a strike — the file stays untouched.
     assert_eq!(status_of(&broken[0]), "error");
@@ -138,22 +152,22 @@ async fn full_pipeline() {
         assert!(!n.ends_with(".bak") && !n.contains("-tmp."), "leftover {n}");
     }
 
-    // Second run: the synced files are cached, the forced file is parked, so
-    // only the broken one is retried.
+    // Second run: the synced and in-sync files are cached, the forced file is
+    // parked, so only the broken and the one-sided ones are retried.
     let before = calls.lines().count();
     let run2 = st.processor.start_run(None, None).await.unwrap();
     wait_idle(&st.processor).await;
     let run2 = st.db.get_run(&run2).await.unwrap().unwrap();
-    assert_eq!(run2.total_files, 1);
+    assert_eq!(run2.total_files, 2);
     let after = std::fs::read_to_string(&log).unwrap().lines().count();
-    assert_eq!(after - before, 2, "only the broken file should hit the engines");
+    assert_eq!(after - before, 4, "only the broken and one-sided files should hit the engines");
 
     // A cached file that changes on disk is picked up again.
     std::fs::write(&good[0], srt(12)).unwrap();
     let run3 = st.processor.start_run(None, None).await.unwrap();
     wait_idle(&st.processor).await;
     let run3 = st.db.get_run(&run3).await.unwrap().unwrap();
-    assert_eq!(run3.total_files, 2);
+    assert_eq!(run3.total_files, 3);
 
     // The HTTP API on top of the same state.
     let api = |method: &str, uri: &str, body: Option<serde_json::Value>| {
@@ -189,7 +203,7 @@ async fn full_pipeline() {
     assert_eq!(diag["totals"]["parked"], 1, "{diag}");
     assert_eq!(diag["parked"][0]["reason"], "forced_not_fitting");
     assert_eq!(diag["lastRunSummary"]["runId"], run3.id);
-    assert_eq!(diag["lastRunSummary"]["scan"]["needSync"], 2);
+    assert_eq!(diag["lastRunSummary"]["scan"]["needSync"], 3);
     let (code, _) = api("GET", "/api/nope", None).await;
     assert_eq!(code, 404);
 
@@ -259,7 +273,7 @@ async fn full_pipeline() {
     assert_eq!(code, 200, "{res}");
     wait_idle(&st.processor).await;
     let fresh = st.db.get_run(res["runId"].as_str().unwrap()).await.unwrap().unwrap();
-    assert_eq!(fresh.total_files, 4, "good, intro, quoted and broken");
+    assert_eq!(fresh.total_files, 6, "good, in-sync, intro, quoted, one-sided and broken");
 
     // With resetFailures the park is lifted as well.
     let (code, res) =
@@ -267,7 +281,7 @@ async fn full_pipeline() {
     assert_eq!(code, 200, "{res}");
     wait_idle(&st.processor).await;
     let reset = st.db.get_run(res["runId"].as_str().unwrap()).await.unwrap().unwrap();
-    assert_eq!(reset.total_files, 5, "the forced sub is back in");
+    assert_eq!(reset.total_files, 7, "the forced sub is back in");
     assert!(st.runlogs.read(&reset.id).contains("cleared 1 strike(s)"), "{}", st.runlogs.read(&reset.id));
 }
 

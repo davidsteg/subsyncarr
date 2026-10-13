@@ -1,3 +1,16 @@
+## [2.2.1] — 2026-10-13
+
+Fewer false not-fitting strikes
+
+### Fixed
+
+- **Subtitles that are already in sync no longer get strikes.** When the engines disagreed, a subtitle got a strike even if ffsubsync found it already in sync and only alass wanted to move it by 15 to 25 seconds. About half of a typical run's subtitles were marked not fitting this way and deleted at the strike threshold. Now a subtitle for which ffsubsync finds a shift under 1 s is left untouched, cached as synced and gets no strike.
+- **Strikes only for real misfits.** A strike now needs both engines to want a large shift (1 s or more) and still disagree, or both to reject a shift beyond `MAX_SUBTITLE_SHIFT_MS`. When only one engine wants a large shift, the subtitle is kept without a strike and retried next run.
+- **Stopped and interrupted runs add no strikes.** Strikes (and deletions or parking at the threshold) are recorded only when a run completes, so stopping a run, a restart or a deploy never counts against a subtitle. A subtitle replaced during the run gets no strike either.
+- **Runs cancelled by a restart get a real end time** (their last file update) instead of their start time. Existing cancelled runs are corrected too.
+- **Existing strikes are cleared once** on upgrade, because most of them came from the old rule. Forced subtitles parked by those strikes are unparked.
+- Run summaries list the new outcomes `already_in_sync` and `not_fitting_unconfirmed`.
+
 ## [2.2.0] — 2026-10-13
 
 Fresh scan: reprocess the whole library

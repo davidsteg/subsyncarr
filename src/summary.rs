@@ -13,8 +13,10 @@ use crate::models::EngineResult;
 pub enum Category {
     Synced,
     SyncedSingleEngine,
+    AlreadyInSync,
     NotFittingDisagree,
     NotFittingShift,
+    NotFittingUnconfirmed,
     Deleted,
     ForcedKept,
     ForcedParked,
@@ -26,11 +28,13 @@ pub enum Category {
 }
 
 impl Category {
-    pub const ALL: [Category; 12] = [
+    pub const ALL: [Category; 14] = [
         Category::Synced,
         Category::SyncedSingleEngine,
+        Category::AlreadyInSync,
         Category::NotFittingDisagree,
         Category::NotFittingShift,
+        Category::NotFittingUnconfirmed,
         Category::Deleted,
         Category::ForcedKept,
         Category::ForcedParked,
@@ -45,8 +49,10 @@ impl Category {
         match self {
             Category::Synced => "synced",
             Category::SyncedSingleEngine => "synced_single_engine",
+            Category::AlreadyInSync => "already_in_sync",
             Category::NotFittingDisagree => "not_fitting_disagree",
             Category::NotFittingShift => "not_fitting_shift",
+            Category::NotFittingUnconfirmed => "not_fitting_unconfirmed",
             Category::Deleted => "deleted",
             Category::ForcedKept => "forced_kept",
             Category::ForcedParked => "forced_parked",
@@ -62,8 +68,10 @@ impl Category {
         match self {
             Category::Synced => "synced (both engines agree)",
             Category::SyncedSingleEngine => "synced (only one engine produced output)",
+            Category::AlreadyInSync => "already in sync (ffsubsync shift under 1 s), left unchanged",
             Category::NotFittingDisagree => "not fitting: engines disagree (strike)",
             Category::NotFittingShift => "not fitting: shift too large (strike)",
+            Category::NotFittingUnconfirmed => "not fitting: only one engine wants a large shift (no strike)",
             Category::Deleted => "deleted after repeated not-fitting strikes",
             Category::ForcedKept => "forced sub not fitting, kept unchanged",
             Category::ForcedParked => "forced sub parked until the file changes",
@@ -77,7 +85,7 @@ impl Category {
 
     /// Worth listing file by file in the summary.
     fn is_problem(self) -> bool {
-        !matches!(self, Category::Synced | Category::SyncedSingleEngine | Category::Cancelled)
+        !matches!(self, Category::Synced | Category::SyncedSingleEngine | Category::AlreadyInSync | Category::Cancelled)
     }
 }
 
