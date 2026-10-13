@@ -7,6 +7,10 @@
 - **Notifications.** A summary after each run, with failed and not-fitting files listed by name, sent to an Apprise API endpoint, a Discord webhook or any URL accepting JSON. Choose whether to notify on every run, on runs that changed something, or only on failures.
 - **Media server refresh.** After a run, Jellyfin or Plex is asked to refresh just the folders that got synced subtitles, with optional path mapping.
 - Webhooks, notifications and the media server refresh are configured on the Settings page, with test buttons, and are off by default.
+- **Sync confidence score.** Every kept sync gets a score from 0 to 100, built from engine agreement, whether both engines produced output, offset spread and split points across cues, cue count, how close the shift is to `MAX_SUBTITLE_SHIFT_MS`, and ffsubsync's framerate correction. It is stored per subtitle and per run, shown in run views and the media detail drawer with the reasons behind it, and syncs below 50 are listed on the Library page for review. A review can be marked done from the drawer.
+- **Manual re-sync and offset from the library.** The Library now lists the subtitles inside each folder. From the media drawer a subtitle can be re-synced on demand (a one-file run that bypasses the sync cache, resets engine skips and never strikes or deletes) or shifted by a fixed offset (±0.1 s, ±1 s or a custom value). Changes are written in place and kept by later scans.
+- **Undo.** The file as it was before each manual change is kept in the database (last 10 per subtitle). Undo restores it together with its previous quality score, and refuses if the file changed on disk since.
+- API: `GET /api/library/files`, `POST /api/file/resync`, `POST /api/file/offset`, `POST /api/file/undo`, `POST /api/file/review`, `GET /api/quality/review`; `quality` and `undo` on `GET /api/media`; `quality_score` on run files.
 
 ## [2.0.1] — 2026-10-13
 

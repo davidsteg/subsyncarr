@@ -29,7 +29,7 @@ use crate::processor::{Processor, RunError};
 use crate::runlog::RunLogs;
 use crate::settings::{normalize_updates, Settings};
 use crate::summary::LAST_RUN_SUMMARY;
-use crate::{changelog, schedule, web};
+use crate::{changelog, manual, schedule, web};
 
 pub const REPO: &str = "davidsteg/subsyncarr";
 const STATS_TTL: Duration = Duration::from_secs(10);
@@ -123,6 +123,12 @@ pub fn router(state: Arc<AppState>) -> Router {
         .route("/api/skip-status/{*path}", get(skip_status_file))
         .route("/api/media", get(media_query))
         .route("/api/media/{*path}", get(media_path))
+        .route("/api/library/files", get(library_files))
+        .route("/api/file/resync", post(resync_file))
+        .route("/api/file/offset", post(offset_file))
+        .route("/api/file/undo", post(undo_file))
+        .route("/api/file/review", post(review_file))
+        .route("/api/quality/review", get(review_queue))
         .route("/api/settings", get(get_settings).post(post_settings))
         .route("/api/integrations/test", post(test_integration))
         .route(
@@ -327,11 +333,45 @@ struct MediaQ {
 }
 
 async fn media_query(State(s): S, Query(q): Query<MediaQ>) -> ApiResult {
-    Ok(Json(s.db.media_detail(&q.path).await?))
+    media_detail(&s, &q.path).await
 }
 
 async fn media_path(State(s): S, AxPath(path): AxPath<String>) -> ApiResult {
-    Ok(Json(s.db.media_detail(&abs_path(&path)).await?))
+    media_detail(&s, &abs_path(&path)).await
+}
+
+async fn media_detail(s: &AppState, path: &str) -> ApiResult {
+    let mut v = s.db.media_detail(path).await?;
+    let quality = s.db.quality(path).await?.map(|q| q.to_json());
+    let backups = s.db.backup_list(path).await?;
+    if let Value::Object(m) = &mut v {
+        m.insert("quality".into(), json!(quality));
+        m.insert("undo".into(), json!(backups));
+    }
+    Ok(Json(v))
+}
+
+#[derive(Deserialize)]
+struct DirQ {
+    dir: String,
+}
+
+async fn library_files(State(s): S, Query(q): Query<DirQ>) -> ApiResult {
+    let dir = PathBuf::from(q.dir.trim_end_matches('/'));
+    if !manual::within_roots(&dir, &s.cfg.scan.include_paths) || !dir.is_dir() {
+        return Ok(Json(json!([])));
+    }
+    Ok(Json(json!(manual::list_dir(&s.db, &dir).await?)))
+}
+
+#[derive(Deserialize)]
+struct QueueQ {
+    limit: Option<i64>,
+}
+
+async fn review_queue(State(s): S, Query(q): Query<QueueQ>) -> ApiResult {
+    let (total, files) = s.db.review_queue(q.limit.unwrap_or(50).clamp(1, 500)).await?;
+    Ok(Json(json!({ "total": total, "files": files })))
 }
 
 async fn get_settings(State(s): S) -> Json<Value> {
@@ -345,6 +385,81 @@ async fn get_settings(State(s): S) -> Json<Value> {
 }
 
 // ---------------------------------------------------------------- control
+
+impl From<manual::ManualError> for ApiError {
+    fn from(e: manual::ManualError) -> Self {
+        use manual::ManualError as M;
+        let code = match &e {
+            M::Busy | M::Changed => StatusCode::CONFLICT,
+            M::Invalid(_) => StatusCode::BAD_REQUEST,
+            M::NothingToUndo => StatusCode::NOT_FOUND,
+            M::Io(err) if err.kind() == std::io::ErrorKind::NotFound => StatusCode::NOT_FOUND,
+            M::Io(_) | M::Db(_) => {
+                error!("manual change failed: {e}");
+                StatusCode::INTERNAL_SERVER_ERROR
+            }
+        };
+        ApiError(code, e.to_string())
+    }
+}
+
+/// A subtitle the library may change: an existing `.srt` inside SCAN_PATHS.
+fn subtitle_path(s: &AppState, raw: Option<String>) -> Result<PathBuf, ApiError> {
+    let raw = raw.ok_or(ApiError(StatusCode::BAD_REQUEST, "filePath required".into()))?;
+    let p = PathBuf::from(raw.trim());
+    let srt = p.extension().is_some_and(|e| e.eq_ignore_ascii_case("srt"));
+    if !srt || !manual::within_roots(&p, &s.cfg.scan.include_paths) {
+        return Err(ApiError(StatusCode::BAD_REQUEST, "filePath must be a .srt file inside SCAN_PATHS".into()));
+    }
+    if !p.is_file() {
+        return Err(not_found("Subtitle"));
+    }
+    Ok(p)
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ManualBody {
+    file_path: Option<String>,
+    offset_ms: Option<i64>,
+    reviewed: Option<bool>,
+}
+
+async fn resync_file(State(s): S, Json(b): Json<ManualBody>) -> ApiResult {
+    let p = subtitle_path(&s, b.file_path)?;
+    info!("POST /api/file/resync - {}", p.display());
+    match s.processor.resync_file(p).await {
+        Ok(id) => Ok(Json(json!({ "runId": id }))),
+        Err(RunError::AlreadyRunning) => Err(ApiError(
+            StatusCode::CONFLICT,
+            "A run is in progress. Re-sync this subtitle once it has finished.".into(),
+        )),
+        Err(e) => Err(ApiError(StatusCode::INTERNAL_SERVER_ERROR, e.to_string())),
+    }
+}
+
+async fn offset_file(State(s): S, Json(b): Json<ManualBody>) -> ApiResult {
+    let p = subtitle_path(&s, b.file_path)?;
+    let ms = b.offset_ms.ok_or(ApiError(StatusCode::BAD_REQUEST, "offsetMs required".into()))?;
+    manual::apply_offset(&s.processor, &p, ms).await?;
+    s.invalidate_stats();
+    Ok(Json(json!({ "success": true })))
+}
+
+async fn undo_file(State(s): S, Json(b): Json<ManualBody>) -> ApiResult {
+    let p = subtitle_path(&s, b.file_path)?;
+    let action = manual::undo(&s.processor, &p).await?;
+    s.invalidate_stats();
+    Ok(Json(json!({ "success": true, "undone": action })))
+}
+
+async fn review_file(State(s): S, Json(b): Json<ManualBody>) -> ApiResult {
+    let p = b.file_path.ok_or(ApiError(StatusCode::BAD_REQUEST, "filePath required".into()))?;
+    if !s.db.set_reviewed(&p, b.reviewed.unwrap_or(true)).await? {
+        return Err(not_found("Sync quality"));
+    }
+    Ok(Json(json!({ "success": true })))
+}
 
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]

@@ -192,6 +192,67 @@ async fn full_pipeline() {
     assert_eq!(diag["lastRunSummary"]["scan"]["needSync"], 2);
     let (code, _) = api("GET", "/api/nope", None).await;
     assert_eq!(code, 404);
+
+    // Sync quality: engines agree exactly, but 12 cues are sparse.
+    let good_path = good[0].display().to_string();
+    let enc = |s: &str| s.replace('%', "%25").replace(' ', "%20").replace('(', "%28").replace(')', "%29");
+    let (_, media) = api("GET", &format!("/api/media?path={}", enc(&good_path)), None).await;
+    assert_eq!(media["quality"]["score"], 90, "{media}");
+    assert_eq!(media["quality"]["level"], "good");
+    assert_eq!(media["quality"]["needsReview"], false);
+    let (files3, _) = st.db.files_paginated(&run3.id, 10, 0, Some("completed")).await.unwrap();
+    assert_eq!(files3[0].quality_score, Some(90));
+
+    // Manual offset: shifted in place, recorded, undoable.
+    let synced = std::fs::read_to_string(&good[0]).unwrap();
+    let body = |extra: serde_json::Value| {
+        let mut v = serde_json::json!({ "filePath": good_path });
+        v.as_object_mut().unwrap().extend(extra.as_object().unwrap().clone());
+        Some(v)
+    };
+    let (code, res) = api("POST", "/api/file/offset", body(serde_json::json!({ "offsetMs": 500 }))).await;
+    assert_eq!(code, 200, "{res}");
+    assert!(std::fs::read_to_string(&good[0]).unwrap().starts_with("1\n00:00:12,000 -->"));
+    let (_, media) = api("GET", &format!("/api/media?path={}", enc(&good_path)), None).await;
+    assert_eq!(media["quality"]["manualOffsetMs"], 500);
+    assert_eq!(media["quality"]["reviewed"], true);
+    assert_eq!(media["undo"][0]["action"], "offset");
+
+    let dir = good[0].parent().unwrap().display().to_string();
+    let (_, listing) = api("GET", &format!("/api/library/files?dir={}", enc(&dir)), None).await;
+    assert_eq!(listing[0]["name"], "Good.en.srt", "{listing}");
+    assert_eq!(listing[0]["synced"], true, "a manual change must stay cached");
+    assert_eq!(listing[0]["undoSteps"], 1);
+
+    let (code, res) = api("POST", "/api/file/undo", body(serde_json::json!({}))).await;
+    assert_eq!((code.as_u16(), res["undone"].as_str()), (200, Some("offset")));
+    assert_eq!(std::fs::read_to_string(&good[0]).unwrap(), synced);
+    let (code, _) = api("POST", "/api/file/undo", body(serde_json::json!({}))).await;
+    assert_eq!(code, 404);
+
+    // Undo refuses once the file has changed underneath it.
+    api("POST", "/api/file/offset", body(serde_json::json!({ "offsetMs": -200 }))).await;
+    std::fs::write(&good[0], &synced).unwrap();
+    let (code, _) = api("POST", "/api/file/undo", body(serde_json::json!({}))).await;
+    assert_eq!(code, 409);
+
+    // Manual re-sync: a one-file run straight past the sync cache.
+    let (code, res) = api("POST", "/api/file/resync", body(serde_json::json!({}))).await;
+    assert_eq!(code, 200, "{res}");
+    wait_idle(&st.processor).await;
+    let run4 = st.db.get_run(res["runId"].as_str().unwrap()).await.unwrap().unwrap();
+    assert_eq!((run4.total_files, run4.completed), (1, 1));
+    assert!(std::fs::read_to_string(&good[0]).unwrap().starts_with("1\n00:00:13,000 -->"));
+    let (code, _) = api("POST", "/api/file/undo", body(serde_json::json!({}))).await;
+    assert_eq!(code, 200);
+    assert_eq!(std::fs::read_to_string(&good[0]).unwrap(), synced);
+
+    // Only subtitles inside SCAN_PATHS.
+    let (code, _) =
+        api("POST", "/api/file/offset", Some(serde_json::json!({ "filePath": "/etc/passwd", "offsetMs": 1 }))).await;
+    assert_eq!(code, 400);
+    let (_, queue) = api("GET", "/api/quality/review", None).await;
+    assert_eq!(queue["total"], 0, "{queue}");
 }
 
 fn walk(dir: &Path) -> Vec<PathBuf> {

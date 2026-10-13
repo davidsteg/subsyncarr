@@ -26,8 +26,10 @@ One process (since 2.0). axum serves the REST API, WebSocket and embedded UI on 
 - `src/anchor.rs` — forced detection, grouping by video, anchor/follower planning
 - `src/embedded.rs` — ffprobe/ffmpeg: pick and extract the video's best embedded text subtitle track as sync reference
 - `src/video.rs` — video matching with a per-directory listing cache
-- `src/srt.rs` — byte-level SRT helpers, offset calculation, legacy header handling
-- `src/db/` — `Db` (all queries) and `migrations.rs` (versions 1–14 identical to 1.x, 15 matches 1.x PR #1, 16+ are 2.x)
+- `src/srt.rs` — byte-level SRT helpers, offset calculation, timestamp shifting, legacy header handling
+- `src/quality.rs` — pure function: alignments + per-cue offsets → sync confidence score
+- `src/manual.rs` — manual offset, undo and folder listing for the library browser
+- `src/db/` — `Db` (all queries; quality and undo stack in `manual.rs`) and `migrations.rs` (versions 1–14 identical to 1.x, 15 matches 1.x PR #1, 16+ are 2.x)
 - `src/settings.rs` — UI-editable settings, resolved DB → env → default in one place
 - `src/config.rs` — env var parsing
 - `src/events.rs` — event bus, batches WebSocket updates every 100 ms

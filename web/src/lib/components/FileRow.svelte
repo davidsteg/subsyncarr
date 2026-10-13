@@ -3,6 +3,7 @@
   import StatusTag from './StatusTag.svelte';
   import ModeChip from './ModeChip.svelte';
   import EngineBadges from './EngineBadges.svelte';
+  import QualityBadge from './QualityBadge.svelte';
   import { basename, dateTime } from '../format';
   import { mediaDrawer } from '../ui.svelte';
   import type { FileResult } from '../types';
@@ -29,6 +30,7 @@
     <button class="name" title={file.file_path} onclick={() => mediaDrawer.open(file.file_path)}>
       <span class="truncate">{basename(file.file_path)}</span>
     </button>
+    <QualityBadge score={file.quality_score} />
     {#if file.status === 'processing' && file.current_engine}
       <span class="subtle small cur">{file.current_engine}…</span>
     {/if}

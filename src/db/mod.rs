@@ -2,7 +2,10 @@
 //! and the dashboard's reads — async I/O means a heavy read never blocks the
 //! sync engine, which is what the 1.x two-process split worked around.
 
+mod manual;
 mod migrations;
+
+pub use manual::{Backup, LibraryEntry, QualityRecord};
 
 use std::collections::{BTreeMap, HashMap};
 use std::path::Path;
@@ -52,6 +55,7 @@ pub struct FileUpdate<'a> {
     pub video_path: Option<Option<&'a str>>,
     pub sync_mode: Option<SyncMode>,
     pub anchor_path: Option<Option<&'a str>>,
+    pub quality_score: Option<i64>,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -366,6 +370,9 @@ impl Db {
         }
         if let Some(a) = u.anchor_path {
             qb.push(", anchor_path = ").push_bind(a);
+        }
+        if let Some(q) = u.quality_score {
+            qb.push(", quality_score = ").push_bind(q);
         }
         qb.push(" WHERE run_id = ").push_bind(run_id).push(" AND file_path = ").push_bind(path);
         qb.build().execute(&self.pool).await?;
@@ -722,6 +729,7 @@ impl Db {
                 .await?;
             sqlx::query("DELETE FROM not_fitting_tracking WHERE file_path = ?").bind(path).execute(&mut *tx).await?;
             sqlx::query("DELETE FROM parked_files WHERE file_path = ?").bind(path).execute(&mut *tx).await?;
+            sqlx::query("DELETE FROM sync_quality WHERE file_path = ?").bind(path).execute(&mut *tx).await?;
         }
         tx.commit().await?;
         Ok(true)
@@ -909,7 +917,7 @@ impl Db {
         .fetch_all(&self.pool)
         .await?;
         let rows = sqlx::query(
-            "SELECT fr.run_id, fr.status, fr.engines, fr.sync_mode, fr.anchor_path, fr.updated_at,
+            "SELECT fr.run_id, fr.status, fr.engines, fr.sync_mode, fr.anchor_path, fr.quality_score, fr.updated_at,
                     r.start_time AS run_start_time, r.status AS run_status
              FROM file_results fr JOIN runs r ON fr.run_id = r.id
              WHERE fr.file_path = ? ORDER BY r.start_time DESC LIMIT 20",
@@ -932,6 +940,7 @@ impl Db {
                     "engines": engines,
                     "syncMode": r.get::<Option<String>, _>("sync_mode"),
                     "anchorPath": r.get::<Option<String>, _>("anchor_path"),
+                    "qualityScore": r.get::<Option<i64>, _>("quality_score"),
                     "updatedAt": r.get::<i64, _>("updated_at"),
                 })
             })
