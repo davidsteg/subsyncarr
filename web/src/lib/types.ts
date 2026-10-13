@@ -225,6 +225,29 @@ export interface Settings {
   cronSchedule: string;
   includeEngines: string | string[];
   theme: ThemeSetting | string;
+  integrations?: Integrations;
+}
+
+export type NotifyKind = 'apprise' | 'discord' | 'json';
+export type NotifyOn = 'always' | 'changes' | 'issues';
+export type MediaServer = 'none' | 'jellyfin' | 'plex';
+
+export interface Integrations {
+  webhookEnabled: boolean;
+  webhookToken: string;
+  webhookPathMap: string;
+  notifyUrl: string;
+  notifyKind: NotifyKind;
+  notifyOn: NotifyOn;
+  mediaServer: MediaServer;
+  mediaServerUrl: string;
+  mediaServerToken: string;
+  mediaPathMap: string;
+}
+
+export interface IntegrationTestResult {
+  ok: boolean;
+  message: string;
 }
 
 export interface SettingsUpdate {
@@ -241,6 +264,16 @@ export interface SettingsUpdate {
   anchor_alignment?: boolean;
   embedded_subtitle_reference?: boolean;
   theme?: ThemeSetting;
+  webhook_enabled?: boolean;
+  webhook_token?: string;
+  webhook_path_map?: string;
+  notify_url?: string;
+  notify_kind?: NotifyKind;
+  notify_on?: NotifyOn;
+  media_server?: MediaServer;
+  media_server_url?: string;
+  media_server_token?: string;
+  media_path_map?: string;
 }
 
 export interface Success {

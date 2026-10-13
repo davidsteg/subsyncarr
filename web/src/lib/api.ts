@@ -3,6 +3,7 @@ import type {
   ConfigInfo,
   FileStatus,
   FolderInfo,
+  IntegrationTestResult,
   LogLevelFilter,
   LogsResponse,
   MediaDetail,
@@ -124,6 +125,8 @@ export const api = {
   media: (path: string) => getJson<MediaDetail>('/api/media', { path }),
   settings: () => getJson<Settings>('/api/settings'),
   saveSettings: (update: SettingsUpdate) => postJson<Success>('/api/settings', update),
+  testIntegration: (target: 'notify' | 'media') =>
+    postJson<IntegrationTestResult>('/api/integrations/test', { target }),
 };
 
 export function errorText(e: unknown): string {

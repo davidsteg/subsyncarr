@@ -8,6 +8,7 @@ pub mod decide;
 pub mod embedded;
 pub mod engines;
 pub mod events;
+pub mod integrations;
 pub mod logbuf;
 pub mod models;
 pub mod processor;
@@ -49,7 +50,10 @@ pub async fn build(cfg: config::Config, logs: logbuf::LogBuffer) -> anyhow::Resu
     let events = events::EventBus::new(db.clone());
     let processor =
         processor::Processor::new(db.clone(), cfg.clone(), settings.clone(), events.clone(), runlogs.clone());
-    let state = server::AppState::new(db, cfg, settings, processor, events, logs, runlogs);
+    integrations::spawn(db.clone(), settings.clone(), &events);
+    let webhooks =
+        integrations::webhook::TriggerQueue::spawn(processor.clone(), integrations::webhook::DEFAULT_DEBOUNCE);
+    let state = server::AppState::new(db, cfg, settings, processor, events, logs, runlogs, webhooks);
     Ok(App { state })
 }
 

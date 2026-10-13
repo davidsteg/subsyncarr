@@ -31,6 +31,7 @@ One process (since 2.0). axum serves the REST API, WebSocket and embedded UI on 
 - `src/settings.rs` — UI-editable settings, resolved DB → env → default in one place
 - `src/config.rs` — env var parsing
 - `src/events.rs` — event bus, batches WebSocket updates every 100 ms
+- `src/integrations/` — webhooks in (`webhook.rs`: payload parsing, path resolution, debounced trigger queue), notifications (`notify.rs`) and Jellyfin/Plex refresh (`media.rs`); the latter two listen for completed runs on the event bus
 - `src/server.rs` — REST + WebSocket handlers (contract in `docs/API.md`)
 - `src/logbuf.rs` / `src/runlog.rs` — server log ring buffer (tracing layer) and per-run log files
 - `web/src/` — Svelte UI: `pages/`, `lib/components/`, `lib/api.ts`, `lib/live.svelte.ts` (WebSocket store)

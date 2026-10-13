@@ -100,6 +100,23 @@ impl Walker<'_> {
         self.excludes.iter().any(|ex| dir.starts_with(ex))
     }
 
+    /// A scan root is normally a folder; a webhook may also name a single
+    /// subtitle file.
+    fn walk_root(&self, root: &Path) {
+        if std::fs::metadata(root).is_ok_and(|m| m.is_file()) {
+            let name = root.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+            if name.to_lowercase().ends_with(".srt")
+                && !is_orphan_temp(&name)
+                && !is_engine_output(&name)
+                && !self.excluded(root)
+            {
+                self.srts.lock().unwrap().push(root.to_path_buf());
+            }
+            return;
+        }
+        self.walk_dir(root);
+    }
+
     fn walk_dir(&self, dir: &Path) {
         if self.cancel.load(Ordering::Relaxed) || self.excluded(dir) {
             return;
@@ -177,7 +194,7 @@ pub fn scan(config: &ScanConfig, opts: &ScanOptions) -> ScanResult {
         srts: Mutex::new(Vec::new()),
         orphans: AtomicUsize::new(0),
     };
-    pool.install(|| config.include_paths.par_iter().for_each(|root| walker.walk_dir(root)));
+    pool.install(|| config.include_paths.par_iter().for_each(|root| walker.walk_root(root)));
     let mut srts = walker.srts.into_inner().unwrap();
     srts.sort();
     srts.dedup();
@@ -405,5 +422,21 @@ mod tests {
         let cfg = ScanConfig { include_paths: vec![root.clone()], exclude_paths: vec![] };
         let r = run(&cfg, &HashMap::new(), &HashMap::new());
         assert_eq!(r.files, vec![root.join("file-link.srt"), root.join("linked/m.srt")]);
+    }
+
+    #[test]
+    fn accepts_single_file_roots() {
+        let d = tempfile::tempdir().unwrap();
+        let dir = d.path().join("show");
+        fs::create_dir_all(&dir).unwrap();
+        for f in ["e1.en.srt", "e2.en.srt", "e1.en.alass.srt"] {
+            fs::write(dir.join(f), GOOD).unwrap();
+        }
+        let cfg = ScanConfig {
+            include_paths: vec![dir.join("e1.en.srt"), dir.join("e1.en.alass.srt"), dir.join("e1.mkv")],
+            exclude_paths: vec![],
+        };
+        let r = run(&cfg, &HashMap::new(), &HashMap::new());
+        assert_eq!(r.files, vec![dir.join("e1.en.srt")]);
     }
 }
