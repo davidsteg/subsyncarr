@@ -12,7 +12,9 @@
 - **Symlinked folders and files were skipped by the scan.** They are now followed (with loop protection).
 - **`EXCLUDE_PATHS` matched path prefixes.** `/media/Download` also excluded `/media/Downloads2`; it now matches whole path components.
 - **Subs next to `.m4v`, `.ts`, `.m2ts`, `.webm`, `.wmv`, `.mpg` and `.mpeg` videos** were reported as "no matching video". These containers are now matched.
+- **Good syncs rejected as "shift too large".** The 30s mismatch check compared only the first cue; alass split mode can move one early cue (a credit or song line) far while the rest shifts slightly. The check now uses the median shift across all cues.
 - **Offset calculation with a UTF-8 BOM** paired every cue with its neighbour; the BOM is now stripped first.
+- **Coordinator tests** were broken (mock predated the pending-run flow) and now cover the current run lifecycle.
 
 ## [1.3.41] — 2026-08-18
 

@@ -26,7 +26,9 @@ def sh(m):
     t = max(0, ((h * 60 + mi) * 60 + s) * 1000 + ms + shift)
     return '%02d:%02d:%02d,%03d' % (t // 3600000, t // 60000 % 60, t // 1000 % 60, t % 1000)
 data = open(inp, 'rb').read().decode('latin-1')
-open(out, 'wb').write(re.sub(r'(\\d{2}):(\\d{2}):(\\d{2}),(\\d{3})', sh, data).encode('latin-1'))
+first_only = os.environ.get('FAKE_FIRST_CUE_ONLY') == '1'
+out_data = re.sub(r'(\\d{2}):(\\d{2}):(\\d{2}),(\\d{3})', sh, data, count=2 if first_only else 0)
+open(out, 'wb').write(out_data.encode('latin-1'))
 `;
 
 function srt(n: number, text = 'Line'): string {
@@ -92,6 +94,18 @@ describe('ProcessingEngine outcomes', () => {
     process.env.FAKE_FFSUBSYNC_SHIFT_MS = '1200';
     await run();
     expect(readFileSync(sub, 'utf8')).toContain('00:00:16,000 --> 00:00:16,900');
+  });
+
+  it('judges the shift by the median cue, not by a single moved first cue', async () => {
+    writeFileSync(join(media, 'Movie.mkv'), '');
+    const sub = join(media, 'Movie.en.srt');
+    writeFileSync(sub, srt(30));
+    // Both engines move only the first cue by 60s (beyond the 30s limit).
+    process.env.FAKE_FIRST_CUE_ONLY = '1';
+    process.env.FAKE_ALASS_SHIFT_MS = '60000';
+    process.env.FAKE_FFSUBSYNC_SHIFT_MS = '60000';
+    await run();
+    expect(readFileSync(sub, 'utf8')).toMatch(/^1\n00:01:15,000 --> 00:01:15,900/);
   });
 
   it('never deletes a subtitle when the engines only crash or time out', async () => {

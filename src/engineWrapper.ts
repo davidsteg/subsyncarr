@@ -10,7 +10,8 @@
  */
 
 import { execPromise, ProcessingResult, getEngineTimeoutMs, getFirstCueTimeMs, getMaxShiftMs } from './helpers';
-import { existsSync, copyFileSync, renameSync, unlinkSync } from 'fs';
+import { existsSync, copyFileSync, renameSync, unlinkSync, readFileSync } from 'fs';
+import { calculateSubtitleOffset } from './subtitleOffsetCalculator';
 import { dirname, basename, join } from 'path';
 
 export interface EngineOptions {
@@ -62,6 +63,13 @@ export async function generateEngineSubtitles(
   const tempPath = join(directory, `.${srtBaseName}.${engine.tempSuffix}.srt`);
   const backupPath = join(directory, `.${srtBaseName}.srt.bak`);
   const originalFirstCueMs = getFirstCueTimeMs(srtPath);
+  // latin1 decodes any byte sequence 1:1 — only timestamps are read from it.
+  let originalText: string | null = null;
+  try {
+    originalText = readFileSync(srtPath, 'latin1');
+  } catch {
+    originalText = null;
+  }
 
   try {
     copyFileSync(srtPath, backupPath);
@@ -103,8 +111,12 @@ export async function generateEngineSubtitles(
       }
 
       // Check shift threshold
-      if (originalFirstCueMs !== null) {
-        const shiftMs = Math.abs(newFirstCueMs - originalFirstCueMs);
+      if (originalFirstCueMs !== null && originalText !== null) {
+        // Median shift over all cues, not just the first: in split mode alass
+        // may move one early cue (a credit, a song line) far away while the
+        // rest of the file shifts only slightly — judging by the first cue
+        // alone rejected those good syncs as "shift too large".
+        const shiftMs = Math.abs(calculateSubtitleOffset(originalText, readFileSync(tempPath, 'latin1')));
         const maxShiftMs = getMaxShiftMs();
         console.log(
           `${new Date().toLocaleString()} Shift detected: ${shiftMs}ms (max allowed: ${maxShiftMs}ms) for: ${basename(srtPath)}`,
