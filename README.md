@@ -249,9 +249,11 @@ The app intelligently tracks failures for each file/engine combination. After 3 
 
 ### Not-Fitting Delete Threshold
 
-When both sync engines disagree on a subtitle's alignment (or neither can align it at all), the subtitle doesn't just get deleted on the spot — that would risk deleting a good subtitle over a one-off transient failure (a video still being transferred, a network hiccup, an engine crash unrelated to actual fit). Instead, each file accumulates a "not-fitting" strike per run; the subtitle is only deleted once it fails to fit on `NOT_FITTING_DELETE_THRESHOLD` (default 3) **consecutive runs**. If a file fits on any run before reaching the threshold, its strike count resets to zero.
+When both sync engines disagree on a subtitle's alignment (or an engine rejects the result because the median shift exceeds `MAX_SUBTITLE_SHIFT_MS`), the subtitle doesn't just get deleted on the spot — that would risk deleting a good subtitle over a one-off transient failure (a video still being transferred, a network hiccup, an engine crash unrelated to actual fit). Instead, each file accumulates a "not-fitting" strike per run; the subtitle is only deleted once it fails to fit on `NOT_FITTING_DELETE_THRESHOLD` (default 3) **consecutive runs**. If a file fits on any run before reaching the threshold, its strike count resets to zero.
 
 Configurable from Settings ("Not-Fitting Delete Threshold") or the `NOT_FITTING_DELETE_THRESHOLD` environment variable. `DRY_RUN` mode never records strikes or deletes files, so it's safe to preview.
+
+Engine crashes and timeouts never count as a strike. Forced subtitles (`.forced.` / `.foreign.` tags) are never deleted: when they keep failing to fit they are left unchanged and parked until the file changes. A new subtitle at the same path starts with a clean slate.
 
 ### Memory Management
 
@@ -326,12 +328,26 @@ If the container is being killed due to OOM (Out Of Memory):
 
 ### Files Not Being Processed
 
-Check that:
+Every run log starts with an `Effective config:` line and ends with a `Run summary` block that counts every subtitle by outcome and lists the problem files with the reason. Each processed file also gets one decision line you can grep for:
 
-1. Your subtitle files are named to match video files (e.g., `movie.mkv` and `movie.srt`)
-2. `SCAN_PATHS` matches your mounted volumes
-3. Files haven't already been synced (check for `.ffsubsync.srt` files)
-4. Files aren't being auto-skipped due to repeated failures (check skip status in Web UI)
+```
+▶ synced: Movie.en.srt | alass ✓ +1200ms, ffsubsync ✓ +1180ms | mode=full | disagreement 20ms (≤5000ms to agree) | applied alass (1200ms)
+▶ failed_timeout: Big.Remux.en.srt | alass ✗ timeout (after 600s), ffsubsync ✗ timeout (after 600s) | mode=full | no strike
+▶ forced_kept: Movie.en.forced.srt | alass ✓ +0ms, ffsubsync ✓ +20000ms | mode=full | forced | strike 1/3
+▶ no_video: Orphan.en.srt
+```
+
+`GET /api/diagnostics` returns the last run's summary plus every file with not-fitting strikes, every engine permanently skipped for a file, and the parked forced subtitles:
+
+```bash
+curl "http://localhost:3000/api/diagnostics?limit=500"
+```
+
+Also check that:
+
+1. Your subtitle files are named to match video files (e.g., `movie.mkv` and `movie.en.srt`)
+2. `SCAN_PATHS` matches your mounted volumes and `EXCLUDE_PATHS` doesn't cover them
+3. Files aren't being auto-skipped due to repeated failures (`/api/diagnostics` → `skippedEngines`)
 
 ## Docker Hub
 

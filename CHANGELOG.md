@@ -1,5 +1,13 @@
 ## [1.3.42] — 2026-10-13
 
+### Added
+
+- **Per-file decision log line.** Every processed subtitle gets one `▶ <outcome>: <file> | <each engine's result> | <context>` line (e.g. `alass ✓ +1200ms, ffsubsync ✗ timeout (after 600s)`), with the engine's last stderr line for errors, the strike count, and whether it was forced or aligned via an anchor.
+- **Run summary.** Each run log ends with counts per outcome (synced, single-engine sync, not fitting, deleted, forced kept/parked, failed by timeout/error/skipped engines, no video, cancelled) and lists up to 25 files per problem category with the reason.
+- **Effective config line** at the start of every run (format, engine chain, thresholds, timeouts, concurrency, exclude paths).
+- **`GET /api/diagnostics`**: last run summary plus files with not-fitting strikes, permanently skipped engines and parked forced subs.
+- Logs when a replaced subtitle's old strikes/engine skips are reset, and the scan summary reports parked subs skipped.
+
 ### Fixed
 
 - **Engine crashes and timeouts deleted subtitles.** When both engines errored or timed out (large remux, slow NAS, missing binary), the file counted as "not fitting" and was deleted after 3 runs. Only a real mismatch (an engine rejecting a too-large shift, or the two engines disagreeing) now records a strike; a run where every engine failed leaves the subtitle untouched and retries next run.

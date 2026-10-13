@@ -40,6 +40,7 @@ export async function findAllSrtFiles(
   orphanedTempFilesRemoved: number;
   corruptedSyncedFilesRemoved: number;
   legacyHeadersStripped: number;
+  stats: { found: number; alreadySynced: number; parked: number };
 }> {
   // Initialize directory cache for video file matching (built lazily during processing)
   const directoryCache = initDirectoryCache();
@@ -160,6 +161,7 @@ export async function findAllSrtFiles(
   let completedCount = 0;
   let corruptedSyncedFilesRemoved = 0;
   let legacyHeadersStripped = 0;
+  let parkedCount = 0;
 
   async function checkFile(srtPath: string): Promise<void> {
     let isSynced: boolean;
@@ -183,6 +185,7 @@ export async function findAllSrtFiles(
     if (db && fileStat && db.isFileParked(srtPath, fileStat.mtimeMs, fileStat.size)) {
       completedCount++;
       skippedCount++;
+      parkedCount++;
       return;
     }
 
@@ -287,8 +290,16 @@ export async function findAllSrtFiles(
     `${new Date().toLocaleString()} Scan complete: ${srtPaths.length} SRT files found, ${files.length} need sync, ${skippedCount} already synced` +
       (orphanedTempFilesRemoved > 0 ? `, ${orphanedTempFilesRemoved} orphaned temp file(s) removed` : '') +
       (corruptedSyncedFilesRemoved > 0 ? `, ${corruptedSyncedFilesRemoved} corrupted synced subtitle(s) removed` : '') +
-      (legacyHeadersStripped > 0 ? `, ${legacyHeadersStripped} legacy sync header(s) stripped` : ''),
+      (legacyHeadersStripped > 0 ? `, ${legacyHeadersStripped} legacy sync header(s) stripped` : '') +
+      (parkedCount > 0 ? `, ${parkedCount} parked forced sub(s) skipped` : ''),
   );
 
-  return { files, directoryCache, orphanedTempFilesRemoved, corruptedSyncedFilesRemoved, legacyHeadersStripped };
+  return {
+    files,
+    directoryCache,
+    orphanedTempFilesRemoved,
+    corruptedSyncedFilesRemoved,
+    legacyHeadersStripped,
+    stats: { found: srtPaths.length, alreadySynced: skippedCount, parked: parkedCount },
+  };
 }

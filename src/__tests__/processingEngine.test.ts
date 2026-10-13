@@ -78,10 +78,15 @@ describe('ProcessingEngine outcomes', () => {
     jest.restoreAllMocks();
   });
 
-  async function run(): Promise<void> {
+  let logs: string[] = [];
+
+  async function run(): Promise<ProcessingEngine> {
     const engine = new ProcessingEngine();
     engine.stateManager = state;
+    logs = [];
+    engine.on('log', (m: string) => logs.push(m));
     await engine.processRun({ includePaths: [media], excludePaths: [] });
+    return engine;
   }
 
   it('syncs a file whose name contains shell metacharacters', async () => {
@@ -120,6 +125,23 @@ describe('ProcessingEngine outcomes', () => {
     // Original bytes restored untouched — no UTF-8 round-trip mangling.
     expect(readFileSync(sub).equals(latin1)).toBe(true);
     expect(state.getDatabase().getNotFittingStrikes(sub)).toBe(0);
+  });
+
+  it('logs a decision line per file and a run summary with reasons', async () => {
+    writeFileSync(join(media, 'Movie.mkv'), '');
+    writeFileSync(join(media, 'Movie.en.srt'), srt(30));
+    writeFileSync(join(media, 'Orphan.en.srt'), srt(30));
+    process.env.FAKE_ALASS_SHIFT_MS = '1000';
+    process.env.FAKE_FFSUBSYNC_SHIFT_MS = 'fail';
+    const engine = await run();
+    const text = logs.join('\n');
+    expect(text).toMatch(/▶ synced_single_engine: Movie\.en\.srt \| alass ✓ \+1000ms, ffsubsync ✗ error/);
+    expect(text).toMatch(/▶ no_video: Orphan\.en\.srt/);
+    expect(text).toContain('Effective config: format=overwrite');
+    expect(text).toContain('===== Run summary =====');
+    expect(engine.lastRunSummary?.counts).toEqual({ synced_single_engine: 1, no_video: 1 });
+    expect(JSON.parse(state.getDatabase().getSetting('last_run_summary')!).counts.no_video).toBe(1);
+    expect(state.getDatabase().getDiagnostics().totals).toEqual({ strikes: 0, skippedEngines: 0, parked: 0 });
   });
 
   it('still deletes a regular subtitle after repeated disagreement', async () => {

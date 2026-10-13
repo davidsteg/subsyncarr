@@ -839,6 +839,52 @@ export class SubsyncarrPlusDatabase {
     this.db.prepare('DELETE FROM parked_files WHERE file_path = ?').run(filePath);
   }
 
+  /**
+   * Everything that keeps a subtitle from syncing, for /api/diagnostics:
+   * files with not-fitting strikes, engines permanently skipped per file,
+   * and parked forced subs. Newest first, capped at `limit` rows each.
+   */
+  getDiagnostics(limit = 200): {
+    strikes: Array<{ file_path: string; consecutive_strikes: number; last_strike_time: number | null }>;
+    skippedEngines: Array<{
+      file_path: string;
+      engine: string;
+      consecutive_failures: number;
+      last_failure_time: number | null;
+    }>;
+    parked: Array<{ file_path: string; reason: string | null; parked_at: number }>;
+    totals: { strikes: number; skippedEngines: number; parked: number };
+  } {
+    const count = (sql: string) => (this.db.prepare(sql).get() as { n: number }).n;
+    return {
+      strikes: this.db
+        .prepare(
+          `SELECT file_path, consecutive_strikes, last_strike_time FROM not_fitting_tracking
+           ORDER BY last_strike_time DESC LIMIT ?`,
+        )
+        .all(limit) as Array<{ file_path: string; consecutive_strikes: number; last_strike_time: number | null }>,
+      skippedEngines: this.db
+        .prepare(
+          `SELECT file_path, engine, consecutive_failures, last_failure_time FROM engine_failure_tracking
+           WHERE is_skipped = 1 ORDER BY last_failure_time DESC LIMIT ?`,
+        )
+        .all(limit) as Array<{
+        file_path: string;
+        engine: string;
+        consecutive_failures: number;
+        last_failure_time: number | null;
+      }>,
+      parked: this.db
+        .prepare('SELECT file_path, reason, parked_at FROM parked_files ORDER BY parked_at DESC LIMIT ?')
+        .all(limit) as Array<{ file_path: string; reason: string | null; parked_at: number }>,
+      totals: {
+        strikes: count('SELECT COUNT(*) AS n FROM not_fitting_tracking'),
+        skippedEngines: count('SELECT COUNT(*) AS n FROM engine_failure_tracking WHERE is_skipped = 1'),
+        parked: count('SELECT COUNT(*) AS n FROM parked_files'),
+      },
+    };
+  }
+
   // Settings methods
   getSetting(key: string): string | null {
     const row = this.db.prepare('SELECT value FROM settings WHERE key = ?').get(key) as { value: string } | undefined;

@@ -16,7 +16,14 @@ import { StateManager } from './stateManager';
 import { readFileSync, writeFileSync, unlinkSync, existsSync, statSync } from 'fs';
 import { basename, dirname, join } from 'path';
 import { createHash } from 'crypto';
-import { getSubtitleFormat, getOutputPath, markSrtAsSynced, isSyncedSrt } from './helpers';
+import {
+  getSubtitleFormat,
+  getOutputPath,
+  markSrtAsSynced,
+  isSyncedSrt,
+  getMaxShiftMs,
+  getEngineTimeoutMs,
+} from './helpers';
 import { calculateSubtitleOffset } from './subtitleOffsetCalculator';
 import {
   groupByVideo,
@@ -27,6 +34,16 @@ import {
   VideoGroup,
 } from './anchorPlanner';
 import { decideOutcome, Alignment } from './decideOutcome';
+import {
+  RunSummary,
+  RunSummaryJson,
+  FileCategory,
+  EngineAttempt,
+  classifyEngineFailure,
+  failureCategory,
+  formatAttempts,
+  failureDetail,
+} from './runSummary';
 
 export type SyncMode = 'anchor' | 'follower' | 'full';
 
@@ -78,6 +95,10 @@ export class ProcessingEngine extends EventEmitter {
    * processFile so nothing gets written or deleted once a stop is pending.
    */
   private stopRequested: boolean = false; // v1.3.19: reset in reset()
+  /** Why each file of the current run ended where it did — logged at run end. */
+  private summary: RunSummary = new RunSummary();
+  /** Summary of the last finished run (also persisted as the `last_run_summary` setting). */
+  public lastRunSummary: RunSummaryJson | null = null;
   /** Scan progress during file discovery phase (null when not scanning) */
   public scanProgress: { checked: number; total: number; needSync: number; alreadySynced: number } | null = null;
 
@@ -131,6 +152,17 @@ export class ProcessingEngine extends EventEmitter {
     this.maxConcurrent = this.resolveMaxConcurrent();
 
     const scanConfig = config || getScanConfig();
+    this.summary = new RunSummary(this.dryRun);
+    const cfgChain = getEngineChainConfig();
+    // Everything that decides a file's fate, in one line — the first thing to
+    // check when a run's results look wrong.
+    this.log(
+      `[${new Date().toISOString()}] Effective config: format=${this.subtitleFormat}, engines=${cfgChain.defaultEngine}+${cfgChain.fallbackEngine}, ` +
+        `agreement≤${getEngineAgreementThresholdMs()}ms, maxShift=${getMaxShiftMs()}ms, ` +
+        `deleteAfter=${getNotFittingDeleteThreshold()} strikes, timeouts=${cfgChain.defaultEngine}:${getEngineTimeoutMs(cfgChain.defaultEngine) / 1000}s/` +
+        `${cfgChain.fallbackEngine}:${getEngineTimeoutMs(cfgChain.fallbackEngine) / 1000}s, anchor=${isAnchorAlignmentEnabled()}, ` +
+        `concurrency=${this.maxConcurrent}, dryRun=${this.dryRun}, exclude=${JSON.stringify(scanConfig.excludePaths)}`,
+    );
     this.log(`[${new Date().toISOString()}] Scanning for subtitle files...`);
     this.log(`[${new Date().toISOString()}] Scan paths: ${JSON.stringify(scanConfig.includePaths)}`);
 
@@ -142,6 +174,7 @@ export class ProcessingEngine extends EventEmitter {
       orphanedTempFilesRemoved,
       corruptedSyncedFilesRemoved,
       legacyHeadersStripped,
+      stats: scanStats,
     } = await findAllSrtFiles(
       scanConfig,
       db,
@@ -167,6 +200,12 @@ export class ProcessingEngine extends EventEmitter {
         `[${new Date().toISOString()}] 🧹 Stripped ${legacyHeadersStripped} legacy sync header(s) — files are now valid SRT for ffprobe/Jellyfin`,
       );
     }
+    this.summary.setScan({
+      found: scanStats.found,
+      needSync: srtFiles.length,
+      alreadySynced: scanStats.alreadySynced,
+      parked: scanStats.parked,
+    });
     this.log(`[${new Date().toISOString()}] Found ${srtFiles.length} subtitle files`);
     this.emit('run:files_found', srtFiles);
 
@@ -205,6 +244,25 @@ export class ProcessingEngine extends EventEmitter {
     clearDirectoryCache();
 
     this.log(`[${new Date().toISOString()}] All files processed`);
+    this.finishSummary();
+  }
+
+  /** Log the per-reason run summary and persist it for /api/diagnostics. */
+  private finishSummary(): void {
+    const ts = new Date().toISOString();
+    for (const line of this.summary.format()) this.log(`[${ts}] ${line}`);
+    this.lastRunSummary = this.summary.finish();
+    try {
+      this.stateManager?.getDatabase().setSetting('last_run_summary', JSON.stringify(this.lastRunSummary));
+    } catch {}
+  }
+
+  /** One greppable line per file with the final verdict and every engine's result. */
+  private logDecision(srtPath: string, category: FileCategory, attempts: EngineAttempt[], extra: string[] = []): void {
+    const fileName = srtPath.split('/').pop()!;
+    const parts = [formatAttempts(attempts), ...extra].filter(Boolean);
+    this.log(`[${new Date().toISOString()}] ▶ ${category}: ${fileName} | ${parts.join(' | ')}`);
+    this.summary.record(category, srtPath, parts.join(' | '));
   }
 
   /**
@@ -384,6 +442,7 @@ export class ProcessingEngine extends EventEmitter {
     if (this.stopRequested) {
       this.log(`[${new Date().toISOString()}] Skipped (run stopped): ${fileName}`);
       this.emit('file:skipped', { srtPath, reason: 'cancelled' });
+      this.summary.record('cancelled', srtPath);
       return { status: 'cancelled' };
     }
 
@@ -398,6 +457,7 @@ export class ProcessingEngine extends EventEmitter {
     if (this.cancelledFiles.has(srtPath)) {
       this.log(`[${new Date().toISOString()}] Skipped (cancelled): ${fileName}`);
       this.emit('file:skipped', { srtPath, reason: 'cancelled' });
+      this.summary.record('cancelled', srtPath);
       return { status: 'cancelled' };
     }
 
@@ -406,7 +466,9 @@ export class ProcessingEngine extends EventEmitter {
     this.abortControllers.set(srtPath, abortController);
 
     try {
-      return await this.processFileInner(srtPath, fileName, abortController.signal, ctx);
+      const outcome = await this.processFileInner(srtPath, fileName, abortController.signal, ctx);
+      if (outcome.status === 'cancelled') this.summary.record('cancelled', srtPath);
+      return outcome;
     } finally {
       this.abortControllers.delete(srtPath);
     }
@@ -425,7 +487,10 @@ export class ProcessingEngine extends EventEmitter {
     this.emit('file:started', { srtPath, videoPath });
 
     if (!videoPath) {
-      this.log(`[${new Date().toISOString()}] No matching video found for: ${fileName}`);
+      this.log(
+        `[${new Date().toISOString()}] No matching video found for: ${fileName} (looked for <name>.{mkv,mp4,avi,mov,m4v,ts,m2ts,webm,wmv,mpg,mpeg} in the same folder, dropping trailing .tags one at a time)`,
+      );
+      this.logDecision(srtPath, 'no_video', [], []);
       this.emit('file:no_video', { srtPath });
       return { status: 'no_video' };
     }
@@ -452,7 +517,14 @@ export class ProcessingEngine extends EventEmitter {
       try {
         const db = this.stateManager.getDatabase();
         const hash = createHash('sha1').update(originalBytes).digest('hex');
+        const hadState =
+          db.getNotFittingStrikes(srtPath) > 0 || this.stateManager.getSkippedEngines(srtPath).length > 0;
         if (db.refreshFileFingerprint(srtPath, hash)) {
+          if (hadState) {
+            this.log(
+              `[${new Date().toISOString()}] Subtitle content changed since the last attempt — resetting its strikes and engine skips: ${fileName}`,
+            );
+          }
           this.stateManager.resetSkipStatus(srtPath);
           db.resetNotFittingStrikes(srtPath);
           db.unparkFile(srtPath);
@@ -497,6 +569,7 @@ export class ProcessingEngine extends EventEmitter {
     // Engines that ran and rejected their result as a too-large shift — the
     // only evidence (besides disagreement) that the subtitle doesn't fit.
     let mismatchReports = 0;
+    const attempts: EngineAttempt[] = [];
     // Forced subs: a handful of sparse cues, so keep alass to one global
     // offset instead of letting split mode scatter them.
     const forced = isForcedSubtitle(srtPath);
@@ -515,6 +588,7 @@ export class ProcessingEngine extends EventEmitter {
       // Skip engines that have failed on this file 3+ times in a row
       if (this.stateManager?.shouldSkipEngine(srtPath, engine)) {
         this.log(`[${new Date().toISOString()}] ⊘ Skipping ${engine} (3+ consecutive failures): ${fileName}`);
+        attempts.push({ engine, status: 'skipped', detail: '3+ consecutive failures' });
         this.emit('file:engine_completed', {
           srtPath,
           engine,
@@ -546,8 +620,20 @@ export class ProcessingEngine extends EventEmitter {
       if (aligned.success && aligned.content !== null && aligned.bytes !== null) {
         this.log(`[${new Date().toISOString()}] ${engine} aligned (shift ${aligned.shiftMs}ms): ${fileName}`);
         alignments.push({ engine, content: aligned.content, bytes: aligned.bytes, shiftMs: aligned.shiftMs });
+        attempts.push({ engine, status: 'ok', shiftMs: aligned.shiftMs });
       } else {
         if (aligned.result.shiftTooLarge) mismatchReports++;
+        const status = classifyEngineFailure(aligned.result);
+        attempts.push({
+          engine,
+          status,
+          detail:
+            status === 'shift'
+              ? `${aligned.result.originalShiftMs ?? '?'}ms > ${getMaxShiftMs()}ms`
+              : status === 'timeout'
+                ? `after ${Math.round(aligned.result.duration / 1000)}s`
+                : failureDetail(aligned.result.message, aligned.result.stderr),
+        });
         this.log(`[${new Date().toISOString()}] ${engine} could not align: ${aligned.result.message}`);
       }
     }
@@ -561,6 +647,11 @@ export class ProcessingEngine extends EventEmitter {
     // case) this equals a direct content-to-content comparison; it only
     // diverges under non-constant warping. Only meaningful with 2 alignments.
     const disagreementMs = alignments.length === 2 ? Math.abs(alignments[0].shiftMs - alignments[1].shiftMs) : 0;
+    const context = [
+      `mode=${mode}${mode === 'follower' && anchorPath ? ` via ${anchorPath.split('/').pop()}` : ''}`,
+      ...(forced ? ['forced'] : []),
+      ...(alignments.length === 2 ? [`disagreement ${disagreementMs}ms (≤${agreementThresholdMs}ms to agree)`] : []),
+    ];
 
     if (outcome === 'failed') {
       // Every engine errored, timed out or was skipped — that says nothing
@@ -575,6 +666,7 @@ export class ProcessingEngine extends EventEmitter {
           writeFileSync(srtPath, originalBytes);
         } catch {}
       }
+      this.logDecision(srtPath, failureCategory(attempts), attempts, [...context, 'no strike']);
       this.emit('file:failed', { srtPath });
       return { status: 'failed' };
     }
@@ -588,7 +680,7 @@ export class ProcessingEngine extends EventEmitter {
             `(threshold: ${agreementThresholdMs}ms) — subtitle doesn't fit: ${fileName}`,
         );
       }
-      await this.handleNotFitting(
+      const result = await this.handleNotFitting(
         srtPath,
         fileName,
         alignments.length > 0 ? `${alignments[0].engine}/${alignments[1].engine}` : 'none',
@@ -596,7 +688,12 @@ export class ProcessingEngine extends EventEmitter {
         originalBytes,
         mode,
         anchorPath,
+        alignments.length > 0 ? 'not_fitting_disagree' : 'not_fitting_shift',
       );
+      this.logDecision(srtPath, result.category, attempts, [
+        ...context,
+        `strike ${result.strikes}/${result.threshold}`,
+      ]);
       return { status: 'not_fitting' };
     }
 
@@ -613,6 +710,10 @@ export class ProcessingEngine extends EventEmitter {
       );
     }
     this.commitSync(srtPath, fileName, winner.engine, winner.bytes, winner.shiftMs, originalBytes, mode, anchorPath);
+    this.logDecision(srtPath, alignments.length === 1 ? 'synced_single_engine' : 'synced', attempts, [
+      ...context,
+      `applied ${winner.engine} (${winner.shiftMs}ms)`,
+    ]);
     return { status: 'completed', syncedContent: winner.bytes };
   }
 
@@ -771,7 +872,8 @@ export class ProcessingEngine extends EventEmitter {
     originalBytes: Buffer | null,
     syncMode: SyncMode = 'full',
     anchorPath: string | null = null,
-  ): Promise<void> {
+    reason: 'not_fitting_disagree' | 'not_fitting_shift' = 'not_fitting_disagree',
+  ): Promise<{ category: FileCategory; strikes: number; threshold: number }> {
     const threshold = getNotFittingDeleteThreshold();
 
     if (this.dryRun) {
@@ -785,7 +887,7 @@ export class ProcessingEngine extends EventEmitter {
         `[${new Date().toISOString()}] [DRY RUN] Would record not-fitting strike (threshold: ${threshold}): ${fileName}`,
       );
       this.emit('file:not_fitting', { srtPath, engine: lastEngine, offsetMs, syncMode, anchorPath });
-      return;
+      return { category: reason, strikes: 0, threshold };
     }
 
     const strikes = this.stateManager?.getDatabase().recordNotFittingStrike(srtPath) ?? 1;
@@ -802,7 +904,8 @@ export class ProcessingEngine extends EventEmitter {
           writeFileSync(srtPath, originalBytes);
         } catch {}
       }
-      if (strikes >= threshold && this.stateManager) {
+      const parked = strikes >= threshold && !!this.stateManager;
+      if (parked && this.stateManager) {
         try {
           const s = statSync(srtPath);
           this.stateManager.getDatabase().parkFile(srtPath, s.mtimeMs, s.size, 'forced_not_fitting');
@@ -816,10 +919,12 @@ export class ProcessingEngine extends EventEmitter {
         );
       }
       this.emit('file:not_fitting', { srtPath, engine: lastEngine, offsetMs, syncMode, anchorPath });
-      return;
+      return { category: parked ? 'forced_parked' : 'forced_kept', strikes, threshold };
     }
 
+    let category: FileCategory = reason;
     if (strikes >= threshold) {
+      category = 'deleted';
       try {
         if (existsSync(srtPath)) {
           unlinkSync(srtPath);
@@ -848,6 +953,7 @@ export class ProcessingEngine extends EventEmitter {
     }
 
     this.emit('file:not_fitting', { srtPath, engine: lastEngine, offsetMs, syncMode, anchorPath });
+    return { category, strikes, threshold };
   }
 
   /** Enable/disable dry-run for the next run (no files written or deleted). */

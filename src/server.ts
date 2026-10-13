@@ -96,8 +96,10 @@ export class SubsyncarrPlusServer {
     this.app.get('/api/changelog', (_req, res) => {
       try {
         const raw = readFileSync(join(__dirname, '..', 'CHANGELOG.md'), 'utf8');
-        const entries: Array<{ version: string; date: string; sections: Array<{ title: string; items: string[] }> }> = [];
-        let current: { version: string; date: string; sections: Array<{ title: string; items: string[] }> } | null = null;
+        const entries: Array<{ version: string; date: string; sections: Array<{ title: string; items: string[] }> }> =
+          [];
+        let current: { version: string; date: string; sections: Array<{ title: string; items: string[] }> } | null =
+          null;
         let currentSection: { title: string; items: string[] } | null = null;
 
         for (const line of raw.split('\n')) {
@@ -115,7 +117,10 @@ export class SubsyncarrPlusServer {
             continue;
           }
           if (line.startsWith('- ') && current && currentSection) {
-            const item = line.slice(2).replace(/\*\*([^*]+)\*\*/g, '$1').trim();
+            const item = line
+              .slice(2)
+              .replace(/\*\*([^*]+)\*\*/g, '$1')
+              .trim();
             currentSection.items.push(item);
           }
         }
@@ -129,7 +134,7 @@ export class SubsyncarrPlusServer {
     // Media stats (cached; TTL kept below the client's poll interval so every poll gets fresh data)
     this.app.get('/api/stats', (req, res) => {
       const now = Date.now();
-      if (this.statsCache && (now - this.statsCache.timestamp) < SubsyncarrPlusServer.STATS_CACHE_TTL_MS) {
+      if (this.statsCache && now - this.statsCache.timestamp < SubsyncarrPlusServer.STATS_CACHE_TTL_MS) {
         return res.json(this.statsCache.data);
       }
       const stats = this.stateManager.getDatabase().getMediaStats();
@@ -149,7 +154,7 @@ export class SubsyncarrPlusServer {
       if (!brief) console.log(`[${new Date().toISOString()}] GET /api/status`);
       const currentRun = this.stateManager.getCurrentRun();
       const scanProgress = this.coordinator.getScanProgress();
-      let files: any[] = [];
+      let files: unknown[] = [];
       let totalFiles = 0;
       if (!brief && currentRun) {
         // Live view: currently-processing files + most recently finished ones,
@@ -160,20 +165,23 @@ export class SubsyncarrPlusServer {
         totalFiles = currentRun.total_files;
       }
       res.json({
-        currentRun: brief && currentRun ? {
-          id: currentRun.id,
-          start_time: currentRun.start_time,
-          total_files: currentRun.total_files,
-          completed: currentRun.completed,
-          skipped: currentRun.skipped,
-          failed: currentRun.failed,
-          not_fitting: currentRun.not_fitting,
-          total_engines: currentRun.total_engines,
-          completed_engines: currentRun.completed_engines,
-          anchors_completed: currentRun.anchors_completed,
-          followers_completed: currentRun.followers_completed,
-          status: currentRun.status,
-        } : currentRun,
+        currentRun:
+          brief && currentRun
+            ? {
+                id: currentRun.id,
+                start_time: currentRun.start_time,
+                total_files: currentRun.total_files,
+                completed: currentRun.completed,
+                skipped: currentRun.skipped,
+                failed: currentRun.failed,
+                not_fitting: currentRun.not_fitting,
+                total_engines: currentRun.total_engines,
+                completed_engines: currentRun.completed_engines,
+                anchors_completed: currentRun.anchors_completed,
+                followers_completed: currentRun.followers_completed,
+                status: currentRun.status,
+              }
+            : currentRun,
         scanProgress,
         files,
         totalFiles,
@@ -225,9 +233,10 @@ export class SubsyncarrPlusServer {
       console.log(`[${new Date().toISOString()}] GET /api/runs/${req.params.id}/files`);
       const requestedId = req.params.id;
       const rawStatus = req.query.status as string | undefined;
-      const status = rawStatus && ['pending', 'processing', 'completed', 'skipped', 'error', 'not_fitting'].includes(rawStatus)
-        ? rawStatus
-        : undefined;
+      const status =
+        rawStatus && ['pending', 'processing', 'completed', 'skipped', 'error', 'not_fitting'].includes(rawStatus)
+          ? rawStatus
+          : undefined;
       const page = Math.max(1, parseInt(req.query.page as string, 10) || 1);
       const limit = Math.min(parseInt(req.query.limit as string, 10) || 500, 5000);
       const offset = (page - 1) * limit;
@@ -274,9 +283,9 @@ export class SubsyncarrPlusServer {
     // raw container/stdout logs by hand.
     this.app.get('/api/logs', (req, res) => {
       const limit = Math.min(parseInt(req.query.limit as string, 10) || 500, 5000);
-      const level = (['all', 'log', 'warn', 'error'].includes(req.query.level as string)
+      const level = ['all', 'log', 'warn', 'error'].includes(req.query.level as string)
         ? (req.query.level as 'all' | 'log' | 'warn' | 'error')
-        : 'all');
+        : 'all';
       const search = req.query.search as string | undefined;
       const since = req.query.since !== undefined ? parseInt(req.query.since as string, 10) : undefined;
 
@@ -368,6 +377,21 @@ export class SubsyncarrPlusServer {
       res.json({ success: true });
     });
 
+    // Why subtitles aren't syncing: last run's per-reason summary plus files
+    // with strikes, permanently skipped engines and parked forced subs.
+    this.app.get('/api/diagnostics', (req, res) => {
+      const db = this.stateManager.getDatabase();
+      const limit = Math.min(parseInt(String(req.query.limit ?? '200'), 10) || 200, 2000);
+      let lastRunSummary: unknown = null;
+      try {
+        const raw = db.getSetting('last_run_summary');
+        lastRunSummary = raw ? JSON.parse(raw) : null;
+      } catch {
+        lastRunSummary = null;
+      }
+      res.json({ lastRunSummary, ...db.getDiagnostics(limit) });
+    });
+
     // Get skip status statistics
     this.app.get('/api/skip-status', (_req, res) => {
       console.log(`[${new Date().toISOString()}] GET /api/skip-status`);
@@ -412,15 +436,33 @@ export class SubsyncarrPlusServer {
     this.app.get('/api/settings', (req, res) => {
       const dbSettings = this.stateManager.getDatabase().getAllSettings();
       res.json({
-        maxSubtitleShiftMs: parseInt(dbSettings['max_subtitle_shift_ms'] || process.env.MAX_SUBTITLE_SHIFT_MS || '30000', 10),
-        engineAgreementThresholdMs: parseInt(dbSettings['engine_agreement_threshold_ms'] || process.env.ENGINE_AGREEMENT_THRESHOLD_MS || '5000', 10),
-        notFittingDeleteThreshold: parseInt(dbSettings['not_fitting_delete_threshold'] || process.env.NOT_FITTING_DELETE_THRESHOLD || '3', 10),
+        maxSubtitleShiftMs: parseInt(
+          dbSettings['max_subtitle_shift_ms'] || process.env.MAX_SUBTITLE_SHIFT_MS || '30000',
+          10,
+        ),
+        engineAgreementThresholdMs: parseInt(
+          dbSettings['engine_agreement_threshold_ms'] || process.env.ENGINE_AGREEMENT_THRESHOLD_MS || '5000',
+          10,
+        ),
+        notFittingDeleteThreshold: parseInt(
+          dbSettings['not_fitting_delete_threshold'] || process.env.NOT_FITTING_DELETE_THRESHOLD || '3',
+          10,
+        ),
         engineTimeouts: {
           alass: parseInt(dbSettings['engine_timeout_alass'] || process.env.ALASS_TIMEOUT_MS || '300000', 10),
-          ffsubsync: parseInt(dbSettings['engine_timeout_ffsubsync'] || process.env.FFSUBSYNC_TIMEOUT_MS || '300000', 10),
-          autosubsync: parseInt(dbSettings['engine_timeout_autosubsync'] || process.env.AUTOSUBSYNC_TIMEOUT_MS || '300000', 10),
+          ffsubsync: parseInt(
+            dbSettings['engine_timeout_ffsubsync'] || process.env.FFSUBSYNC_TIMEOUT_MS || '300000',
+            10,
+          ),
+          autosubsync: parseInt(
+            dbSettings['engine_timeout_autosubsync'] || process.env.AUTOSUBSYNC_TIMEOUT_MS || '300000',
+            10,
+          ),
         },
-        maxConcurrentTasks: parseInt(dbSettings['max_concurrent_tasks'] || process.env.MAX_CONCURRENT_SYNC_TASKS || '1', 10),
+        maxConcurrentTasks: parseInt(
+          dbSettings['max_concurrent_tasks'] || process.env.MAX_CONCURRENT_SYNC_TASKS || '1',
+          10,
+        ),
         defaultEngine: process.env.DEFAULT_ENGINE || 'alass',
         fallbackEngine: process.env.FALLBACK_ENGINE || 'ffsubsync',
         dryRun: (dbSettings['dry_run'] || process.env.DRY_RUN || 'false') === 'true',
@@ -435,9 +477,16 @@ export class SubsyncarrPlusServer {
       const updates_raw = req.body;
       const allowedKeys = [
         'max_subtitle_shift_ms',
-        'default_engine', 'fallback_engine', 'dry_run', 'theme',
-        'engine_timeout_alass', 'engine_timeout_ffsubsync', 'engine_timeout_autosubsync',
-        'max_concurrent_tasks', 'engine_agreement_threshold_ms', 'not_fitting_delete_threshold'
+        'default_engine',
+        'fallback_engine',
+        'dry_run',
+        'theme',
+        'engine_timeout_alass',
+        'engine_timeout_ffsubsync',
+        'engine_timeout_autosubsync',
+        'max_concurrent_tasks',
+        'engine_agreement_threshold_ms',
+        'not_fitting_delete_threshold',
       ];
       for (const [key, value] of Object.entries(updates_raw)) {
         if (allowedKeys.includes(key)) {
@@ -447,18 +496,26 @@ export class SubsyncarrPlusServer {
       // Update runtime config for engine code (timeouts, concurrency)
       try {
         const { updateRuntimeCfg } = require('./engineRuntime');
-        const updates: any = {};
-        if (updates_raw['max_concurrent_tasks']) updates.maxConcurrentTasks = parseInt(updates_raw['max_concurrent_tasks'], 10);
-        if (updates_raw['engine_agreement_threshold_ms']) updates.engineAgreementThresholdMs = parseInt(updates_raw['engine_agreement_threshold_ms'], 10);
-        if (updates_raw['not_fitting_delete_threshold']) updates.notFittingDeleteThreshold = parseInt(updates_raw['not_fitting_delete_threshold'], 10);
-        if (updates_raw['max_subtitle_shift_ms']) updates.maxSubtitleShiftMs = parseInt(updates_raw['max_subtitle_shift_ms'], 10);
-        const timeouts: any = {};
+        const updates: Record<string, unknown> = {};
+        if (updates_raw['max_concurrent_tasks'])
+          updates.maxConcurrentTasks = parseInt(updates_raw['max_concurrent_tasks'], 10);
+        if (updates_raw['engine_agreement_threshold_ms'])
+          updates.engineAgreementThresholdMs = parseInt(updates_raw['engine_agreement_threshold_ms'], 10);
+        if (updates_raw['not_fitting_delete_threshold'])
+          updates.notFittingDeleteThreshold = parseInt(updates_raw['not_fitting_delete_threshold'], 10);
+        if (updates_raw['max_subtitle_shift_ms'])
+          updates.maxSubtitleShiftMs = parseInt(updates_raw['max_subtitle_shift_ms'], 10);
+        const timeouts: Record<string, number> = {};
         if (updates_raw['engine_timeout_alass']) timeouts.alass = parseInt(updates_raw['engine_timeout_alass'], 10);
-        if (updates_raw['engine_timeout_ffsubsync']) timeouts.ffsubsync = parseInt(updates_raw['engine_timeout_ffsubsync'], 10);
-        if (updates_raw['engine_timeout_autosubsync']) timeouts.autosubsync = parseInt(updates_raw['engine_timeout_autosubsync'], 10);
+        if (updates_raw['engine_timeout_ffsubsync'])
+          timeouts.ffsubsync = parseInt(updates_raw['engine_timeout_ffsubsync'], 10);
+        if (updates_raw['engine_timeout_autosubsync'])
+          timeouts.autosubsync = parseInt(updates_raw['engine_timeout_autosubsync'], 10);
         if (Object.keys(timeouts).length > 0) updates.engineTimeouts = timeouts;
         if (Object.keys(updates).length > 0) updateRuntimeCfg(updates);
-      } catch (e) { console.error('Failed to update runtime config:', e); }
+      } catch (e) {
+        console.error('Failed to update runtime config:', e);
+      }
       // Invalidate stats cache when settings change
       this.statsCache = null;
       res.json({ success: true });
