@@ -70,8 +70,9 @@ See the Configuration table in `README.md`.
 2. Bump the version in `Cargo.toml`, `VERSION` and `CHANGELOG.md` (Keep-a-Changelog format, no "v" prefix). An optional short line right under the version heading becomes the GitHub Release title.
 3. Commit and merge to `master` (PR or push).
 4. `.github/workflows/ci.yml` runs checks and tests on every push and PR.
-5. When CI passes on master, `.github/workflows/release.yml` checks that `Cargo.toml`, `VERSION` and `CHANGELOG.md` agree. If the version has no tag yet, it tags the tested commit and calls `.github/workflows/docker-publish.yml`, which builds the image, pushes `<version>` to Docker Hub (and `latest` only if it is the highest version tag) and creates the GitHub Release from the CHANGELOG section.
-6. Fallback: run the Release workflow by hand from the Actions tab. It tags master if needed and republishes the current version.
+5. When CI passes on master, `.github/workflows/release.yml` checks that `Cargo.toml`, `VERSION` and `CHANGELOG.md` agree. If the version has no tag yet, it tags the tested commit and calls `.github/workflows/docker-publish.yml`, which creates the GitHub Release from the CHANGELOG section and builds the image, pushing `<version>` to Docker Hub (and `latest` only if it is the highest version tag).
+6. The GitHub Release is created right away; the image build runs alongside it.
+7. Fallback: run the Release workflow by hand from the Actions tab. It tags master if needed and republishes the current version.
 
 ## Conventions
 
