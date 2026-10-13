@@ -1,8 +1,8 @@
-import { readdirSync, unlinkSync, existsSync, statSync } from 'fs';
+import { readdirSync, unlinkSync, statSync, realpathSync } from 'fs';
 import { stat } from 'fs/promises';
 import { extname, join } from 'path';
 import { ScanConfig } from './config';
-import { getOutputPath, getSubtitleFormat, isSyncedSrt, isCorruptSyncedSrt, stripLegacySyncHeader } from './helpers';
+import { isSyncedSrt, isCorruptSyncedSrt, stripLegacySyncHeader } from './helpers';
 import { DirectoryCache, initDirectoryCache } from './findMatchingVideoFile';
 import { SubsyncarrPlusDatabase } from './database';
 
@@ -41,9 +41,6 @@ export async function findAllSrtFiles(
   corruptedSyncedFilesRemoved: number;
   legacyHeadersStripped: number;
 }> {
-  const engines = process.env.INCLUDE_ENGINES?.split(',') || ['ffsubsync', 'autosubsync', 'alass'];
-  const format = getSubtitleFormat();
-
   // Initialize directory cache for video file matching (built lazily during processing)
   const directoryCache = initDirectoryCache();
 
@@ -67,8 +64,28 @@ export async function findAllSrtFiles(
     }
   }
 
+  // Real paths of directories already walked — symlinked directories are
+  // followed, so this guards against loops and double-counting.
+  const visitedDirs = new Set<string>();
+
+  function isExcluded(directory: string): boolean {
+    // Match whole path components: EXCLUDE_PATHS=/media/Download must not
+    // also exclude /media/Downloads2 or /media/DownloadedShows.
+    return config.excludePaths.some((p) => {
+      const base = p.replace(/\/+$/, '');
+      return directory === base || directory.startsWith(base + '/');
+    });
+  }
+
   function collectSrtPaths(directory: string): void {
-    if (config.excludePaths.some((excludePath) => directory.startsWith(excludePath))) {
+    if (isExcluded(directory)) {
+      return;
+    }
+    try {
+      const real = realpathSync(directory);
+      if (visitedDirs.has(real)) return;
+      visitedDirs.add(real);
+    } catch {
       return;
     }
 
@@ -82,11 +99,26 @@ export async function findAllSrtFiles(
     for (const entry of entries) {
       const fullPath = join(directory, entry.name);
 
-      if (entry.isDirectory()) {
+      // Dirent types describe the link itself, so symlinked folders/files
+      // (common with debrid/rclone or shared-storage setups) were silently
+      // skipped. Resolve them to what they point at.
+      let isDir = entry.isDirectory();
+      let isFile = entry.isFile();
+      if (entry.isSymbolicLink()) {
+        try {
+          const target = statSync(fullPath);
+          isDir = target.isDirectory();
+          isFile = target.isFile();
+        } catch {
+          continue; // dangling link
+        }
+      }
+
+      if (isDir) {
         collectSrtPaths(fullPath);
         continue;
       }
-      if (!entry.isFile()) continue;
+      if (!isFile) continue;
 
       // Engine backups (`.name.srt.bak`) don't end in `.srt`, so they'd never
       // be seen by the `.srt`-only check below — a crashed/killed run can
@@ -132,84 +164,86 @@ export async function findAllSrtFiles(
   async function checkFile(srtPath: string): Promise<void> {
     let isSynced: boolean;
 
-    if (format === 'overwrite') {
-      // Check DB cache first, but only trust it if the file's mtime/size
-      // still match what was recorded — a cheap stat() call, much less
-      // costly than reading file content, so this still avoids the header
-      // read for the common case where nothing changed.
-      let fileStat: { mtimeMs: number; size: number } | null = null;
-      try {
-        const s = await stat(srtPath);
-        fileStat = { mtimeMs: s.mtimeMs, size: s.size };
-      } catch {
-        fileStat = null;
-      }
+    // Check DB cache first, but only trust it if the file's mtime/size
+    // still match what was recorded — a cheap stat() call, much less
+    // costly than reading file content, so this still avoids the header
+    // read for the common case where nothing changed. Used for both
+    // SUBTITLE_FORMAT modes: both write the synced result in place.
+    let fileStat: { mtimeMs: number; size: number } | null = null;
+    try {
+      const s = await stat(srtPath);
+      fileStat = { mtimeMs: s.mtimeMs, size: s.size };
+    } catch {
+      fileStat = null;
+    }
 
-      if (db && fileStat && db.isFileInSyncCache(srtPath, fileStat.mtimeMs, fileStat.size)) {
-        isSynced = true;
-      } else {
-        // Async header check — pipelines I/O on network storage
-        isSynced = await isSyncedSrt(srtPath);
-        // Cache result (with current mtime/size) to avoid future header reads
-        if (isSynced && db && fileStat) {
-          db.addFileToSyncCache(srtPath, fileStat.mtimeMs, fileStat.size);
-        }
-      }
+    // Parked: a forced sub that repeatedly didn't fit and is kept unchanged.
+    // Skip it until the file changes (new mtime/size) instead of decoding the
+    // video again every run.
+    if (db && fileStat && db.isFileParked(srtPath, fileStat.mtimeMs, fileStat.size)) {
+      completedCount++;
+      skippedCount++;
+      return;
+    }
 
-      // Repair pass: a past run could have installed empty/unparseable
-      // engine output under the sync marker (see the engine wrappers' cue
-      // validation, added to prevent this going forward) — that file reads
-      // as "already synced" forever and is never looked at again, while
-      // Jellyfin/ffprobe rejects it on every library scan. Delete it here so
-      // it drops out of the cache and gets resupplied instead of staying
-      // permanently broken. Runs on cache hits too, since a corrupted file's
-      // mtime/size never changes once broken — that's exactly what makes it
-      // stick in the cache.
-      if (isSynced) {
-        const corrupt = await isCorruptSyncedSrt(srtPath);
-        if (corrupt) {
-          isSynced = false;
-          if (dryRun) {
-            console.log(
-              `${new Date().toLocaleString()} [DRY RUN] Would delete corrupted synced subtitle (0 cues): ${srtPath}`,
-            );
-          } else {
-            try {
-              unlinkSync(srtPath);
-              corruptedSyncedFilesRemoved++;
-              console.log(`${new Date().toLocaleString()} Deleted corrupted synced subtitle (0 cues): ${srtPath}`);
-              if (db) db.removeFileFromSyncCache(srtPath);
-            } catch (err) {
-              console.log(
-                `${new Date().toLocaleString()} Failed to delete corrupted subtitle ${srtPath}: ${err instanceof Error ? err.message : String(err)}`,
-              );
-            }
-          }
-          completedCount++;
-          // File is gone (or dry-run pretends it is) — nothing to sync or skip.
-          return;
-        }
-
-        // Migration: strip legacy # synced: header from already-synced files.
-        // The header was invalid SRT and broke ffprobe/Jellyfin's SubtitleResolver.
-        // Uses the shared stripLegacySyncHeader — idempotent, skips clean files.
-        if (!dryRun && stripLegacySyncHeader(srtPath)) {
-          legacyHeadersStripped++;
-          console.log(`${new Date().toLocaleString()} Stripped legacy sync header from: ${srtPath}`);
-          if (db) {
-            try {
-              const s = statSync(srtPath);
-              db.addFileToSyncCache(srtPath, s.mtimeMs, s.size);
-            } catch {}
-          }
-        }
-      }
+    if (db && fileStat && db.isFileInSyncCache(srtPath, fileStat.mtimeMs, fileStat.size)) {
+      isSynced = true;
     } else {
-      // Standard mode: check if engine output files exist
-      isSynced = engines.every((engine) => {
-        const outputPath = getOutputPath(srtPath, engine);
-        return existsSync(outputPath);
-      });
+      // Async header check — pipelines I/O on network storage
+      isSynced = await isSyncedSrt(srtPath);
+      // Cache result (with current mtime/size) to avoid future header reads
+      if (isSynced && db && fileStat) {
+        db.addFileToSyncCache(srtPath, fileStat.mtimeMs, fileStat.size);
+      }
+    }
+
+    // Repair pass: a past run could have installed empty/unparseable
+    // engine output under the sync marker (see the engine wrappers' cue
+    // validation, added to prevent this going forward) — that file reads
+    // as "already synced" forever and is never looked at again, while
+    // Jellyfin/ffprobe rejects it on every library scan. Delete it here so
+    // it drops out of the cache and gets resupplied instead of staying
+    // permanently broken. Runs on cache hits too, since a corrupted file's
+    // mtime/size never changes once broken — that's exactly what makes it
+    // stick in the cache.
+    if (isSynced) {
+      const corrupt = await isCorruptSyncedSrt(srtPath);
+      if (corrupt) {
+        isSynced = false;
+        if (dryRun) {
+          console.log(
+            `${new Date().toLocaleString()} [DRY RUN] Would delete corrupted synced subtitle (0 cues): ${srtPath}`,
+          );
+        } else {
+          try {
+            unlinkSync(srtPath);
+            corruptedSyncedFilesRemoved++;
+            console.log(`${new Date().toLocaleString()} Deleted corrupted synced subtitle (0 cues): ${srtPath}`);
+            if (db) db.removeFileFromSyncCache(srtPath);
+          } catch (err) {
+            console.log(
+              `${new Date().toLocaleString()} Failed to delete corrupted subtitle ${srtPath}: ${err instanceof Error ? err.message : String(err)}`,
+            );
+          }
+        }
+        completedCount++;
+        // File is gone (or dry-run pretends it is) — nothing to sync or skip.
+        return;
+      }
+
+      // Migration: strip legacy # synced: header from already-synced files.
+      // The header was invalid SRT and broke ffprobe/Jellyfin's SubtitleResolver.
+      // Uses the shared stripLegacySyncHeader — idempotent, skips clean files.
+      if (!dryRun && stripLegacySyncHeader(srtPath)) {
+        legacyHeadersStripped++;
+        console.log(`${new Date().toLocaleString()} Stripped legacy sync header from: ${srtPath}`);
+        if (db) {
+          try {
+            const s = statSync(srtPath);
+            db.addFileToSyncCache(srtPath, s.mtimeMs, s.size);
+          } catch {}
+        }
+      }
     }
 
     completedCount++;

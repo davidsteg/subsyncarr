@@ -1,8 +1,9 @@
 import { existsSync, readdirSync, statSync } from 'fs';
 import { basename, dirname, join } from 'path';
 
-type VideoExtension = '.mkv' | '.mp4' | '.avi' | '.mov';
-const VIDEO_EXTENSIONS: VideoExtension[] = ['.mkv', '.mp4', '.avi', '.mov'];
+// Containers ffmpeg (and therefore alass/ffsubsync) can decode. Subs next to
+// anything not listed here were reported as "no matching video" forever.
+const VIDEO_EXTENSIONS = ['.mkv', '.mp4', '.avi', '.mov', '.m4v', '.ts', '.m2ts', '.webm', '.wmv', '.mpg', '.mpeg'];
 
 /**
  * Cache of directory → Set of filenames for fast video file lookup.

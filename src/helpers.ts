@@ -1,4 +1,4 @@
-import { exec } from 'child_process';
+import { execFile } from 'child_process';
 import { basename, dirname, join } from 'path';
 import { writeFileSync, openSync, readSync, closeSync, readFileSync } from 'fs';
 import { open, readFile } from 'fs/promises';
@@ -83,13 +83,13 @@ export async function isSyncedSrt(srtPath: string): Promise<boolean> {
   }
 }
 
-export function markSrtAsSynced(srtPath: string, engine: string, content: string): void {
+export function markSrtAsSynced(srtPath: string, engine: string, content: string | Buffer): void {
   // Write clean SRT only — no header prepended.
   // The sync marker line (# synced:alass ...) was invalid SRT: it broke
   // ffprobe/Jellyfin's SubtitleResolver, which requires files to start
   // with a cue number. Sync status is now tracked solely via the
   // database sync cache (synced_files table), not via file headers.
-  writeFileSync(srtPath, content, 'utf8');
+  writeFileSync(srtPath, content);
 }
 
 /**
@@ -124,10 +124,12 @@ export function stripLegacySyncHeader(srtPath: string): boolean {
     if (bytesRead <= 0 || !buf.toString('utf8', 0, bytesRead).startsWith(SYNC_MARKER)) {
       return false;
     }
-    const content = readFileSync(srtPath, 'utf8');
-    const newlinePos = content.indexOf('\n');
+    // Work on raw bytes: decoding as UTF-8 and writing back would mangle
+    // subtitles stored in Latin-1/Windows-1252 (common for German subs).
+    const content = readFileSync(srtPath);
+    const newlinePos = content.indexOf(0x0a);
     if (newlinePos === -1) return false;
-    writeFileSync(srtPath, content.slice(newlinePos + 1), 'utf8');
+    writeFileSync(srtPath, content.subarray(newlinePos + 1));
     return true;
   } catch {
     return false;
@@ -195,34 +197,48 @@ export function getEngineTimeoutMs(engine: string): number {
   return getTimeoutMs();
 }
 
+/**
+ * Run an engine binary with an argument array (no shell). Paths are passed
+ * verbatim, so filenames containing `$`, backticks, quotes or backslashes
+ * reach the engine intact — the old `exec("alass \"${path}\" ...")` form let
+ * the shell expand them, the engine got a wrong path, failed, and the
+ * subtitle collected not-fitting strikes until it was deleted.
+ */
 export function execPromise(
-  command: string,
+  file: string,
+  args: string[],
   timeoutMs?: number,
   signal?: AbortSignal,
 ): Promise<{ stdout: string; stderr: string }> {
   const timeout = timeoutMs ?? getTimeoutMs();
+  const label = [file, ...args].join(' ');
   return new Promise((resolve, reject) => {
     // maxBuffer caps the child's *stdout/stderr* — if the engine prints more
-    // than this, exec kills it and the sync fails spuriously. ffsubsync in
+    // than this, execFile kills it and the sync fails spuriously. ffsubsync in
     // particular can be very chatty (progress output) on a long decode, so
     // keep generous headroom here. This is unrelated to how much we persist:
     // what lands in the DB is capped separately (stdout?.substring(0, 1000)
     // in engineWrapper), so a large buffer here costs only transient memory.
-    const child = exec(command, { timeout, maxBuffer: 1024 * 1024 * 10 }, (error, stdout, stderr) => {
-      if (signal?.aborted) {
-        reject(new Error(`Aborted: ${command}`));
-        return;
-      }
-      if (error) {
-        if (error.killed) {
-          reject(new Error(`Timed out after ${timeout / 1000}s: ${command}`));
-        } else {
-          reject(error);
+    const child = execFile(
+      file,
+      args,
+      { timeout, maxBuffer: 1024 * 1024 * 10, env: process.env },
+      (error, stdout, stderr) => {
+        if (signal?.aborted) {
+          reject(new Error(`Aborted: ${label}`));
+          return;
         }
-      } else {
-        resolve({ stdout, stderr });
-      }
-    });
+        if (error) {
+          if (error.killed) {
+            reject(new Error(`Timed out after ${timeout / 1000}s: ${label}`));
+          } else {
+            reject(error);
+          }
+        } else {
+          resolve({ stdout, stderr });
+        }
+      },
+    );
 
     // Kill the child process if abort signal fires (e.g. user clicked Skip)
     if (signal) {

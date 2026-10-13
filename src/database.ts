@@ -789,6 +789,56 @@ export class SubsyncarrPlusDatabase {
     this.db.prepare('DELETE FROM synced_files WHERE file_path = ?').run(filePath);
   }
 
+  // === File fingerprints ===
+  // Engine-skip and not-fitting state are keyed by path. When Bazarr replaces
+  // a subtitle at the same path, the new file must not inherit the old
+  // file's permanent engine skips or strikes — otherwise a good replacement
+  // gets deleted for the previous file's sins.
+
+  /**
+   * Record the content hash for a path. Returns true when the content differs
+   * from the last recorded hash (or none was recorded yet), meaning per-path
+   * failure state belongs to a different file and should be reset.
+   */
+  refreshFileFingerprint(filePath: string, contentHash: string): boolean {
+    const row = this.db.prepare('SELECT content_hash FROM file_fingerprints WHERE file_path = ?').get(filePath) as
+      | { content_hash: string }
+      | undefined;
+    if (row && row.content_hash === contentHash) return false;
+    this.db
+      .prepare(
+        `INSERT INTO file_fingerprints (file_path, content_hash, updated_at) VALUES (?, ?, ?)
+         ON CONFLICT(file_path) DO UPDATE SET content_hash = excluded.content_hash, updated_at = excluded.updated_at`,
+      )
+      .run(filePath, contentHash, Date.now());
+    return true;
+  }
+
+  // === Parked files ===
+  // Subtitles that keep failing to fit but are never deleted (forced subs).
+  // Trusted only while mtime/size match, like the sync cache.
+
+  isFileParked(filePath: string, mtimeMs: number, sizeBytes: number): boolean {
+    const row = this.db.prepare('SELECT mtime_ms, size_bytes FROM parked_files WHERE file_path = ?').get(filePath) as
+      | { mtime_ms: number; size_bytes: number }
+      | undefined;
+    return !!row && row.mtime_ms === mtimeMs && row.size_bytes === sizeBytes;
+  }
+
+  parkFile(filePath: string, mtimeMs: number, sizeBytes: number, reason: string): void {
+    this.db
+      .prepare(
+        `INSERT INTO parked_files (file_path, mtime_ms, size_bytes, reason, parked_at) VALUES (?, ?, ?, ?, ?)
+         ON CONFLICT(file_path) DO UPDATE SET mtime_ms = excluded.mtime_ms, size_bytes = excluded.size_bytes,
+           reason = excluded.reason, parked_at = excluded.parked_at`,
+      )
+      .run(filePath, mtimeMs, sizeBytes, reason, Date.now());
+  }
+
+  unparkFile(filePath: string): void {
+    this.db.prepare('DELETE FROM parked_files WHERE file_path = ?').run(filePath);
+  }
+
   // Settings methods
   getSetting(key: string): string | null {
     const row = this.db.prepare('SELECT value FROM settings WHERE key = ?').get(key) as { value: string } | undefined;

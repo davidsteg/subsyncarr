@@ -65,7 +65,7 @@ Since v1.3.40, sync status is tracked **solely via the database** (`synced_files
 | `CRON_SCHEDULE`          | `0 0 * * *`                    | Cron schedule for automatic runs                  |
 | `DEFAULT_ENGINE`         | `ffsubsync`                    | Primary sync engine                               |
 | `FALLBACK_ENGINE`        | `alass`                        | Fallback if primary fails                         |
-| `SYNC_FORMAT`            | `overwrite`                    | `overwrite` (in-place) or `standard` (sidecar)    |
+| `SUBTITLE_FORMAT`        | `standard`                     | `overwrite` or `standard` (both write in place)   |
 | `DRY_RUN`                | `false`                        | No writes, just log what would happen             |
 | `DB_PATH`                | `/app/data/subsyncarr-plus.db` | SQLite database path                              |
 | `INCLUDE_ENGINES`        | `ffsubsync,autosubsync,alass`  | Which engines to enable                           |

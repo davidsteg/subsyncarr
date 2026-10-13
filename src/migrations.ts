@@ -242,6 +242,31 @@ const MIGRATIONS: Migration[] = [
       `);
     },
   },
+  {
+    version: 15,
+    name: 'create_file_fingerprints_and_parked_files',
+    run: (db) => {
+      // file_fingerprints: content hash per subtitle path, so engine-skip and
+      // not-fitting strike state (both keyed by path only) can be reset when a
+      // new subtitle replaces the old one at the same path.
+      // parked_files: subtitles that repeatedly didn't fit but must not be
+      // deleted (forced subs). Skipped by the scan while mtime/size match.
+      db.exec(`
+        CREATE TABLE IF NOT EXISTS file_fingerprints (
+          file_path TEXT PRIMARY KEY,
+          content_hash TEXT NOT NULL,
+          updated_at INTEGER NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS parked_files (
+          file_path TEXT PRIMARY KEY,
+          mtime_ms REAL NOT NULL,
+          size_bytes INTEGER NOT NULL,
+          reason TEXT,
+          parked_at INTEGER NOT NULL
+        );
+      `);
+    },
+  },
 ];
 
 export function runMigrations(db: Database.Database): void {

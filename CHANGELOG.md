@@ -1,3 +1,19 @@
+## [1.3.42] — 2026-10-13
+
+### Fixed
+
+- **Engine crashes and timeouts deleted subtitles.** When both engines errored or timed out (large remux, slow NAS, missing binary), the file counted as "not fitting" and was deleted after 3 runs. Only a real mismatch (an engine rejecting a too-large shift, or the two engines disagreeing) now records a strike; a run where every engine failed leaves the subtitle untouched and retries next run.
+- **Forced subtitles were deleted.** Forced subs have a handful of sparse cues, so audio alignment has little to lock onto and the engines often disagree, which used to delete them after 3 runs (and again after every re-download). Forced subs are now never deleted: alass runs with `--no-split` for them, a not-fitting forced sub is left unchanged, and after the strike threshold it is parked (skipped by the scan) until the file changes.
+- **Forced detection missed common names.** `Movie.forced.en.srt`, `Movie.en.forced.default.srt` and `.foreign.` tags are now recognised, not only `Movie.en.forced.srt`.
+- **Replaced subtitles inherited the old file's failures.** Engine skips (permanent after 3 failures) and not-fitting strikes were keyed by path only, so a new subtitle Bazarr dropped at the same path could be deleted for the previous file's strikes, or never get an engine run at all. A content fingerprint now resets that state when the file changes.
+- **Filenames with `$`, backticks, quotes or backslashes could never sync.** Engines were started through a shell with the paths in double quotes, so the shell rewrote them and the engine got a wrong path. Engines now run without a shell.
+- **Non-UTF-8 subtitles were mangled.** The original was read as UTF-8 and written back before every engine run and on every failure, turning umlauts in Latin-1/Windows-1252 files into `�` even when the sync failed. Originals and engine output are now handled as raw bytes; the legacy header strip does the same.
+- **Standard format re-synced everything every run.** With `SUBTITLE_FORMAT` unset (the default `standard`), the scan looked for `.<engine>.srt` sidecars that are never written, so no file was ever considered synced. Both formats now use the sync cache.
+- **Symlinked folders and files were skipped by the scan.** They are now followed (with loop protection).
+- **`EXCLUDE_PATHS` matched path prefixes.** `/media/Download` also excluded `/media/Downloads2`; it now matches whole path components.
+- **Subs next to `.m4v`, `.ts`, `.m2ts`, `.webm`, `.wmv`, `.mpg` and `.mpeg` videos** were reported as "no matching video". These containers are now matched.
+- **Offset calculation with a UTF-8 BOM** paired every cue with its neighbour; the BOM is now stripped first.
+
 ## [1.3.41] — 2026-08-18
 
 ### Added

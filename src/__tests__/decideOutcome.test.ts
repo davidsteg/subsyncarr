@@ -7,6 +7,18 @@ describe('decideOutcome', () => {
     expect(decideOutcome([], threshold)).toBe('not_fitting');
   });
 
+  it('returns not_fitting when no alignments and an engine reported a too-large shift', () => {
+    expect(decideOutcome([], threshold, 1)).toBe('not_fitting');
+  });
+
+  it('returns failed (no strike) when every engine errored or timed out', () => {
+    expect(decideOutcome([], threshold, 0)).toBe('failed');
+  });
+
+  it('ignores mismatch reports once an engine produced an alignment', () => {
+    expect(decideOutcome([{ engine: 'alass', shiftMs: 0 }], threshold, 1)).toBe('keep');
+  });
+
   it('returns keep when only one alignment', () => {
     const alignments: Alignment[] = [{ engine: 'alass', shiftMs: 1000 }];
     expect(decideOutcome(alignments, threshold)).toBe('keep');

@@ -1,7 +1,11 @@
 import { execPromise, ProcessingResult, getOutputPath, getSubtitleFormat, getEngineTimeoutMs } from './helpers';
 import { existsSync } from 'fs';
 
-export async function generateAutosubsyncSubtitles(srtPath: string, videoPath: string, signal?: AbortSignal): Promise<ProcessingResult> {
+export async function generateAutosubsyncSubtitles(
+  srtPath: string,
+  videoPath: string,
+  signal?: AbortSignal,
+): Promise<ProcessingResult> {
   const outputPath = getOutputPath(srtPath, 'autosubsync');
 
   if (getSubtitleFormat() !== 'overwrite') {
@@ -16,9 +20,9 @@ export async function generateAutosubsyncSubtitles(srtPath: string, videoPath: s
   }
 
   try {
-    const command = `autosubsync "${videoPath}" "${srtPath}" "${outputPath}"`;
-    console.log(`${new Date().toLocaleString()} Processing: ${command}`);
-    const { stdout, stderr } = await execPromise(command, getEngineTimeoutMs('autosubsync'), signal);
+    const args = [videoPath, srtPath, outputPath];
+    console.log(`${new Date().toLocaleString()} Processing: autosubsync ${args.join(' ')}`);
+    const { stdout, stderr } = await execPromise('autosubsync', args, getEngineTimeoutMs('autosubsync'), signal);
     return {
       success: true,
       message: `Successfully processed: ${outputPath}`,
@@ -27,7 +31,7 @@ export async function generateAutosubsyncSubtitles(srtPath: string, videoPath: s
     };
   } catch (error) {
     const errorMessage = error instanceof Error ? error.message : String(error);
-    const isTimeout = errorMessage.includes('SIGTERM') || errorMessage.includes('timed out');
+    const isTimeout = errorMessage.includes('SIGTERM') || /timed out/i.test(errorMessage);
     const isAborted = errorMessage.includes('Aborted');
 
     // Extract stdout/stderr from error if available

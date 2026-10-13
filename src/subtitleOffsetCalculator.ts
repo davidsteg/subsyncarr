@@ -20,7 +20,9 @@ function parseSrtTimestamp(timestamp: string): number {
   const match = timestamp.match(/(\d{2}):(\d{2}):(\d{2}),(\d{3})/);
   if (!match) return 0;
   const [, hours, minutes, seconds, ms] = match;
-  return parseInt(hours, 10) * 3600000 + parseInt(minutes, 10) * 60000 + parseInt(seconds, 10) * 1000 + parseInt(ms, 10);
+  return (
+    parseInt(hours, 10) * 3600000 + parseInt(minutes, 10) * 60000 + parseInt(seconds, 10) * 1000 + parseInt(ms, 10)
+  );
 }
 
 /**
@@ -29,7 +31,9 @@ function parseSrtTimestamp(timestamp: string): number {
  */
 function parseSrtContent(content: string): SrtEntry[] {
   // Strip any sync marker header lines (e.g. "# synced:ffsubsync 1234567890")
-  const lines = content.split('\n');
+  // Drop a UTF-8 BOM: it sits in front of the first cue number, which then
+  // fails parseInt and shifts the index pairing below by one cue.
+  const lines = content.replace(/^\uFEFF/, '').split('\n');
   const filteredLines = lines.filter((line) => !line.startsWith('# synced:'));
   const cleanContent = filteredLines.join('\n');
 
@@ -43,9 +47,7 @@ function parseSrtContent(content: string): SrtEntry[] {
     const index = parseInt(blockLines[0], 10);
     if (isNaN(index)) continue;
 
-    const timeMatch = blockLines[1].match(
-      /(\d{2}:\d{2}:\d{2},\d{3})\s*-->\s*(\d{2}:\d{2}:\d{2},\d{3})/,
-    );
+    const timeMatch = blockLines[1].match(/(\d{2}:\d{2}:\d{2},\d{3})\s*-->\s*(\d{2}:\d{2}:\d{2},\d{3})/);
     if (!timeMatch) continue;
 
     const startMs = parseSrtTimestamp(timeMatch[1]);

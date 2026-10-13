@@ -13,21 +13,34 @@ import { execPromise, ProcessingResult, getEngineTimeoutMs, getFirstCueTimeMs, g
 import { existsSync, copyFileSync, renameSync, unlinkSync } from 'fs';
 import { dirname, basename, join } from 'path';
 
+export interface EngineOptions {
+  /**
+   * Shift all cues by one global offset (alass `--no-split`). Used for forced
+   * subs: with only a handful of sparse cues, split mode lets alass place
+   * each cue independently, which scatters them across the timeline.
+   */
+  noSplit?: boolean;
+}
+
 export interface EngineConfig {
   name: string;
-  buildCommand: (videoPath: string, srtPath: string, tempPath: string) => string;
+  /** Binary plus argument array — run without a shell, so paths are never re-parsed. */
+  buildCommand: (videoPath: string, srtPath: string, tempPath: string, opts: EngineOptions) => [string, string[]];
   tempSuffix: string;
 }
 
 const ENGINES: Record<string, EngineConfig> = {
   alass: {
     name: 'alass',
-    buildCommand: (videoPath, srtPath, tempPath) => `alass "${videoPath}" "${srtPath}" "${tempPath}"`,
+    buildCommand: (videoPath, srtPath, tempPath, opts) => [
+      'alass',
+      [...(opts.noSplit ? ['--no-split'] : []), videoPath, srtPath, tempPath],
+    ],
     tempSuffix: 'alass-tmp',
   },
   ffsubsync: {
     name: 'ffsubsync',
-    buildCommand: (videoPath, srtPath, tempPath) => `ffsubsync "${videoPath}" -i "${srtPath}" -o "${tempPath}"`,
+    buildCommand: (videoPath, srtPath, tempPath) => ['ffsubsync', [videoPath, '-i', srtPath, '-o', tempPath]],
     tempSuffix: 'ffsubsync-tmp',
   },
 };
@@ -37,6 +50,7 @@ export async function generateEngineSubtitles(
   srtPath: string,
   videoPath: string,
   signal?: AbortSignal,
+  opts: EngineOptions = {},
 ): Promise<ProcessingResult> {
   const engine = ENGINES[engineName];
   if (!engine) {
@@ -51,11 +65,11 @@ export async function generateEngineSubtitles(
 
   try {
     copyFileSync(srtPath, backupPath);
-    const command = engine.buildCommand(videoPath, srtPath, tempPath);
-    console.log(`${new Date().toLocaleString()} Processing: ${command}`);
+    const [bin, args] = engine.buildCommand(videoPath, srtPath, tempPath, opts);
+    console.log(`${new Date().toLocaleString()} Processing: ${bin} ${args.join(' ')}`);
 
     try {
-      const { stdout, stderr } = await execPromise(command, getEngineTimeoutMs(engineName), signal);
+      const { stdout, stderr } = await execPromise(bin, args, getEngineTimeoutMs(engineName), signal);
       console.log(`${new Date().toLocaleString()} ${engineName} completed successfully for: ${basename(srtPath)}`);
 
       if (!existsSync(tempPath)) {
@@ -135,7 +149,7 @@ export async function generateEngineSubtitles(
       };
     } catch (error) {
       const errorMessage = error instanceof Error ? error.message : String(error);
-      const isTimeout = errorMessage.includes('SIGTERM') || errorMessage.includes('timed out');
+      const isTimeout = errorMessage.includes('SIGTERM') || /timed out/i.test(errorMessage);
       try {
         unlinkSync(tempPath);
       } catch {

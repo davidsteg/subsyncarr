@@ -143,3 +143,12 @@ Hello world`;
     expect(calculateSubtitleOffset(original, synced)).toBe(500);
   });
 });
+describe('calculateSubtitleOffset with BOM', () => {
+  it('pairs cues correctly when only the original starts with a UTF-8 BOM', () => {
+    const body = (a: string, b: string, c: string) =>
+      `1\n00:00:${a},000 --> 00:00:${a},500\nA\n\n2\n00:00:${b},000 --> 00:00:${b},500\nB\n\n3\n00:00:${c},000 --> 00:00:${c},500\nC\n`;
+    const original = '﻿' + body('10', '20', '30');
+    const synced = body('12', '22', '32');
+    expect(calculateSubtitleOffset(original, synced)).toBe(2000);
+  });
+});
