@@ -25,6 +25,7 @@ use crate::models::FileStatus;
 use crate::processor::{Processor, RunError};
 use crate::runlog::RunLogs;
 use crate::settings::{normalize_updates, Settings};
+use crate::summary::LAST_RUN_SUMMARY;
 use crate::{changelog, schedule, web};
 
 pub const REPO: &str = "davidsteg/subsyncarr";
@@ -101,6 +102,7 @@ pub fn router(state: Arc<AppState>) -> Router {
         .route("/api/run/stop", post(stop_run))
         .route("/api/file/skip", post(skip_file))
         .route("/api/files/clear", post(|| async { Json(json!({ "success": true })) }))
+        .route("/api/diagnostics", get(diagnostics))
         .route("/api/skip-status", get(skip_status))
         .route("/api/skip-status/reset", post(reset_skip))
         .route("/api/skip-status/{*path}", get(skip_status_file))
@@ -259,6 +261,26 @@ async fn server_logs(State(s): S, Query(q): Query<LogsQ>) -> Response {
     }
     let (size, max, latest) = s.logs.info();
     Json(json!({ "size": size, "maxSize": max, "latestSeq": latest, "logs": entries })).into_response()
+}
+
+#[derive(Deserialize)]
+struct DiagQ {
+    limit: Option<i64>,
+}
+
+/// Why subtitles aren't syncing: the last run's per-reason summary plus files
+/// with strikes, permanently skipped engines and parked forced subs.
+async fn diagnostics(State(s): S, Query(q): Query<DiagQ>) -> ApiResult {
+    let limit = q.limit.unwrap_or(200).clamp(1, 2000);
+    let mut v = s.db.diagnostics(limit).await?;
+    let last: Value =
+        s.db.all_settings()
+            .await?
+            .get(LAST_RUN_SUMMARY)
+            .and_then(|raw| serde_json::from_str(raw).ok())
+            .unwrap_or(Value::Null);
+    v["lastRunSummary"] = last;
+    Ok(Json(v))
 }
 
 async fn skip_status(State(s): S) -> ApiResult {

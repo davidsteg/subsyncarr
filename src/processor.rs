@@ -25,6 +25,7 @@ use crate::runlog::RunLogs;
 use crate::scanner::{self, mtime_ms, ScanOptions};
 use crate::settings::Settings;
 use crate::srt;
+use crate::summary::{failure_category, format_attempts, Attempt, Category, RunSummary, ScanStats, LAST_RUN_SUMMARY};
 use crate::video::{find_matching_video, srt_stem, DirectoryCache};
 
 /// Engines whose reference argument may be a subtitle instead of a video.
@@ -72,6 +73,7 @@ struct RunCtx {
     run: Arc<ActiveRun>,
     settings: Settings,
     dir_cache: DirectoryCache,
+    summary: Mutex<RunSummary>,
 }
 
 #[derive(Clone, Copy, PartialEq)]
@@ -203,7 +205,12 @@ impl Processor {
         };
         let this = self.clone();
         tokio::spawn(async move {
-            let ctx = Arc::new(RunCtx { run: run.clone(), settings, dir_cache: DirectoryCache::new() });
+            let ctx = Arc::new(RunCtx {
+                run: run.clone(),
+                settings,
+                dir_cache: DirectoryCache::new(),
+                summary: Mutex::new(RunSummary::new(&run.id, run.dry_run)),
+            });
             if let Err(e) = this.clone().process_run(ctx, scan).await {
                 error!("Run {} failed: {e:#}", run.id);
                 this.log(format!("Run failed: {e:#}"));
@@ -259,6 +266,25 @@ impl Processor {
 
     async fn process_run(self: Arc<Self>, ctx: Arc<RunCtx>, scan_cfg: ScanConfig) -> anyhow::Result<()> {
         let run = ctx.run.clone();
+        {
+            // Everything that decides a file's fate, in one line: the first
+            // thing to check when a run's results look wrong.
+            let s = &ctx.settings;
+            let (a, b) = (&s.default_engine, &s.fallback_engine);
+            self.log(format!(
+                "Effective config: engines={a}+{b}, agreement≤{}ms, maxShift={}ms, deleteAfter={} strikes, \
+                 timeouts={a}:{}s/{b}:{}s, anchor={}, concurrency={}, dryRun={}, exclude={:?}",
+                s.engine_agreement_threshold_ms,
+                s.max_subtitle_shift_ms,
+                s.not_fitting_delete_threshold,
+                s.timeout_ms(a) / 1000,
+                s.timeout_ms(b) / 1000,
+                s.anchor_alignment,
+                s.max_concurrent_tasks.max(1),
+                run.dry_run,
+                scan_cfg.exclude_paths.iter().map(|p| p.display().to_string()).collect::<Vec<_>>()
+            ));
+        }
         self.log("Scanning for subtitle files...");
         self.log(format!(
             "Scan paths: {:?}",
@@ -327,6 +353,12 @@ impl Processor {
         }
 
         let files = scan.files;
+        ctx.summary.lock().unwrap().scan = ScanStats {
+            found: scan.total_found,
+            need_sync: files.len(),
+            already_synced: scan.already_synced,
+            parked: scan.parked,
+        };
         self.log(format!("Found {} subtitle files", files.len()));
         let total_engines = files.len() as i64 * self.cfg.include_engines.len() as i64;
         self.db.set_run_totals(&run.id, files.len() as i64, total_engines).await?;
@@ -402,7 +434,39 @@ impl Processor {
             .await;
 
         self.log("All files processed");
+        self.finish_summary(&ctx).await;
         Ok(())
+    }
+
+    /// Log the per-reason run summary and store it for `/api/diagnostics`.
+    async fn finish_summary(&self, ctx: &RunCtx) {
+        let summary = {
+            let mut s = ctx.summary.lock().unwrap();
+            s.finished_at = Some(crate::now_ms());
+            s.clone()
+        };
+        for line in summary.format() {
+            self.log(line);
+        }
+        if let Ok(json) = serde_json::to_string(&summary) {
+            if let Err(e) = self.db.set_settings(&[(LAST_RUN_SUMMARY.to_string(), json)]).await {
+                error!("Could not store run summary: {e}");
+            }
+        }
+    }
+
+    /// One greppable line per file with the verdict and every engine's result.
+    fn log_decision(&self, ctx: &RunCtx, path: &Path, c: Category, attempts: &[Attempt], extra: &[String]) {
+        let parts: Vec<String> =
+            std::iter::once(format_attempts(attempts)).chain(extra.iter().cloned()).filter(|p| !p.is_empty()).collect();
+        let detail = parts.join(" | ");
+        self.log(format!(
+            "▶ {}: {}{}",
+            c.as_str(),
+            name_of(path),
+            if detail.is_empty() { String::new() } else { format!(" | {detail}") }
+        ));
+        ctx.summary.lock().unwrap().record(c, &ps(path), &detail);
     }
 
     /// Sync the anchor against the video, then align followers sub-to-sub
@@ -530,7 +594,7 @@ impl Processor {
     }
 
     async fn skipped(&self, ctx: &RunCtx, path: &Path, why: &str) -> FileOutcome {
-        self.log(format!("Skipped ({why}): {}", name_of(path)));
+        self.log_decision(ctx, path, Category::Cancelled, &[], &[why.to_string()]);
         self.finish_file(ctx, path, FileStatus::Skipped, RunCounter::Skipped, None).await;
         FileOutcome::other("cancelled")
     }
@@ -606,7 +670,7 @@ impl Processor {
         .await;
 
         let Some(video) = video else {
-            self.log(format!("No matching video found for: {name}"));
+            self.log_decision(ctx, path, Category::NoVideo, &[], &[]);
             self.finish_file(ctx, path, FileStatus::Error, RunCounter::Failed, None).await;
             return FileOutcome::other("no_video");
         };
@@ -656,6 +720,7 @@ impl Processor {
         // Engines that ran and rejected their result as a too-large shift —
         // the only evidence besides disagreement that the subtitle doesn't fit.
         let mut mismatch_reports = 0;
+        let mut attempts: Vec<Attempt> = Vec::new();
         let forced = anchor::is_forced_subtitle(path);
         let no_split = forced && reference == video;
         if forced {
@@ -675,6 +740,7 @@ impl Processor {
                     ..Default::default()
                 };
                 self.engine_completed(ctx, path, engine, &r).await;
+                attempts.push(Attempt::failed(engine, &r));
                 continue;
             }
             self.restore(path, original.as_deref());
@@ -692,7 +758,7 @@ impl Processor {
 
             let (run, content) = self.align(ctx, engine, path, &reference, original.as_deref(), no_split, token).await;
             if run.cancelled || token.is_cancelled() {
-                self.log(format!("Skipped (cancelled during {engine}): {name}"));
+                self.log_decision(ctx, path, Category::Cancelled, &attempts, &[format!("during {engine}")]);
                 self.restore(path, original.as_deref());
                 self.finish_file(ctx, path, FileStatus::Skipped, RunCounter::Skipped, None).await;
                 return FileOutcome::other("cancelled");
@@ -702,12 +768,14 @@ impl Processor {
                 Some(c) => {
                     let shift = run.result.offset_ms.unwrap_or(0);
                     self.log(format!("{engine} aligned (shift {shift}ms): {name}"));
+                    attempts.push(Attempt::ok(engine, shift));
                     alignments.push((engine.clone(), c, shift));
                 }
                 None => {
                     if run.result.shift_too_large {
                         mismatch_reports += 1;
                     }
+                    attempts.push(Attempt::failed(engine, &run.result));
                     self.log(format!("{engine} could not align: {}", run.result.message))
                 }
             }
@@ -717,6 +785,13 @@ impl Processor {
             alignments.iter().map(|(e, _, s)| Alignment { engine: e.clone(), shift_ms: *s }).collect();
         let disagreement = if alignments.len() == 2 { (alignments[0].2 - alignments[1].2).abs() } else { 0 };
         let sync_info = (mode, anchor.as_deref());
+        let mut extra = Vec::new();
+        if let Some(a) = anchor.as_deref() {
+            extra.push(format!("via anchor {}", name_of(a)));
+        }
+        if ctx.run.dry_run {
+            extra.push("dry run".to_string());
+        }
 
         match decide_outcome(&data, threshold, mismatch_reports) {
             Outcome::Failed => {
@@ -726,6 +801,7 @@ impl Processor {
                     "✗ No engine could run successfully — leaving subtitle unchanged, will retry next run: {name}"
                 ));
                 self.restore(path, original.as_deref());
+                self.log_decision(ctx, path, failure_category(&attempts), &attempts, &extra);
                 self.finish_file(ctx, path, FileStatus::Error, RunCounter::Failed, Some(sync_info)).await;
                 FileOutcome::other("failed")
             }
@@ -738,7 +814,10 @@ impl Processor {
                         alignments[0].0, alignments[1].0
                     ));
                 }
-                self.handle_not_fitting(ctx, path, original.as_deref()).await;
+                let base = if alignments.is_empty() { Category::NotFittingShift } else { Category::NotFittingDisagree };
+                let (category, note) = self.handle_not_fitting(ctx, path, original.as_deref(), base).await;
+                extra.insert(0, note);
+                self.log_decision(ctx, path, category, &attempts, &extra);
                 self.finish_file(ctx, path, FileStatus::NotFitting, RunCounter::NotFitting, Some(sync_info)).await;
                 FileOutcome::other("not_fitting")
             }
@@ -755,6 +834,9 @@ impl Processor {
                     ));
                 }
                 self.commit_sync(ctx, path, &engine, &content, shift, original.as_deref(), mode).await;
+                let category = if data.len() == 1 { Category::SyncedSingleEngine } else { Category::Synced };
+                extra.insert(0, format!("kept {engine}"));
+                self.log_decision(ctx, path, category, &attempts, &extra);
                 self.finish_file(ctx, path, FileStatus::Completed, RunCounter::Completed, Some(sync_info)).await;
                 FileOutcome {
                     kind: FileOutcomeKind::Completed,
@@ -859,13 +941,19 @@ impl Processor {
 
     /// Strike system: delete only after N consecutive not-fitting runs, so a
     /// one-off transient failure never deletes a good subtitle.
-    async fn handle_not_fitting(&self, ctx: &RunCtx, path: &Path, original: Option<&[u8]>) {
+    async fn handle_not_fitting(
+        &self,
+        ctx: &RunCtx,
+        path: &Path,
+        original: Option<&[u8]>,
+        base: Category,
+    ) -> (Category, String) {
         let name = name_of(path);
         let threshold = ctx.settings.not_fitting_delete_threshold;
         if ctx.run.dry_run {
             self.restore(path, original);
             self.log(format!("[DRY RUN] Would record not-fitting strike (threshold: {threshold}): {name}"));
-            return;
+            return (base, "no strike recorded".into());
         }
         let p = ps(path);
         let strikes = self.db.record_not_fitting_strike(&p).await.unwrap_or(1);
@@ -883,12 +971,13 @@ impl Processor {
                 self.log(format!(
                     "⚠ Forced subtitle didn't fit {strikes} run(s) in a row — keeping it unchanged and parking it until the file changes: {name}"
                 ));
+                return (Category::ForcedParked, format!("strike {strikes}/{threshold}, parked"));
             } else {
                 self.log(format!(
                     "⚠ Forced subtitle not fitting (strike {strikes}/{threshold}) — keeping it unchanged (forced subs are never deleted): {name}"
                 ));
             }
-            return;
+            return (Category::ForcedKept, format!("strike {strikes}/{threshold}"));
         }
         if strikes >= threshold {
             match std::fs::remove_file(path) {
@@ -898,11 +987,13 @@ impl Processor {
             }
             let _ = self.db.reset_not_fitting_strikes(&p).await;
             let _ = self.db.remove_from_sync_cache(&[p]).await;
+            (Category::Deleted, format!("strike {strikes}/{threshold}, deleted"))
         } else {
             self.restore(path, original);
             self.log(format!(
                 "⚠ Not fitting (strike {strikes}/{threshold}) — keeping subtitle, will retry next run: {name}"
             ));
+            (base, format!("strike {strikes}/{threshold}"))
         }
     }
 }

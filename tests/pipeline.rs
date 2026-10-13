@@ -61,6 +61,9 @@ async fn full_pipeline() {
     let wrong = write_case(&media, "Wrong", "Wrong.mkv", &["Wrong.wrong.en.srt"]);
     let forced = write_case(&media, "Forced", "Forced.mkv", &["Forced.wrong.en.forced.srt"]);
     // Names with shell metacharacters must reach the engine untouched.
+    // alass moving one intro cue by a minute is not a mismatch: the 30 s limit
+    // applies to the median shift.
+    let intro = write_case(&media, "Intro", "Intro.mkv", &["Intro.intro.en.srt"]);
     let quoted = write_case(&media, "It's $HOME `x`", "It's $HOME `x`.mp4", &["It's $HOME `x`.en.srt"]);
 
     // SAFETY: set before any other thread in this test binary reads the env.
@@ -83,7 +86,7 @@ async fn full_pipeline() {
 
     let run = st.db.get_run(&run_id).await.unwrap().unwrap();
     assert_eq!(run.status, "completed");
-    assert_eq!(run.total_files, 6);
+    assert_eq!(run.total_files, 7);
     let (files, _) = st.db.files_paginated(&run_id, 100, 0, None).await.unwrap();
     let status_of =
         |p: &PathBuf| files.iter().find(|f| Path::new(&f.file_path) == p).map(|f| f.status.clone()).unwrap_or_default();
@@ -92,6 +95,23 @@ async fn full_pipeline() {
     assert_eq!(status_of(&good[0]), "completed");
     assert!(std::fs::read_to_string(&good[0]).unwrap().contains("00:00:11,500 -->"));
     assert_eq!(status_of(&quoted[0]), "completed");
+    assert_eq!(status_of(&intro[0]), "completed");
+
+    // One verdict line per file plus the closing summary in the run log.
+    let log_text = st.runlogs.read(&run_id);
+    for line in [
+        "Effective config: engines=alass+ffsubsync",
+        "▶ synced: Good.en.srt | alass ✓ +1500ms, ffsubsync ✓ +1500ms | kept alass",
+        "▶ failed_error: Broken.broken.en.srt | alass ✗ error (could not decode audio), ffsubsync ✗ error (could not decode audio)",
+        "▶ deleted: Mismatch.mismatch.en.srt | alass ✓ +0ms, ffsubsync ✓ +20000ms | strike 1/1, deleted",
+        "▶ deleted: Wrong.wrong.en.srt",
+        "▶ forced_parked: Forced.wrong.en.forced.srt",
+        "===== Run summary =====",
+        "Scan: 7 subtitle(s) found, 7 needed sync, 0 already synced",
+        "-- failed: engine error (no strike) (1):",
+    ] {
+        assert!(log_text.contains(line), "missing {line:?} in run log:\n{log_text}");
+    }
 
     // Engines disagree: original restored, one strike, threshold 1 → deleted.
     assert_eq!(status_of(&mismatch[0]), "not_fitting");
@@ -165,6 +185,11 @@ async fn full_pipeline() {
     assert_eq!(settings["theme"], "dark");
     let (_, stats) = api("GET", "/api/stats", None).await;
     assert!(stats.is_object(), "{stats}");
+    let (_, diag) = api("GET", "/api/diagnostics", None).await;
+    assert_eq!(diag["totals"]["parked"], 1, "{diag}");
+    assert_eq!(diag["parked"][0]["reason"], "forced_not_fitting");
+    assert_eq!(diag["lastRunSummary"]["runId"], run3.id);
+    assert_eq!(diag["lastRunSummary"]["scan"]["needSync"], 2);
     let (code, _) = api("GET", "/api/nope", None).await;
     assert_eq!(code, 404);
 }

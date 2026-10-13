@@ -16,6 +16,7 @@ pub mod schedule;
 pub mod server;
 pub mod settings;
 pub mod srt;
+pub mod summary;
 pub mod video;
 pub mod web;
 

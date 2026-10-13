@@ -1,3 +1,17 @@
+## [2.0.1] — 2026-10-13
+
+### Added
+
+- **Sync diagnostics** (ported from the 1.x line):
+  - Each run log starts with the settings in effect.
+  - Each subtitle gets one line, `▶ <outcome>: <file> | <engine results> | <context>`, with each engine's result and error.
+  - Each run ends with a summary that counts subtitles by outcome and lists up to 25 problem files per reason.
+- **`GET /api/diagnostics`** returns the last run's summary plus every file with not-fitting strikes, a permanently skipped engine, or a parked forced sub.
+
+### Fixed
+
+- **30-second shift limit now uses the median cue shift.** It used to compare only the first cue, so alass moving an intro cue by a minute rejected a good sync as "shift too large".
+
 ## [2.0.0] — 2026-10-13
 
 ### Changed

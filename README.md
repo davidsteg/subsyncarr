@@ -111,9 +111,12 @@ The web UI uses a JSON API that you can also script against. Endpoints and WebSo
 ```bash
 curl -X POST localhost:3000/api/run/start -H 'content-type: application/json' -d '{"paths":["/media/Movies/Alien (1979)"]}'
 curl "localhost:3000/api/logs?level=error&format=text"
+curl localhost:3000/api/diagnostics   # why subtitles aren't syncing
 ```
 
 ## Troubleshooting
+
+Every run log starts with the settings in effect, has one `▶ <outcome>: <file> | <engine results>` line per subtitle (for example `▶ failed_timeout: Movie.en.srt | alass ✗ timeout (…), ffsubsync ✓ +1200ms`), and ends with a summary that counts subtitles by outcome and lists the problem files. `GET /api/diagnostics` returns that summary together with every file that has strikes, a permanently skipped engine or a parked forced sub.
 
 - **Nothing is processed.** Check the Dashboard. If it says `SCAN_PATHS` is not configured, set it to your mounted media directory.
 - **Permission denied writing subtitles.** Set `PUID`/`PGID` to the owner of your media files (`id -u`, `id -g`).

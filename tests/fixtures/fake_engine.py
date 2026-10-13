@@ -24,6 +24,8 @@ if "mismatch" in name:
     shift = 0 if engine == "alass" else 20000
 elif "wrong" in name:
     shift = 60000
+elif "intro" in name:
+    shift = None  # only the first cue moves, by a minute
 else:
     shift = 1500
 
@@ -31,8 +33,14 @@ def fmt(ms):
     h, ms = divmod(ms, 3600000); m, ms = divmod(ms, 60000); s, ms = divmod(ms, 1000)
     return f"{h:02}:{m:02}:{s:02},{ms:03}"
 
+seen = 0
+
 def move(m):
+    global seen
+    seen += 1
     t = int(m[1]) * 3600000 + int(m[2]) * 60000 + int(m[3]) * 1000 + int(m[4])
+    if shift is None:
+        return fmt(t + 60000) if seen <= 2 else fmt(t)
     return fmt(max(0, t + shift))
 
 data = open(src, encoding="utf-8-sig").read()

@@ -86,6 +86,7 @@ interface ScanProgress {
 | POST | `/api/run/start` | body `{ paths?: string[], dryRun?: boolean }` → `{ runId }`; `409` if a run is active |
 | POST | `/api/run/stop` | `{ success: true }` |
 | POST | `/api/file/skip` | body `{ filePath }` → `{ success: true }` |
+| GET | `/api/diagnostics?limit=200` | `{ lastRunSummary: { runId, startedAt, finishedAt, dryRun, scan: { found, needSync, alreadySynced, parked }, counts: Record<Category, number>, samples: Record<Category, string[]> } \| null, strikes: [{ file_path, consecutive_strikes, last_strike_time }], skippedEngines: [{ file_path, engine, consecutive_failures, last_failure_time }], parked: [{ file_path, reason, parked_at }], totals: { strikes, skippedEngines, parked } }`. `Category` is one of `synced, synced_single_engine, not_fitting_disagree, not_fitting_shift, deleted, forced_kept, forced_parked, failed_timeout, failed_error, failed_engines_skipped, no_video, cancelled`; `samples` lists up to 25 problem files per category |
 | GET | `/api/skip-status` | `{ totalSkipped, skippedByEngine: Record<string, number> }` |
 | POST | `/api/skip-status/reset` | body `{ filePath, engine? }` → `{ success: true }` |
 | GET | `/api/media?path=<abs path>` (also `/api/media/<abs path>`) | `{ filePath, notFittingStrikes, failureTracking: [{ engine, consecutive_failures, last_failure_time, last_success_time, is_skipped }], syncHistory: [{ runId, runStartTime, runStatus, fileStatus, engines: Record<string, EngineResult>, syncMode, anchorPath, updatedAt }] }` |

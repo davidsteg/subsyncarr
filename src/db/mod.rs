@@ -538,6 +538,57 @@ impl Db {
         Ok(json!({ "totalSkipped": total, "skippedByEngine": by }))
     }
 
+    /// Everything that keeps a subtitle from syncing: files with not-fitting
+    /// strikes, engines permanently skipped per file, and parked forced subs.
+    /// Newest first, at most `limit` rows each.
+    pub async fn diagnostics(&self, limit: i64) -> sqlx::Result<Value> {
+        let strikes = sqlx::query(
+            "SELECT file_path, consecutive_strikes, last_strike_time FROM not_fitting_tracking
+             WHERE consecutive_strikes > 0 ORDER BY last_strike_time DESC LIMIT ?",
+        )
+        .bind(limit)
+        .fetch_all(&self.pool)
+        .await?;
+        let skipped = sqlx::query(
+            "SELECT file_path, engine, consecutive_failures, last_failure_time FROM engine_failure_tracking
+             WHERE is_skipped = 1 ORDER BY last_failure_time DESC LIMIT ?",
+        )
+        .bind(limit)
+        .fetch_all(&self.pool)
+        .await?;
+        let parked =
+            sqlx::query("SELECT file_path, reason, parked_at FROM parked_files ORDER BY parked_at DESC LIMIT ?")
+                .bind(limit)
+                .fetch_all(&self.pool)
+                .await?;
+        let (n_strikes, n_skipped, n_parked): (i64, i64, i64) = sqlx::query_as(
+            "SELECT (SELECT COUNT(*) FROM not_fitting_tracking WHERE consecutive_strikes > 0),
+                    (SELECT COUNT(*) FROM engine_failure_tracking WHERE is_skipped = 1),
+                    (SELECT COUNT(*) FROM parked_files)",
+        )
+        .fetch_one(&self.pool)
+        .await?;
+        Ok(json!({
+            "strikes": strikes.iter().map(|r| json!({
+                "file_path": r.get::<String, _>("file_path"),
+                "consecutive_strikes": r.get::<i64, _>("consecutive_strikes"),
+                "last_strike_time": r.get::<Option<i64>, _>("last_strike_time"),
+            })).collect::<Vec<_>>(),
+            "skippedEngines": skipped.iter().map(|r| json!({
+                "file_path": r.get::<String, _>("file_path"),
+                "engine": r.get::<String, _>("engine"),
+                "consecutive_failures": r.get::<i64, _>("consecutive_failures"),
+                "last_failure_time": r.get::<Option<i64>, _>("last_failure_time"),
+            })).collect::<Vec<_>>(),
+            "parked": parked.iter().map(|r| json!({
+                "file_path": r.get::<String, _>("file_path"),
+                "reason": r.get::<Option<String>, _>("reason"),
+                "parked_at": r.get::<i64, _>("parked_at"),
+            })).collect::<Vec<_>>(),
+            "totals": { "strikes": n_strikes, "skippedEngines": n_skipped, "parked": n_parked },
+        }))
+    }
+
     // ---------------------------------------------------- not-fitting strikes
 
     pub async fn record_not_fitting_strike(&self, path: &str) -> sqlx::Result<i64> {

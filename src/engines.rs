@@ -145,7 +145,7 @@ pub async fn run_in_place(
     let stem = srt_stem(srt_path);
     let temp = srt_path.with_file_name(format!(".{stem}.{engine}-tmp.srt"));
     let backup = srt_path.with_file_name(format!(".{stem}.srt.bak"));
-    let original_first = srt::first_cue_ms_file(srt_path);
+    let original = std::fs::read(srt_path).ok();
 
     let done = |mut r: EngineResult, cancelled: bool| {
         r.duration = started.elapsed().as_millis() as i64;
@@ -201,15 +201,18 @@ pub async fn run_in_place(
                 restore();
                 return done(fail(format!("{engine} did not produce output file for {name}"), &stdout, &stderr), false);
             }
-            let Some(new_first) = srt::first_cue_ms_file(&temp) else {
+            let output = std::fs::read(&temp).unwrap_or_default();
+            if !srt::has_cues(&output) {
                 restore();
                 return done(
                     fail(format!("{engine} produced empty or unparseable output for {name}"), &stdout, &stderr),
                     false,
                 );
-            };
-            if let Some(orig) = original_first {
-                let shift = (new_first - orig).abs();
+            }
+            // Median shift over all cues, not the first cue: alass in split
+            // mode often moves only an intro cue, which said nothing about fit.
+            if let Some(orig) = &original {
+                let shift = srt::subtitle_offset_ms(orig, &output).abs();
                 if shift > max_shift_ms {
                     restore();
                     let mut r = fail(
