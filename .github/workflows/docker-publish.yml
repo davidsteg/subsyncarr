@@ -1,7 +1,8 @@
 name: Build and Publish Docker Image
 
-# Builds and pushes the image to Docker Hub, then publishes a GitHub Release
-# with the notes from the matching ## [<version>] section of CHANGELOG.md.
+# Publishes a GitHub Release with the notes from the matching ## [<version>]
+# section of CHANGELOG.md and, alongside it, builds and pushes the image to
+# Docker Hub. The release doesn't wait for the image build.
 #
 # Normally called by release.yml, which creates the version tag after CI
 # passes on master. A version tag pushed by hand (no "v" prefix, e.g. 2.1.0)
@@ -24,10 +25,12 @@ permissions:
   contents: write # needed to create the GitHub Release below
 
 jobs:
-  docker:
+  release:
     runs-on: ubuntu-latest
     env:
       VERSION: ${{ inputs.version || github.ref_name }}
+    outputs:
+      latest: ${{ steps.latest.outputs.latest }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -42,38 +45,6 @@ jobs:
           if [ "$NEWEST" = "$VERSION" ]; then IS_LATEST=true; else IS_LATEST=false; fi
           echo "Newest tag: $NEWEST, building: $VERSION, latest: $IS_LATEST"
           echo "latest=$IS_LATEST" >> "$GITHUB_OUTPUT"
-
-      - name: Docker meta
-        id: meta
-        uses: docker/metadata-action@v5
-        with:
-          images: davidsteg/subsyncarr
-          tags: |
-            type=raw,value=${{ env.VERSION }}
-            type=raw,value=latest,enable=${{ steps.latest.outputs.latest }}
-
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
-
-      - name: Login to Docker Hub
-        uses: docker/login-action@v3
-        with:
-          username: ${{ secrets.DOCKERHUB_USERNAME }}
-          password: ${{ secrets.DOCKERHUB_TOKEN }}
-
-      - name: Build and push
-        uses: docker/build-push-action@v5
-        with:
-          context: .
-          file: ./Dockerfile
-          push: true
-          # amd64 only — no QEMU emulation needed. Re-add linux/arm64 (and the
-          # Set up QEMU step) if this ever needs to run on ARM hardware.
-          platforms: linux/amd64
-          tags: ${{ steps.meta.outputs.tags }}
-          labels: ${{ steps.meta.outputs.labels }}
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
 
       - name: Extract changelog section for this version
         run: |
@@ -122,3 +93,46 @@ jobs:
               --notes-file release_notes.md \
               --latest=${{ steps.latest.outputs.latest }}
           fi
+
+  docker:
+    needs: release
+    runs-on: ubuntu-latest
+    env:
+      VERSION: ${{ inputs.version || github.ref_name }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          ref: refs/tags/${{ inputs.version || github.ref_name }}
+
+      - name: Docker meta
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: davidsteg/subsyncarr
+          tags: |
+            type=raw,value=${{ env.VERSION }}
+            type=raw,value=latest,enable=${{ needs.release.outputs.latest }}
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Login to Docker Hub
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Build and push
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          file: ./Dockerfile
+          push: true
+          # amd64 only — no QEMU emulation needed. Re-add linux/arm64 (and the
+          # Set up QEMU step) if this ever needs to run on ARM hardware.
+          platforms: linux/amd64
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
