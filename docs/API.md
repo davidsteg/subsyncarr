@@ -106,7 +106,7 @@ interface ScanProgress {
 | GET | `/api/runs/:id/files?status=&page=1&limit=500` | `{ files: FileResult[], total, page, limit, totalPages }` |
 | GET | `/api/runs/:id/logs` | `{ logs: string }` |
 | GET | `/api/logs?limit=500&level=all\|log\|warn\|error&search=&since=<seq>&format=text` | `{ size, maxSize, latestSeq, logs: [{ seq, timestamp, level, message }] }` (or `text/plain` with `format=text`) |
-| POST | `/api/run/start` | body `{ paths?: string[], dryRun?: boolean }` → `{ runId }`; `409` if a run is active |
+| POST | `/api/run/start` | body `{ paths?: string[], dryRun?: boolean, fresh?: boolean, resetFailures?: boolean }` → `{ runId }`; `409` if a run is active. `fresh` reprocesses every subtitle in scope, ignoring the sync cache (strikes and deletion at the threshold still apply); `resetFailures` (with `fresh`) first clears not-fitting strikes, engine skips and parked files under the scanned paths |
 | POST | `/api/run/stop` | `{ success: true }` |
 | POST | `/api/file/skip` | body `{ filePath }` → `{ success: true }` |
 | GET | `/api/diagnostics?limit=200` | `{ lastRunSummary: { runId, startedAt, finishedAt, dryRun, scan: { found, needSync, alreadySynced, parked }, counts: Record<Category, number>, samples: Record<Category, string[]> } \| null, strikes: [{ file_path, consecutive_strikes, last_strike_time }], skippedEngines: [{ file_path, engine, consecutive_failures, last_failure_time }], parked: [{ file_path, reason, parked_at }], totals: { strikes, skippedEngines, parked } }`. `Category` is one of `synced, synced_single_engine, not_fitting_disagree, not_fitting_shift, deleted, forced_kept, forced_parked, failed_timeout, failed_error, failed_engines_skipped, no_video, cancelled`; `samples` lists up to 25 problem files per category |

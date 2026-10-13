@@ -118,7 +118,7 @@ export const api = {
       level: opts.level && opts.level !== 'all' ? opts.level : undefined,
       search: opts.search,
     }),
-  startRun: (body: { paths?: string[]; dryRun?: boolean } = {}) => postJson<{ runId: string }>('/api/run/start', body),
+  startRun: (body: StartRunBody = {}) => postJson<{ runId: string }>('/api/run/start', body),
   stopRun: () => postJson<Success>('/api/run/stop'),
   skipFile: (filePath: string) => postJson<Success>('/api/file/skip', { filePath }),
   skipStatus: () => getJson<SkipStatus>('/api/skip-status'),
@@ -141,4 +141,13 @@ export function errorText(e: unknown): string {
   if (e instanceof ApiError) return e.status ? `${e.message} (HTTP ${e.status})` : e.message;
   if (e instanceof Error) return e.message;
   return String(e);
+}
+
+export interface StartRunBody {
+  paths?: string[];
+  dryRun?: boolean;
+  /** Reprocess every subtitle, ignoring the sync cache. */
+  fresh?: boolean;
+  /** With `fresh`: also clear strikes, engine skips and parked forced subs. */
+  resetFailures?: boolean;
 }

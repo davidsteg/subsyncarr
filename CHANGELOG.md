@@ -1,3 +1,12 @@
+## [2.2.0] — 2026-10-13
+
+Fresh scan: reprocess the whole library
+
+### Added
+
+- **Fresh scan.** A new "Fresh scan…" button on the Dashboard runs the engines on every subtitle again, ignoring the "already synced" cache. The confirmation warns that reprocessing can lead to deletions: a subtitle that doesn't fit gets a strike and is deleted at the strike threshold as usual (forced subtitles are parked). An opt-in checkbox, off by default, also clears not-fitting strikes, engine skips and parked forced subtitles first, so every file starts over.
+- API: `fresh` and `resetFailures` on `POST /api/run/start`.
+
 ## [2.1.0] — 2026-10-13
 
 Embedded subtitle references, webhooks, notifications, sync confidence scores and manual re-sync

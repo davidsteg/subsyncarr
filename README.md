@@ -148,6 +148,7 @@ The web UI uses a JSON API that you can also script against. Endpoints and WebSo
 
 ```bash
 curl -X POST localhost:3000/api/run/start -H 'content-type: application/json' -d '{"paths":["/media/Movies/Alien (1979)"]}'
+curl -X POST localhost:3000/api/run/start -H 'content-type: application/json' -d '{"fresh":true}'   # reprocess everything
 curl "localhost:3000/api/logs?level=error&format=text"
 curl localhost:3000/api/diagnostics   # why subtitles aren't syncing
 ```

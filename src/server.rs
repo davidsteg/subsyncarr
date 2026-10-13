@@ -25,7 +25,7 @@ use crate::integrations::webhook::{self, TriggerQueue};
 use crate::integrations::{self, media, notify, PathMap};
 use crate::logbuf::{self, LogBuffer};
 use crate::models::FileStatus;
-use crate::processor::{Processor, RunError};
+use crate::processor::{FreshScan, Processor, RunError};
 use crate::runlog::RunLogs;
 use crate::settings::{normalize_updates, Settings};
 use crate::summary::LAST_RUN_SUMMARY;
@@ -461,15 +461,20 @@ async fn review_file(State(s): S, Json(b): Json<ManualBody>) -> ApiResult {
     Ok(Json(json!({ "success": true })))
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, Default)]
 #[serde(rename_all = "camelCase")]
 struct StartBody {
     paths: Option<Vec<String>>,
     dry_run: Option<bool>,
+    /// Reprocess every subtitle, ignoring the sync cache.
+    fresh: Option<bool>,
+    /// With `fresh`: also clear strikes, engine skips and parked files.
+    reset_failures: Option<bool>,
 }
 
 async fn start_run(State(s): S, body: Option<Json<StartBody>>) -> ApiResult {
-    let body = body.map(|b| b.0).unwrap_or(StartBody { paths: None, dry_run: None });
+    let body = body.map(|b| b.0).unwrap_or_default();
+    let fresh = (body.fresh == Some(true)).then(|| FreshScan { reset_failures: body.reset_failures == Some(true) });
     let paths: Option<Vec<PathBuf>> = body.paths.map(|v| {
         v.into_iter()
             .map(|p| p.trim().to_string())
@@ -478,13 +483,18 @@ async fn start_run(State(s): S, body: Option<Json<StartBody>>) -> ApiResult {
             .collect()
     });
     info!(
-        "POST /api/run/start{}{}",
+        "POST /api/run/start{}{}{}",
         paths.as_ref().map(|p| format!(" (custom paths: {p:?})")).unwrap_or_else(|| " (default paths)".into()),
+        match fresh {
+            Some(f) if f.reset_failures => " [FRESH, reset failures]",
+            Some(_) => " [FRESH]",
+            None => "",
+        },
         if body.dry_run == Some(true) { " [DRY RUN]" } else { "" }
     );
     // Explicit dryRun:true forces a dry run; otherwise the saved setting.
     let dry = if body.dry_run == Some(true) { Some(true) } else { None };
-    match s.processor.start_run(paths, dry).await {
+    match s.processor.start_run_with(paths, dry, fresh).await {
         Ok(id) => Ok(Json(json!({ "runId": id }))),
         Err(RunError::AlreadyRunning) => Err(ApiError(StatusCode::CONFLICT, RunError::AlreadyRunning.to_string())),
         Err(e) => Err(ApiError(StatusCode::INTERNAL_SERVER_ERROR, e.to_string())),

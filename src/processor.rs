@@ -142,6 +142,13 @@ struct FileCtx {
     anchor_cues: usize,
 }
 
+/// Options of a fresh scan.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct FreshScan {
+    /// Also clear not-fitting strikes, engine skips and parked forced subs.
+    pub reset_failures: bool,
+}
+
 pub struct Processor {
     db: Db,
     cfg: Arc<Config>,
@@ -251,6 +258,16 @@ impl Processor {
         paths: Option<Vec<PathBuf>>,
         dry_run: Option<bool>,
     ) -> Result<String, RunError> {
+        self.start_run_with(paths, dry_run, None).await
+    }
+
+    /// `fresh` reprocesses every subtitle in scope, ignoring the sync cache.
+    pub async fn start_run_with(
+        self: &Arc<Self>,
+        paths: Option<Vec<PathBuf>>,
+        dry_run: Option<bool>,
+        fresh: Option<FreshScan>,
+    ) -> Result<String, RunError> {
         let settings = self.settings.read().unwrap().clone();
         let run = self.begin_run(dry_run.unwrap_or(settings.dry_run), false).await?;
         let id = run.id.clone();
@@ -268,7 +285,7 @@ impl Processor {
                 summary: Mutex::new(RunSummary::new(&run.id, run.dry_run)),
                 embedded,
             });
-            if let Err(e) = this.clone().process_run(ctx.clone(), scan).await {
+            if let Err(e) = this.clone().process_run(ctx.clone(), scan, fresh).await {
                 error!("Run {} failed: {e:#}", run.id);
                 this.log(format!("Run failed: {e:#}"));
             }
@@ -406,7 +423,12 @@ impl Processor {
 
     // ------------------------------------------------------------- the run
 
-    async fn process_run(self: Arc<Self>, ctx: Arc<RunCtx>, scan_cfg: ScanConfig) -> anyhow::Result<()> {
+    async fn process_run(
+        self: Arc<Self>,
+        ctx: Arc<RunCtx>,
+        scan_cfg: ScanConfig,
+        fresh: Option<FreshScan>,
+    ) -> anyhow::Result<()> {
         let run = ctx.run.clone();
         {
             // Everything that decides a file's fate, in one line: the first
@@ -434,9 +456,22 @@ impl Processor {
             scan_cfg.include_paths.iter().map(|p| p.display().to_string()).collect::<Vec<_>>()
         ));
 
-        let cache = self.db.load_sync_cache().await?;
-        let parked = self.db.load_parked().await?;
         let dry_run = run.dry_run;
+        if let Some(f) = fresh {
+            self.log("Fresh scan: ignoring the sync cache, every subtitle is reprocessed");
+            if f.reset_failures && !dry_run {
+                let roots: Vec<String> = scan_cfg.include_paths.iter().map(|p| ps(p)).collect();
+                let n = self.db.reset_failure_state(&roots).await?;
+                self.log(format!(
+                    "Fresh scan: cleared {} strike(s), {} engine skip(s) and {} parked file(s)",
+                    n.strikes, n.engine_skips, n.parked
+                ));
+            }
+        }
+        // A fresh scan starts from an empty cache; files it keeps are cached
+        // again as they finish, and the rest keep their old rows.
+        let cache = if fresh.is_some() { HashMap::new() } else { self.db.load_sync_cache().await? };
+        let parked = self.db.load_parked().await?;
         let threads = std::env::var("SCAN_CONCURRENCY").ok().and_then(|v| v.parse().ok()).unwrap_or(32usize).max(1);
         let scan_run = run.clone();
         let events = self.events.clone();

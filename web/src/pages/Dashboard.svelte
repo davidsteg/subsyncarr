@@ -21,6 +21,8 @@
   let customDry = $state(false);
   let dryConfirmOpen = $state(false);
   let stopConfirmOpen = $state(false);
+  let freshOpen = $state(false);
+  let freshReset = $state(false);
   let showAllLangs = $state(false);
 
   async function loadStats() {
@@ -73,6 +75,13 @@
     void startRun({ paths, dryRun: dry });
   }
 
+  function startFresh() {
+    const resetFailures = freshReset;
+    freshOpen = false;
+    freshReset = false;
+    void startRun({ fresh: true, resetFailures });
+  }
+
   const cfg = $derived(meta.config);
 </script>
 
@@ -94,6 +103,13 @@
         </button>
         <button class="btn" onclick={() => (dryConfirmOpen = true)} title="Run a full scan without writing or deleting any files">
           <Icon name="flask" size={16} /> Dry run
+        </button>
+        <button
+          class="btn"
+          onclick={() => (freshOpen = true)}
+          title="Reprocess every subtitle, including ones already synced"
+        >
+          <Icon name="refresh" size={16} /> Fresh scan…
         </button>
         <button class="btn primary" onclick={() => startRun()}>
           <Icon name="play" size={14} /> Start full run
@@ -309,6 +325,27 @@
   onconfirm={() => startRun({ dryRun: true })}
 />
 
+<Dialog bind:open={freshOpen} title="Reprocess every subtitle?" size="sm">
+  <p class="muted">
+    A fresh scan ignores the "already synced" cache and runs the engines on every subtitle in your library again.
+    On a large library this can take a long time.
+  </p>
+  <p class="warn-text">
+    <Icon name="alert" size={14} /> Reprocessing can lead to deletions: a subtitle that doesn't fit this time gets a
+    strike, and once it reaches the strike threshold it is deleted (forced subtitles are parked instead).
+  </p>
+  <label class="check">
+    <input type="checkbox" bind:checked={freshReset} />
+    <span>Also reset strikes, engine skips and parked forced subtitles</span>
+  </label>
+  {#snippet footer()}
+    <button class="btn" type="button" onclick={() => (freshOpen = false)}>Cancel</button>
+    <button class="btn danger" type="button" onclick={startFresh}>
+      <Icon name="refresh" size={14} /> Start fresh scan
+    </button>
+  {/snippet}
+</Dialog>
+
 <ConfirmDialog
   bind:open={stopConfirmOpen}
   title="Stop the current run?"
@@ -319,6 +356,13 @@
 />
 
 <style>
+  .warn-text {
+    display: flex;
+    gap: 8px;
+    align-items: flex-start;
+    color: var(--warn-text);
+  }
+
   .actions {
     justify-content: flex-end;
   }
