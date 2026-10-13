@@ -17,7 +17,7 @@ use tracing::{error, info};
 
 use crate::anchor::{self, VideoGroup};
 use crate::config::{Config, ScanConfig};
-use crate::db::{Db, FileUpdate, RunCounter};
+use crate::db::{Db, EngineRunRecord, FileUpdate, OutcomeRecord, RunCounter};
 use crate::decide::{decide_outcome, Alignment, Outcome, IN_SYNC_MS};
 use crate::embedded;
 use crate::engines::{self, sidecar_path, EngineRun};
@@ -87,11 +87,26 @@ struct RunCtx {
 
 struct PendingStrike {
     path: PathBuf,
+    meta: StatMeta,
     /// Content the verdict was about: a file replaced during the run gets no strike.
     hash: String,
     base: Category,
     attempts: Vec<Attempt>,
     extra: Vec<String>,
+}
+
+/// How a subtitle was synced, for its statistics row.
+#[derive(Clone, Copy)]
+struct StatMeta {
+    mode: Option<SyncMode>,
+    /// `audio`, `embedded`, `anchor` or `none`.
+    reference: &'static str,
+    /// The embedded-track pass didn't keep it; this verdict is from the audio retry.
+    retried: bool,
+}
+
+impl StatMeta {
+    const NONE: StatMeta = StatMeta { mode: None, reference: "none", retried: false };
 }
 
 /// Embedded-track references extracted during one run: at most one ffmpeg
@@ -668,6 +683,60 @@ impl Processor {
         ctx.summary.lock().unwrap().record(c, &ps(path), &detail);
     }
 
+    /// One row of statistics history per decided subtitle.
+    #[allow(clippy::too_many_arguments)]
+    async fn record_outcome(
+        &self,
+        ctx: &RunCtx,
+        path: &Path,
+        c: Category,
+        attempts: &[Attempt],
+        meta: StatMeta,
+        quality_score: Option<i64>,
+        strikes: Option<i64>,
+    ) {
+        let p = ps(path);
+        let engines: Vec<(String, &str, Option<i64>)> =
+            attempts.iter().take(2).map(|a| (a.engine.clone(), a.status, a.shift_ms)).collect();
+        let library = crate::stats::library_of(&p, &self.cfg.scan.include_paths);
+        let rec = OutcomeRecord {
+            run_id: &ctx.run.id,
+            ts: crate::now_ms(),
+            file_path: &p,
+            category: c.as_str(),
+            library: library.as_deref(),
+            sync_mode: meta.mode.map(SyncMode::as_str),
+            reference: meta.reference,
+            retried: meta.retried,
+            engines: &engines,
+            quality_score,
+            strikes,
+            dry_run: ctx.run.dry_run,
+            manual: ctx.run.manual,
+        };
+        if let Err(e) = self.db.record_outcome(&rec).await {
+            error!("statistics update failed: {e}");
+        }
+    }
+
+    async fn record_engine_run(&self, ctx: &RunCtx, engine: &str, reference: &str, r: &EngineResult) {
+        let result = if r.success && !r.skipped { "ok" } else { crate::summary::classify_failure(r) };
+        let rec = EngineRunRecord {
+            run_id: &ctx.run.id,
+            ts: crate::now_ms(),
+            engine,
+            reference,
+            result,
+            shift_ms: if result == "ok" { r.offset_ms } else { r.original_shift_ms },
+            duration_ms: r.duration,
+            framerate_scaled: r.framerate_scale.is_some_and(|f| (f - 1.0).abs() > 0.0005),
+            dry_run: ctx.run.dry_run,
+        };
+        if let Err(e) = self.db.record_engine_run(&rec).await {
+            error!("statistics update failed: {e}");
+        }
+    }
+
     /// Sync the anchor against the video, then align followers sub-to-sub
     /// against the synced anchor. Forced/sparse subs — and everything when the
     /// anchor fails — take the full pipeline. Dry runs skip the fast path (it
@@ -918,6 +987,7 @@ impl Processor {
 
         let Some(video) = video else {
             self.log_decision(ctx, path, Category::NoVideo, &[], &[]);
+            self.record_outcome(ctx, path, Category::NoVideo, &[], StatMeta::NONE, None, None).await;
             self.finish_file(ctx, path, FileStatus::Error, RunCounter::Failed, None).await;
             return FileOutcome::other("no_video");
         };
@@ -979,7 +1049,21 @@ impl Processor {
         if forced {
             self.log(format!("Forced subtitle — alass without splits: {name}"));
         }
-        let mut pass = match self.run_chain(ctx, path, &reference, original.as_deref(), no_split, token, true).await {
+        let mut meta = StatMeta {
+            mode: Some(mode),
+            reference: if via_embedded {
+                "embedded"
+            } else if mode == SyncMode::Follower {
+                "anchor"
+            } else {
+                "audio"
+            },
+            retried: false,
+        };
+        let mut pass = match self
+            .run_chain(ctx, path, &reference, meta.reference, original.as_deref(), no_split, token, true)
+            .await
+        {
             Ok(p) => p,
             Err(cancelled) => return cancelled,
         };
@@ -994,7 +1078,11 @@ impl Processor {
             ));
             via_embedded = false;
             retried = true;
-            pass = match self.run_chain(ctx, path, &video, original.as_deref(), no_split, token, false).await {
+            meta = StatMeta { reference: "audio", retried: true, ..meta };
+            pass = match self
+                .run_chain(ctx, path, &video, meta.reference, original.as_deref(), no_split, token, false)
+                .await
+            {
                 Ok(p) => p,
                 Err(cancelled) => return cancelled,
             };
@@ -1028,7 +1116,9 @@ impl Processor {
                     "✗ No engine could run successfully — leaving subtitle unchanged, will retry next run: {name}"
                 ));
                 self.restore(path, original.as_deref());
-                self.log_decision(ctx, path, failure_category(&attempts), &attempts, &extra);
+                let category = failure_category(&attempts);
+                self.log_decision(ctx, path, category, &attempts, &extra);
+                self.record_outcome(ctx, path, category, &attempts, meta, None, None).await;
                 self.finish_file(ctx, path, FileStatus::Error, RunCounter::Failed, Some(sync_info)).await;
                 FileOutcome::other("failed")
             }
@@ -1051,6 +1141,7 @@ impl Processor {
                 }
                 extra.insert(0, "left unchanged".into());
                 self.log_decision(ctx, path, Category::AlreadyInSync, &attempts, &extra);
+                self.record_outcome(ctx, path, Category::AlreadyInSync, &attempts, meta, None, None).await;
                 self.finish_file(ctx, path, FileStatus::Completed, RunCounter::Completed, Some(sync_info)).await;
                 FileOutcome::other("in_sync")
             }
@@ -1070,10 +1161,11 @@ impl Processor {
                     ));
                     extra.insert(0, "no strike".into());
                     self.log_decision(ctx, path, Category::NotFittingUnconfirmed, &attempts, &extra);
+                    self.record_outcome(ctx, path, Category::NotFittingUnconfirmed, &attempts, meta, None, None).await;
                 } else {
                     let base =
                         if alignments.is_empty() { Category::NotFittingShift } else { Category::NotFittingDisagree };
-                    self.defer_strike(ctx, path, original.as_deref(), base, attempts, extra);
+                    self.defer_strike(ctx, path, original.as_deref(), base, attempts, extra, meta).await;
                 }
                 self.finish_file(ctx, path, FileStatus::NotFitting, RunCounter::NotFitting, Some(sync_info)).await;
                 FileOutcome::other("not_fitting")
@@ -1113,6 +1205,7 @@ impl Processor {
                 let category = if data.len() == 1 { Category::SyncedSingleEngine } else { Category::Synced };
                 extra.insert(0, format!("kept {engine}"));
                 self.log_decision(ctx, path, category, &attempts, &extra);
+                self.record_outcome(ctx, path, category, &attempts, meta, Some(q.score), None).await;
                 if !ctx.run.dry_run {
                     let source = if ctx.run.manual { "resync" } else { "run" };
                     if let Err(e) = self.db.upsert_quality(&ps(path), &q, source).await {
@@ -1139,6 +1232,7 @@ impl Processor {
         ctx: &RunCtx,
         path: &Path,
         reference: &Path,
+        reference_kind: &str,
         original: Option<&[u8]>,
         no_split: bool,
         token: &CancellationToken,
@@ -1167,6 +1261,7 @@ impl Processor {
                     ..Default::default()
                 };
                 self.engine_completed(ctx, path, engine, &r, count).await;
+                self.record_engine_run(ctx, engine, reference_kind, &r).await;
                 pass.attempts.push(Attempt::failed(engine, &r));
                 pass.results.push((engine.clone(), r));
                 continue;
@@ -1192,6 +1287,7 @@ impl Processor {
                 return Err(FileOutcome::other("cancelled"));
             }
             self.engine_completed(ctx, path, engine, &run.result, count).await;
+            self.record_engine_run(ctx, engine, reference_kind, &run.result).await;
             match content {
                 Some(c) => {
                     let shift = run.result.offset_ms.unwrap_or(0);
@@ -1306,7 +1402,8 @@ impl Processor {
 
     /// A not-fitting verdict: dry runs and manual re-syncs never strike;
     /// otherwise the strike waits for the run to complete.
-    fn defer_strike(
+    #[allow(clippy::too_many_arguments)]
+    async fn defer_strike(
         &self,
         ctx: &RunCtx,
         path: &Path,
@@ -1314,6 +1411,7 @@ impl Processor {
         base: Category,
         attempts: Vec<Attempt>,
         mut extra: Vec<String>,
+        meta: StatMeta,
     ) {
         let name = name_of(path);
         let threshold = ctx.settings.not_fitting_delete_threshold;
@@ -1330,6 +1428,7 @@ impl Processor {
             self.log(format!("⚠ Not fitting — keeping subtitle, strike counts once the run completes: {name}"));
             ctx.pending_strikes.lock().unwrap().push(PendingStrike {
                 path: path.to_path_buf(),
+                meta,
                 hash: content_hash(bytes),
                 base,
                 attempts,
@@ -1341,6 +1440,7 @@ impl Processor {
         };
         extra.insert(0, note.into());
         self.log_decision(ctx, path, base, &attempts, &extra);
+        self.record_outcome(ctx, path, base, &attempts, meta, None, None).await;
     }
 
     /// End of a run: count the strikes it found, unless it was stopped.
@@ -1348,22 +1448,23 @@ impl Processor {
         let pending = std::mem::take(&mut *ctx.pending_strikes.lock().unwrap());
         for mut p in pending {
             let current = std::fs::read(&p.path).ok().map(|c| content_hash(&c));
-            let (category, note) = if ctx.run.stopped() {
-                (p.base, "run stopped, no strike recorded".to_string())
+            let (category, note, strikes) = if ctx.run.stopped() {
+                (p.base, "run stopped, no strike recorded".to_string(), None)
             } else if current.as_deref() != Some(p.hash.as_str()) {
-                (p.base, "file changed during the run, no strike recorded".to_string())
+                (p.base, "file changed during the run, no strike recorded".to_string(), None)
             } else {
                 self.record_strike(ctx, &p.path, p.base).await
             };
             p.extra.insert(0, note);
             self.log_decision(ctx, &p.path, category, &p.attempts, &p.extra);
+            self.record_outcome(ctx, &p.path, category, &p.attempts, p.meta, None, strikes).await;
         }
     }
 
     /// Strike system: delete only after N consecutive not-fitting runs, so a
     /// one-off transient failure never deletes a good subtitle. The file on
     /// disk is the original (restored when the verdict was made).
-    async fn record_strike(&self, ctx: &RunCtx, path: &Path, base: Category) -> (Category, String) {
+    async fn record_strike(&self, ctx: &RunCtx, path: &Path, base: Category) -> (Category, String, Option<i64>) {
         let name = name_of(path);
         let threshold = ctx.settings.not_fitting_delete_threshold;
         let p = ps(path);
@@ -1381,13 +1482,13 @@ impl Processor {
                 self.log(format!(
                     "⚠ Forced subtitle didn't fit {strikes} run(s) in a row — keeping it unchanged and parking it until the file changes: {name}"
                 ));
-                return (Category::ForcedParked, format!("strike {strikes}/{threshold}, parked"));
+                return (Category::ForcedParked, format!("strike {strikes}/{threshold}, parked"), Some(strikes));
             } else {
                 self.log(format!(
                     "⚠ Forced subtitle not fitting (strike {strikes}/{threshold}) — keeping it unchanged (forced subs are never deleted): {name}"
                 ));
             }
-            return (Category::ForcedKept, format!("strike {strikes}/{threshold}"));
+            return (Category::ForcedKept, format!("strike {strikes}/{threshold}"), Some(strikes));
         }
         if strikes >= threshold {
             match std::fs::remove_file(path) {
@@ -1398,12 +1499,12 @@ impl Processor {
             let _ = self.db.reset_not_fitting_strikes(&p).await;
             let _ = self.db.forget_file(&p).await;
             let _ = self.db.remove_from_sync_cache(&[p]).await;
-            (Category::Deleted, format!("strike {strikes}/{threshold}, deleted"))
+            (Category::Deleted, format!("strike {strikes}/{threshold}, deleted"), Some(strikes))
         } else {
             self.log(format!(
                 "⚠ Not fitting (strike {strikes}/{threshold}) — keeping subtitle, will retry next run: {name}"
             ));
-            (base, format!("strike {strikes}/{threshold}"))
+            (base, format!("strike {strikes}/{threshold}"), Some(strikes))
         }
     }
 }

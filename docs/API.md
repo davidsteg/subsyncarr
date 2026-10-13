@@ -99,6 +99,7 @@ interface ScanProgress {
 | GET | `/api/config` | `{ paths: string[], excludePaths: string[], isConfigured: boolean, schedule: { enabled, cron, description, nextRun: number \| null } }` |
 | GET | `/api/changelog` | `[{ version, date, sections: [{ title, items: string[] }] }]` (latest 10) |
 | GET | `/api/stats` | `{ totalFiles, syncedFiles, skippedFiles, syncRate, engines: [{ engine, total, synced, rate }], languages: [{ name, count }], fastPath: { anchors, followers, completed, followerShare } }` |
+| GET | `/api/stats/deep?days=30&includeDry=false&tzOffset=0` | Sync quality statistics, see [Deep statistics](#deep-statistics). `days=0` = everything kept; `tzOffset` = minutes east of UTC for day buckets; dry runs are left out unless `includeDry=true`. Cached for 30 s |
 | GET | `/api/folders?parent=/media/tv` | `[{ name, fullPath, total, synced, skipped, pending, progress, hasChildren }]` sorted by total desc |
 | GET | `/api/status?brief=true\|false&limit=100` | `{ currentRun: Run \| null, scanProgress: ScanProgress \| null, files: FileResult[], totalFiles, isRunning, dryRun }` — `files` (non-brief only) = currently processing + most recently finished, newest first |
 | GET | `/api/history?limit=50` | `Run[]` newest first |
@@ -123,6 +124,39 @@ interface ScanProgress {
 | POST | `/api/settings` | body: any of `max_subtitle_shift_ms, engine_agreement_threshold_ms, not_fitting_delete_threshold, engine_timeout_alass, engine_timeout_ffsubsync, engine_timeout_autosubsync, max_concurrent_tasks, default_engine, fallback_engine, dry_run, anchor_alignment, embedded_subtitle_reference, theme, webhook_enabled, webhook_token, webhook_path_map, notify_url, notify_kind (apprise\|discord\|json), notify_on (always\|changes\|issues), media_server (none\|jellyfin\|plex), media_server_url, media_server_token, media_path_map` (string or number/bool values; text keys may be empty to clear) → `{ success: true }` |
 | POST | `/api/integrations/test` | body `{ target: "notify" \| "media" }` → `{ ok: true, message }`; `502` with `{ error }` if the endpoint failed. Uses the saved settings |
 | POST | `/api/webhook/:source` (`sonarr`, `radarr`, `bazarr`, `generic`; also `/api/webhook`) | Token as `?token=`, `X-Api-Key`, `Authorization: Bearer` or Basic-auth password. Body: a Sonarr/Radarr webhook payload, `{ path }`, `{ paths }`, a form with `path`, or `?path=`. → `{ ok: true, queued: string[], errors: string[] }`, `{ ok: true, ignored }` for events needing no sync, or `{ ok: true, message }` for a Test event. `403` when disabled, `401` bad token, `404` unknown source, `422` when no path resolved. Queued paths start a run after a 5 s quiet period |
+
+## Deep statistics
+
+`GET /api/stats/deep` aggregates `stat_outcomes` (one row per subtitle decision) and `stat_engine_runs` (one row per engine invocation) over the window. Outcome counts use classes: `synced` (synced, synced_single_engine, already_in_sync), `notFitting` (not_fitting_*, forced_kept), `parked`, `deleted`, `failed` (failed_*), `noVideo`.
+
+```ts
+ClassCounts = { total, synced, notFitting, failed, deleted, parked, noVideo, avgQuality: number | null }
+Spread = { p10, p50, p90, p99, max, mean }            // ms, null when empty
+Bucket = { label, lo: number | null, hi: number | null, count }
+
+{
+  window: { days, from, to, bucketMs, firstRecord, includeDryRuns },
+  totals: { decisions, files, synced, notFitting, failed, deleted, parked, noVideo, keepRate, avgQuality,
+            categories: { [category]: count } },
+  throughput: { filesPerHour, runMs },
+  timeline: (ClassCounts & { t, medianDisagreementMs })[],   // bucket start, ms
+  runs: [{ runId, start, end, status, durationMs, decisions, synced, notFitting, failed, deleted, parked, noVideo,
+           avgQuality, engineMs, filesPerHour, dryRun, manual }],  // newest 100; status null once the run is deleted
+  engines: [{ engine, runs, results: { ok, shift, timeout, error, no_output, skipped }, byReference: { [ref]: results },
+              totalMs, durationMs: Spread, shiftMs: Spread, absShiftMs: Spread, shiftHistogram: Bucket[], framerateScaled }],
+  agreement: { thresholdMs, pairs: [{ engines: [a, b], pairs, withinThreshold, absDiffMs: Spread, biasMs,
+               histogram: Bucket[], onlyFirstMoves, onlySecondMoves,
+               scatter: [shiftA, shiftB, kept][],            // at most 1500, evenly sampled
+               worst: [{ filePath, ts, category, a, b }] }] },  // engines sorted by name; most decisions first
+  quality: { histogram: [{ label, lo, count }], levels: { weak, fair, good }, unscored, needsReview, reviewed,
+             average, weakBelow, goodFrom },                 // current sync_quality, not windowed
+  strikes: { threshold, distribution: [{ strikes, count }], parked, skippedEngineFiles, skippedByEngine },
+  breakdowns: { language | forced | kind | reference | mode | library | titles: (ClassCounts & { key })[] },
+  orphans: { count, truncated, items: [{ filePath, lastSeen }] }   // latest decision was no_video and the file still exists
+}
+```
+
+`reference` is `audio`, `embedded`, `anchor`, `none` (no video) or `unknown` (imported from runs before 2.3.0). `titles` lists the 25 shows or movies with the most problem outcomes.
 
 ## WebSocket `/ws`
 

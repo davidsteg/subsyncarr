@@ -244,6 +244,59 @@ const MIGRATIONS: &[Migration] = &[
         ],
         add_columns: &[],
     },
+    Migration {
+        version: 19,
+        name: "statistics_history",
+        sql: &[
+            // One row per subtitle decision. Kept for RETENTION_KEEP_STATS_DAYS,
+            // independent of run retention, so trends outlive the run list.
+            "CREATE TABLE IF NOT EXISTS stat_outcomes (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                run_id TEXT NOT NULL,
+                ts INTEGER NOT NULL,
+                file_path TEXT NOT NULL,
+                category TEXT NOT NULL,
+                media_kind TEXT NOT NULL,
+                title TEXT,
+                library TEXT,
+                language TEXT,
+                forced INTEGER NOT NULL DEFAULT 0,
+                sync_mode TEXT,
+                reference TEXT NOT NULL,
+                retried INTEGER NOT NULL DEFAULT 0,
+                engine_a TEXT,
+                result_a TEXT,
+                shift_a_ms INTEGER,
+                engine_b TEXT,
+                result_b TEXT,
+                shift_b_ms INTEGER,
+                quality_score INTEGER,
+                strikes INTEGER,
+                dry_run INTEGER NOT NULL DEFAULT 0,
+                manual INTEGER NOT NULL DEFAULT 0
+            )",
+            "CREATE INDEX IF NOT EXISTS idx_stat_outcomes_ts ON stat_outcomes(ts)",
+            "CREATE INDEX IF NOT EXISTS idx_stat_outcomes_path ON stat_outcomes(file_path, ts)",
+            "CREATE INDEX IF NOT EXISTS idx_stat_outcomes_run ON stat_outcomes(run_id)",
+            // One row per engine invocation, including the audio retry after an
+            // embedded-track pass and engines skipped after repeated failures.
+            "CREATE TABLE IF NOT EXISTS stat_engine_runs (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                run_id TEXT NOT NULL,
+                ts INTEGER NOT NULL,
+                engine TEXT NOT NULL,
+                reference TEXT NOT NULL,
+                result TEXT NOT NULL,
+                shift_ms INTEGER,
+                duration_ms INTEGER NOT NULL DEFAULT 0,
+                framerate_scaled INTEGER NOT NULL DEFAULT 0,
+                dry_run INTEGER NOT NULL DEFAULT 0
+            )",
+            "CREATE INDEX IF NOT EXISTS idx_stat_engine_runs_ts ON stat_engine_runs(ts)",
+            "CREATE INDEX IF NOT EXISTS idx_stat_engine_runs_run ON stat_engine_runs(run_id)",
+        ],
+        add_columns: &[],
+    },
 ];
 
 async fn has_column(pool: &SqlitePool, table: &str, column: &str) -> sqlx::Result<bool> {

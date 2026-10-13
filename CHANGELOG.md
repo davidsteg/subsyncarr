@@ -1,4 +1,21 @@
-## [2.2.1] — 2026-10-13
+## [2.3.0] — 2026-10-13
+
+Statistics page: sync quality over time
+
+### Added
+
+- **Statistics page.** A new page in the sidebar shows how well syncing works and where it doesn't, for the last 7, 30 or 90 days, a year or everything kept:
+  - Outcomes per day (or per week for long windows): synced, not fitting, parked, deleted, failed and no video, plus every outcome by its exact reason.
+  - **Engine agreement:** a scatter plot of the shift each engine proposed for the same subtitle, with the agreement band, the median and 90th percentile gap, the bias between the engines, how often only one engine moves a subtitle, and the subtitles with the largest disagreement. One view per engine pair when the chain changed.
+  - The median gap between the engines over time.
+  - **Per engine:** aligned, shift too large, timeout, error, no output and skipped counts; median, 90th and 99th percentile run time; the distribution of proposed shifts; framerate fixes; and how often it aligns against the audio, an embedded track or an anchor subtitle.
+  - **Breakdowns** by language, forced or regular, movie or episode, sync reference, sync mode and scan path, and the shows and movies with the most subtitles that didn't sync.
+  - The current confidence score distribution, strikes per count against the delete threshold, parked and engine-skipped files.
+  - Every run with its outcomes, average confidence, duration, subtitles per hour and engine time.
+  - Subtitles without a matching video that are still on disk.
+- Every decision and every engine run is recorded in two new tables and kept for `RETENTION_KEEP_STATS_DAYS` (default 365), independently of run retention. On upgrade, the run history that is still in the database is imported once (sync reference, deletions and parking weren't recorded before, so those show as not recorded).
+- API: `GET /api/stats/deep?days=30&includeDry=false&tzOffset=<minutes east of UTC>`.
+
 
 Fewer false not-fitting strikes
 

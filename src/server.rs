@@ -19,7 +19,7 @@ use tower_http::compression::CompressionLayer;
 use tracing::{error, info};
 
 use crate::config::Config;
-use crate::db::Db;
+use crate::db::{Db, StatsQuery};
 use crate::events::EventBus;
 use crate::integrations::webhook::{self, TriggerQueue};
 use crate::integrations::{self, media, notify, PathMap};
@@ -33,6 +33,8 @@ use crate::{changelog, manual, schedule, web};
 
 pub const REPO: &str = "davidsteg/subsyncarr";
 const STATS_TTL: Duration = Duration::from_secs(10);
+const DEEP_STATS_TTL: Duration = Duration::from_secs(30);
+const DEEP_STATS_IDLE_TTL: Duration = Duration::from_secs(600);
 
 pub struct AppState {
     pub db: Db,
@@ -44,6 +46,8 @@ pub struct AppState {
     pub runlogs: RunLogs,
     pub webhooks: TriggerQueue,
     stats_cache: Mutex<Option<(Instant, u64, Value)>>,
+    /// Last deep statistics response: (computed at, event generation, query key, body).
+    deep_stats_cache: Mutex<Option<(Instant, u64, String, Value)>>,
 }
 
 impl AppState {
@@ -68,6 +72,7 @@ impl AppState {
             runlogs,
             webhooks,
             stats_cache: Mutex::new(None),
+            deep_stats_cache: Mutex::new(None),
         })
     }
 
@@ -106,6 +111,7 @@ pub fn router(state: Arc<AppState>) -> Router {
         .route("/api/config", get(config))
         .route("/api/changelog", get(|| async { Json(changelog::entries()) }))
         .route("/api/stats", get(stats))
+        .route("/api/stats/deep", get(deep_stats))
         .route("/api/folders", get(folders))
         .route("/api/status", get(status))
         .route("/api/history", get(history))
@@ -178,6 +184,48 @@ async fn stats(State(s): S) -> ApiResult {
     }
     let v = s.db.media_stats().await?;
     *s.stats_cache.lock().unwrap() = Some((Instant::now(), generation, v.clone()));
+    Ok(Json(v))
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct DeepStatsQ {
+    days: Option<i64>,
+    include_dry: Option<bool>,
+    tz_offset: Option<i64>,
+}
+
+/// Sync-quality history: outcome trends, engine agreement and offsets,
+/// engine health, breakdowns and orphaned subtitles (see docs/API.md).
+async fn deep_stats(State(s): S, Query(q): Query<DeepStatsQ>) -> ApiResult {
+    let days = q.days.unwrap_or(30).clamp(0, 3650);
+    let include_dry = q.include_dry.unwrap_or(false);
+    let tz_offset_min = q.tz_offset.unwrap_or(0).clamp(-14 * 60, 14 * 60);
+    let key = format!("{days}:{include_dry}:{tz_offset_min}");
+    let generation = s.events.generation();
+    if let Some((at, g, k, v)) = s.deep_stats_cache.lock().unwrap().as_ref() {
+        // Heavy: during a run (generation moving) reuse it for a while too.
+        let fresh = at.elapsed() < DEEP_STATS_TTL || (*g == generation && at.elapsed() < DEEP_STATS_IDLE_TTL);
+        if fresh && *k == key {
+            return Ok(Json(v.clone()));
+        }
+    }
+    let query = {
+        let st = s.settings.read().unwrap();
+        StatsQuery {
+            days,
+            include_dry,
+            tz_offset_min,
+            agreement_threshold_ms: st.engine_agreement_threshold_ms,
+            strike_threshold: st.not_fitting_delete_threshold,
+            scan_roots: s.cfg.scan.include_paths.clone(),
+        }
+    };
+    let v = s.db.deep_stats(&query).await.map_err(|e| {
+        error!("deep statistics failed: {e}");
+        ApiError(StatusCode::INTERNAL_SERVER_ERROR, "query failed".into())
+    })?;
+    *s.deep_stats_cache.lock().unwrap() = Some((Instant::now(), generation, key, v.clone()));
     Ok(Json(v))
 }
 

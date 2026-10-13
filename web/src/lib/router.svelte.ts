@@ -1,4 +1,13 @@
-export type RouteName = 'dashboard' | 'run' | 'history' | 'run-detail' | 'library' | 'logs' | 'settings' | 'changelog';
+export type RouteName =
+  | 'dashboard'
+  | 'run'
+  | 'history'
+  | 'run-detail'
+  | 'library'
+  | 'statistics'
+  | 'logs'
+  | 'settings'
+  | 'changelog';
 
 export interface Route {
   name: RouteName;
@@ -10,6 +19,7 @@ const SIMPLE: Record<string, RouteName> = {
   run: 'run',
   history: 'history',
   library: 'library',
+  statistics: 'statistics',
   logs: 'logs',
   settings: 'settings',
   changelog: 'changelog',

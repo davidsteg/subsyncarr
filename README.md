@@ -20,7 +20,8 @@ This is a fork of [johnpc/subsyncarr](https://github.com/johnpc/subsyncarr). Sin
 - **Integrations.** Sonarr, Radarr and Bazarr can trigger a sync of new files right away, run summaries go to Apprise or Discord, and Jellyfin or Plex refresh the folders that changed. All off by default.
 - **Sync confidence.** Every kept sync gets a 0–100 score from engine agreement, how many engines aligned, offset spread and split points, cue count, shift size and framerate correction. Syncs scoring below 50 are flagged for review on the Library page.
 - **Manual fixes from the library.** Open any subtitle in the Library to re-sync it on demand or shift every cue by a fixed offset. Each change is written in place, kept by later scans, and can be undone (the last 10 changes per file).
-- **Live web UI.** Dashboard, live run view with per-file progress, run history, library browser, server logs, settings and changelog. Light and dark themes, and it works on a phone.
+- **Statistics.** Outcome trends, engine agreement and offset distributions, engine timings and failure rates, strikes and deletions over time, confidence scores, breakdowns by language, forced, movie or episode and folder, and subtitles without a video.
+- **Live web UI.** Dashboard, live run view with per-file progress, run history, library browser, statistics, server logs, settings and changelog. Light and dark themes, and it works on a phone.
 - **Low footprint.** One process with no runtime dependencies besides the engines, using about 15 MB of RAM when idle.
 
 > **Note:** Subsyncarr overwrites `.srt` files in place and deletes subtitles that repeatedly fail to fit their video. Keep a backup of subtitles you can't re-download, and run with `DRY_RUN=true` (or the **Dry run** button) first to see what would happen.
@@ -82,6 +83,7 @@ Settings marked with ✎ can also be changed in the web UI. A value saved there 
 | `DB_PATH` | `/app/data/subsyncarr-plus.db` | SQLite database. Run logs go to `logs/` next to it. |
 | `SERVER_LOG_BUFFER_SIZE` | `5000` | Lines kept for the Server logs page and `/api/logs`. |
 | `RETENTION_KEEP_RUNS_DAYS` | `30` | Delete runs older than this. |
+| `RETENTION_KEEP_STATS_DAYS` | `365` | Delete statistics history (one small row per decision and engine run) older than this. |
 | `RETENTION_TRIM_LOGS_DAYS` | `7` | Trim stored logs of older runs. |
 | `RETENTION_CLEANUP_INTERVAL_HOURS` | `24` | How often cleanup and `VACUUM` run. |
 | `LOG_LEVEL` | `subsyncarr=info` | `tracing` filter for container logs, for example `subsyncarr=debug`. |
@@ -152,6 +154,7 @@ curl -X POST localhost:3000/api/run/start -H 'content-type: application/json' -d
 curl -X POST localhost:3000/api/run/start -H 'content-type: application/json' -d '{"fresh":true}'   # reprocess everything
 curl "localhost:3000/api/logs?level=error&format=text"
 curl localhost:3000/api/diagnostics   # why subtitles aren't syncing
+curl "localhost:3000/api/stats/deep?days=30"   # sync quality statistics
 ```
 
 ## Troubleshooting

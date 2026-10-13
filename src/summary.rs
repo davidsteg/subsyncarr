@@ -100,6 +100,7 @@ pub struct Attempt {
     pub engine: String,
     /// `ok`, `shift`, `timeout`, `skipped`, `no_output` or `error`.
     pub status: &'static str,
+    /// The aligned shift, or the rejected one for `shift`.
     pub shift_ms: Option<i64>,
     pub detail: Option<String>,
 }
@@ -116,7 +117,9 @@ impl Attempt {
             "shift" => r.original_shift_ms.map(|s| format!("{s}ms")),
             _ => Some(failure_detail(&r.message, r.stderr.as_deref())),
         };
-        Attempt { engine: engine.into(), status, shift_ms: None, detail }
+        // A rejected shift is still the engine's proposal; the statistics keep it.
+        let shift_ms = if status == "shift" { r.original_shift_ms } else { None };
+        Attempt { engine: engine.into(), status, shift_ms, detail }
     }
 }
 
