@@ -69,6 +69,7 @@ Settings marked with ✎ can also be changed in the web UI. A value saved there 
 | `NOT_FITTING_DELETE_THRESHOLD` ✎ | `3` | Consecutive not-fitting runs before a subtitle is deleted. |
 | `MAX_CONCURRENT_SYNC_TASKS` ✎ | `1` | Videos processed in parallel. Each engine decodes audio, so watch memory. |
 | `ANCHOR_ALIGNMENT` ✎ | `true` | Use the multi-language fast path. |
+| `EMBEDDED_SUBTITLE_REFERENCE` ✎ | `true` | Sync against a full-length text subtitle track inside the video instead of the audio when there is one; falls back to the audio when it doesn't fit. |
 | `DRY_RUN` ✎ | `false` | Run engines but write and delete nothing. |
 | `SYNC_ENGINE_TIMEOUT_MS` ✎ | `300000` | Per-engine timeout. `SYNC_TIMEOUT` (seconds) is also accepted. |
 | `ALASS_TIMEOUT_MS`, `FFSUBSYNC_TIMEOUT_MS`, `AUTOSUBSYNC_TIMEOUT_MS` ✎ | | Per-engine overrides. |
@@ -81,6 +82,7 @@ Settings marked with ✎ can also be changed in the web UI. A value saved there 
 | `RETENTION_CLEANUP_INTERVAL_HOURS` | `24` | How often cleanup and `VACUUM` run. |
 | `LOG_LEVEL` | `subsyncarr=info` | `tracing` filter for container logs, for example `subsyncarr=debug`. |
 | `ALASS_BIN`, `FFSUBSYNC_BIN`, `AUTOSUBSYNC_BIN` | name on `PATH` | Engine executables. |
+| `FFPROBE_BIN`, `FFMPEG_BIN` | name on `PATH` | Used to find and extract embedded subtitle tracks. |
 | `PUID` / `PGID` | `1000` | User and group that own the written files. |
 | `TZ` | | Time zone for the schedule and the UI. |
 

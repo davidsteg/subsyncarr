@@ -24,6 +24,7 @@ One process (since 2.0). axum serves the REST API, WebSocket and embedded UI on 
 - `src/engines.rs` — spawning engines (argv, own process group, timeout/cancel kill), backup/restore, output validation
 - `src/decide.rs` — pure function: engine agreement → `Outcome`
 - `src/anchor.rs` — forced detection, grouping by video, anchor/follower planning
+- `src/embedded.rs` — ffprobe/ffmpeg: pick and extract the video's best embedded text subtitle track as sync reference
 - `src/video.rs` — video matching with a per-directory listing cache
 - `src/srt.rs` — byte-level SRT helpers, offset calculation, legacy header handling
 - `src/db/` — `Db` (all queries) and `migrations.rs` (versions 1–14 identical to 1.x, 15 matches 1.x PR #1, 16+ are 2.x)
@@ -48,6 +49,7 @@ Tracked solely via the database (`synced_files`, keyed by path + mtime + size). 
 
 1. Scan: walk, skip parked files, check the sync cache, fall back to the legacy header.
 2. Group subtitles by video. With anchor alignment on, the largest non-forced subtitle is synced against the video and the others are aligned to it.
+   With `EMBEDDED_SUBTITLE_REFERENCE` on, "against the video" means against the video's largest full-length embedded text track (≥ 50 cues, extracted once per video per run to a temp dir) when it has one; if that pass doesn't keep the subtitle, it is re-run against the audio before any strike.
 3. Run `DEFAULT_ENGINE` and `FALLBACK_ENGINE`. Both must agree within `ENGINE_AGREEMENT_THRESHOLD_MS`.
 4. Shift > `MAX_SUBTITLE_SHIFT_MS` or disagreement → not fitting: restore, strike; at the threshold delete (forced: park instead).
 5. Both engines failed (crash/timeout) → failed: restore, no strike.

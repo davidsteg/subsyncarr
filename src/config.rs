@@ -34,6 +34,7 @@ pub struct SettingDefaults {
     pub max_concurrent_tasks: usize,
     pub dry_run: bool,
     pub anchor_alignment: bool,
+    pub embedded_subtitle_reference: bool,
     pub engine_timeouts_ms: [(String, u64); 3],
 }
 
@@ -57,6 +58,8 @@ pub struct EngineBins {
     pub alass: String,
     pub ffsubsync: String,
     pub autosubsync: String,
+    pub ffmpeg: String,
+    pub ffprobe: String,
 }
 
 impl EngineBins {
@@ -164,6 +167,7 @@ impl Config {
                 max_concurrent_tasks: env_pos("MAX_CONCURRENT_SYNC_TASKS").unwrap_or(1),
                 dry_run: env_bool("DRY_RUN", false),
                 anchor_alignment: env_bool("ANCHOR_ALIGNMENT", true),
+                embedded_subtitle_reference: env_bool("EMBEDDED_SUBTITLE_REFERENCE", true),
                 engine_timeouts_ms: [
                     ("alass".into(), engine_timeout("alass")),
                     ("ffsubsync".into(), engine_timeout("ffsubsync")),
@@ -174,6 +178,8 @@ impl Config {
                 alass: env("ALASS_BIN").unwrap_or_else(|| "alass".into()),
                 ffsubsync: env("FFSUBSYNC_BIN").unwrap_or_else(|| "ffsubsync".into()),
                 autosubsync: env("AUTOSUBSYNC_BIN").unwrap_or_else(|| "autosubsync".into()),
+                ffmpeg: env("FFMPEG_BIN").unwrap_or_else(|| "ffmpeg".into()),
+                ffprobe: env("FFPROBE_BIN").unwrap_or_else(|| "ffprobe".into()),
             },
         }
     }

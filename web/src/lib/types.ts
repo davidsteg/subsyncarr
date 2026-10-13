@@ -221,6 +221,7 @@ export interface Settings {
   fallbackEngine: EngineName;
   dryRun: boolean;
   anchorAlignment: boolean;
+  embeddedSubtitleReference: boolean;
   cronSchedule: string;
   includeEngines: string | string[];
   theme: ThemeSetting | string;
@@ -238,6 +239,7 @@ export interface SettingsUpdate {
   fallback_engine?: EngineName;
   dry_run?: boolean;
   anchor_alignment?: boolean;
+  embedded_subtitle_reference?: boolean;
   theme?: ThemeSetting;
 }
 

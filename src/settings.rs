@@ -9,7 +9,7 @@ use serde_json::Value;
 
 use crate::config::{Config, KNOWN_ENGINES};
 
-pub const ALLOWED_KEYS: [&str; 12] = [
+pub const ALLOWED_KEYS: [&str; 13] = [
     "max_subtitle_shift_ms",
     "engine_agreement_threshold_ms",
     "not_fitting_delete_threshold",
@@ -21,6 +21,7 @@ pub const ALLOWED_KEYS: [&str; 12] = [
     "fallback_engine",
     "dry_run",
     "anchor_alignment",
+    "embedded_subtitle_reference",
     "theme",
 ];
 
@@ -36,6 +37,7 @@ pub struct Settings {
     pub fallback_engine: String,
     pub dry_run: bool,
     pub anchor_alignment: bool,
+    pub embedded_subtitle_reference: bool,
     pub theme: String,
 }
 
@@ -75,6 +77,8 @@ impl Settings {
             fallback_engine: engine(db, "fallback_engine").unwrap_or_else(|| d.fallback_engine.clone()),
             dry_run: boolean(db, "dry_run").unwrap_or(d.dry_run),
             anchor_alignment: boolean(db, "anchor_alignment").unwrap_or(d.anchor_alignment),
+            embedded_subtitle_reference: boolean(db, "embedded_subtitle_reference")
+                .unwrap_or(d.embedded_subtitle_reference),
             theme: db.get("theme").cloned().unwrap_or_else(|| "system".into()),
         }
     }
@@ -97,7 +101,7 @@ pub fn normalize_updates(body: &serde_json::Map<String, Value>) -> Vec<(String, 
                 _ => return None,
             };
             let ok = match k.as_str() {
-                "dry_run" | "anchor_alignment" => s == "true" || s == "false",
+                "dry_run" | "anchor_alignment" | "embedded_subtitle_reference" => s == "true" || s == "false",
                 "default_engine" | "fallback_engine" => KNOWN_ENGINES.contains(&s.as_str()),
                 "theme" => matches!(s.as_str(), "light" | "dark" | "system"),
                 _ => s.parse::<f64>().map(|n| n > 0.0).unwrap_or(false),

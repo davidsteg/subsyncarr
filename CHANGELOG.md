@@ -1,3 +1,9 @@
+## [2.1.0] — 2026-10-13
+
+### Added
+
+- **Embedded subtitle tracks as sync reference.** When a video has a full-length text subtitle track (SRT, ASS, mov_text, WebVTT, e.g. in an MKV), subtitles are aligned against that track instead of the audio. It's faster and much more reliable for forced subtitles, whose few lines give audio alignment little to lock onto. Forced, commentary and "signs & songs" tracks and tracks under 50 lines are ignored, and bitmap tracks (PGS, VobSub) can't be used. If the subtitle doesn't fit against the track, it is retried against the audio before any strike, so a bad embedded track can never get a subtitle deleted. On by default; toggle it in Settings or with `EMBEDDED_SUBTITLE_REFERENCE`. Needs alass or ffsubsync for both engines.
+
 ## [2.0.1] — 2026-10-13
 
 ### Added

@@ -11,6 +11,7 @@ use std::time::{Duration, Instant};
 
 use futures_util::stream::{self, StreamExt};
 use serde_json::Value;
+use tokio::sync::OnceCell;
 use tokio_util::sync::CancellationToken;
 use tracing::{error, info};
 
@@ -18,6 +19,7 @@ use crate::anchor::{self, VideoGroup};
 use crate::config::{Config, ScanConfig};
 use crate::db::{Db, FileUpdate, RunCounter};
 use crate::decide::{decide_outcome, Alignment, Outcome};
+use crate::embedded;
 use crate::engines::{self, sidecar_path, EngineRun};
 use crate::events::{Event, EventBus};
 use crate::models::{EngineResult, FileStatus, Run, ScanProgress, SyncMode};
@@ -74,6 +76,29 @@ struct RunCtx {
     settings: Settings,
     dir_cache: DirectoryCache,
     summary: Mutex<RunSummary>,
+    embedded: Option<EmbeddedRefs>,
+}
+
+/// Embedded-track references extracted during one run: at most one ffmpeg
+/// pass per video, shared by every subtitle of that video, and deleted with
+/// the run's temp directory when the run ends.
+struct EmbeddedRefs {
+    dir: PathBuf,
+    by_video: Mutex<HashMap<PathBuf, Arc<OnceCell<Option<PathBuf>>>>>,
+}
+
+/// What one pass of the engine chain produced against one reference.
+struct ChainPass {
+    alignments: Vec<(String, Vec<u8>, i64)>,
+    mismatch_reports: usize,
+    results: Vec<(String, EngineResult)>,
+    attempts: Vec<Attempt>,
+}
+
+impl ChainPass {
+    fn data(&self) -> Vec<Alignment> {
+        self.alignments.iter().map(|(e, _, s)| Alignment { engine: e.clone(), shift_ms: *s }).collect()
+    }
 }
 
 #[derive(Clone, Copy, PartialEq)]
@@ -118,6 +143,12 @@ fn name_of(p: &Path) -> String {
 
 fn ps(p: &Path) -> String {
     p.to_string_lossy().into_owned()
+}
+
+/// Both engines of the chain accept a subtitle as reference.
+fn srt_reference_chain(s: &Settings) -> bool {
+    SRT_REFERENCE_CAPABLE.contains(&s.default_engine.as_str())
+        && SRT_REFERENCE_CAPABLE.contains(&s.fallback_engine.as_str())
 }
 
 impl Processor {
@@ -203,6 +234,10 @@ impl Processor {
             Some(p) if !p.is_empty() => ScanConfig { include_paths: p, exclude_paths: Vec::new() },
             _ => self.cfg.scan.clone(),
         };
+        let embedded = (settings.embedded_subtitle_reference && srt_reference_chain(&settings)).then(|| EmbeddedRefs {
+            dir: std::env::temp_dir().join(format!("subsyncarr-ref-{id}")),
+            by_video: Mutex::new(HashMap::new()),
+        });
         let this = self.clone();
         tokio::spawn(async move {
             let ctx = Arc::new(RunCtx {
@@ -210,10 +245,14 @@ impl Processor {
                 settings,
                 dir_cache: DirectoryCache::new(),
                 summary: Mutex::new(RunSummary::new(&run.id, run.dry_run)),
+                embedded,
             });
-            if let Err(e) = this.clone().process_run(ctx, scan).await {
+            if let Err(e) = this.clone().process_run(ctx.clone(), scan).await {
                 error!("Run {} failed: {e:#}", run.id);
                 this.log(format!("Run failed: {e:#}"));
+            }
+            if let Some(e) = &ctx.embedded {
+                let _ = std::fs::remove_dir_all(&e.dir);
             }
             this.finish(&run).await;
         });
@@ -273,13 +312,14 @@ impl Processor {
             let (a, b) = (&s.default_engine, &s.fallback_engine);
             self.log(format!(
                 "Effective config: engines={a}+{b}, agreement≤{}ms, maxShift={}ms, deleteAfter={} strikes, \
-                 timeouts={a}:{}s/{b}:{}s, anchor={}, concurrency={}, dryRun={}, exclude={:?}",
+                 timeouts={a}:{}s/{b}:{}s, anchor={}, embedded={}, concurrency={}, dryRun={}, exclude={:?}",
                 s.engine_agreement_threshold_ms,
                 s.max_subtitle_shift_ms,
                 s.not_fitting_delete_threshold,
                 s.timeout_ms(a) / 1000,
                 s.timeout_ms(b) / 1000,
                 s.anchor_alignment,
+                ctx.embedded.is_some(),
                 s.max_concurrent_tasks.max(1),
                 run.dry_run,
                 scan_cfg.exclude_paths.iter().map(|p| p.display().to_string()).collect::<Vec<_>>()
@@ -378,9 +418,15 @@ impl Processor {
             self.log("DRY RUN MODE — no files will be written");
         }
 
-        let anchor_mode = s.anchor_alignment
-            && SRT_REFERENCE_CAPABLE.contains(&s.default_engine.as_str())
-            && SRT_REFERENCE_CAPABLE.contains(&s.fallback_engine.as_str());
+        if ctx.embedded.is_some() {
+            self.log("Embedded subtitle tracks: used as sync reference when the video has a full-length text track");
+        } else if s.embedded_subtitle_reference {
+            self.log(format!(
+                "Embedded subtitle tracks inactive: engine chain {}+{} — both engines must support subtitle references (alass, ffsubsync)",
+                s.default_engine, s.fallback_engine
+            ));
+        }
+        let anchor_mode = s.anchor_alignment && srt_reference_chain(s);
         let groups: Vec<VideoGroup> = if anchor_mode {
             let c = ctx.clone();
             let files = files.clone();
@@ -599,13 +645,28 @@ impl Processor {
         FileOutcome::other("cancelled")
     }
 
-    async fn engine_completed(&self, ctx: &RunCtx, path: &Path, engine: &str, r: &EngineResult) {
+    /// Live part of an engine result: shown on the file right away. `count`
+    /// is false for the audio retry after an embedded-track pass, whose
+    /// engines were already counted towards the run's progress.
+    async fn engine_completed(&self, ctx: &RunCtx, path: &Path, engine: &str, r: &EngineResult, count: bool) {
         let p = ps(path);
-        let _ = self.db.increment_run(&ctx.run.id, RunCounter::CompletedEngines).await;
-        let _ = self.db.record_run_engine_stat(&ctx.run.id, engine, r.success).await;
+        if count {
+            let _ = self.db.increment_run(&ctx.run.id, RunCounter::CompletedEngines).await;
+        }
         let v = serde_json::to_value(r).unwrap_or(Value::Null);
         let _ = self.db.set_file_engine_result(&ctx.run.id, &p, engine, &v).await;
-        if !r.skipped {
+        self.events.send(Event::FileUpdated { run_id: ctx.run.id.clone(), file_path: p });
+    }
+
+    /// Run stats and failure tracking, recorded once per file for the pass
+    /// whose results decided the outcome.
+    async fn record_engine_health(&self, ctx: &RunCtx, path: &Path, results: &[(String, EngineResult)]) {
+        let p = ps(path);
+        for (engine, r) in results {
+            let _ = self.db.record_run_engine_stat(&ctx.run.id, engine, r.success).await;
+            if r.skipped {
+                continue;
+            }
             // shiftTooLarge = subtitle doesn't match the video, not an engine failure.
             let res = if r.success || r.shift_too_large {
                 self.db.record_engine_success(&p, engine).await
@@ -616,7 +677,40 @@ impl Processor {
                 error!("failure tracking update failed: {e}");
             }
         }
-        self.events.send(Event::FileUpdated { run_id: ctx.run.id.clone(), file_path: p });
+    }
+
+    /// The video's best embedded text track, extracted once per run (None:
+    /// sync against the audio).
+    async fn embedded_reference(&self, ctx: &RunCtx, video: &Path) -> Option<PathBuf> {
+        let refs = ctx.embedded.as_ref()?;
+        let cell = refs.by_video.lock().unwrap().entry(video.to_path_buf()).or_default().clone();
+        cell.get_or_init(|| async {
+            let s = &ctx.settings;
+            let dir = refs.dir.join(&sha1_smol::Sha1::from(ps(video)).digest().to_string()[..16]);
+            let timeout = Duration::from_millis(s.timeout_ms(&s.default_engine));
+            let bins = &self.cfg.engine_bins;
+            // Shared by every subtitle of the video, so only a run stop aborts it.
+            match embedded::extract_reference(&bins.ffprobe, &bins.ffmpeg, video, &dir, timeout, &ctx.run.stop).await {
+                Ok(r) => {
+                    self.log(format!(
+                        "Embedded subtitle track {} ({} cues) is the sync reference for: {}",
+                        r.track,
+                        r.cues,
+                        name_of(video)
+                    ));
+                    Some(r.path)
+                }
+                Err(why) => {
+                    self.log(format!(
+                        "No usable embedded subtitle track ({why}) — syncing against audio: {}",
+                        name_of(video)
+                    ));
+                    None
+                }
+            }
+        })
+        .await
+        .clone()
     }
 
     // --------------------------------------------------------- one file
@@ -709,91 +803,71 @@ impl Processor {
                 }
             }
         }
+        // Against the video itself, prefer a text track muxed into it.
+        let mut via_embedded = false;
+        if reference == video {
+            if let Some(r) = self.embedded_reference(ctx, &video).await {
+                self.log(format!("Aligning against embedded subtitle track: {name}"));
+                reference = r;
+                via_embedded = true;
+            }
+        }
 
         let threshold = s.engine_agreement_threshold_ms;
-        let chain = [s.default_engine.clone(), s.fallback_engine.clone()];
-        self.log(format!("Engine chain: {} + {} (agreement threshold: {threshold}ms)", chain[0], chain[1]));
+        self.log(format!(
+            "Engine chain: {} + {} (agreement threshold: {threshold}ms)",
+            s.default_engine, s.fallback_engine
+        ));
 
-        // Both engines align the ORIGINAL independently; then their results
-        // are compared.
-        let mut alignments: Vec<(String, Vec<u8>, i64)> = Vec::new();
-        // Engines that ran and rejected their result as a too-large shift —
-        // the only evidence besides disagreement that the subtitle doesn't fit.
-        let mut mismatch_reports = 0;
-        let mut attempts: Vec<Attempt> = Vec::new();
         let forced = anchor::is_forced_subtitle(path);
-        let no_split = forced && reference == video;
+        // One global offset: in split mode alass would place each of a forced
+        // sub's handful of sparse cues independently.
+        let no_split = forced && mode != SyncMode::Follower;
         if forced {
             self.log(format!("Forced subtitle — alass without splits: {name}"));
         }
-        for engine in &chain {
-            if ctx.run.is_cancelled(path) || token.is_cancelled() {
-                self.restore(path, original.as_deref());
-                return self.skipped(ctx, path, "cancelled").await;
-            }
-            if self.db.is_engine_skipped(&ps(path), engine).await.unwrap_or(false) {
-                self.log(format!("⊘ Skipping {engine} (3+ consecutive failures): {name}"));
-                let r = EngineResult {
-                    success: false,
-                    skipped: true,
-                    message: "Skipped — 3+ consecutive failures".into(),
-                    ..Default::default()
-                };
-                self.engine_completed(ctx, path, engine, &r).await;
-                attempts.push(Attempt::failed(engine, &r));
-                continue;
-            }
-            self.restore(path, original.as_deref());
-            self.log(format!("Starting {engine} for: {name}"));
-            self.mark(
-                ctx,
-                path,
-                FileUpdate {
-                    status: Some(FileStatus::Processing),
-                    current_engine: Some(Some(engine.as_str())),
-                    ..Default::default()
-                },
-            )
-            .await;
-
-            let (run, content) = self.align(ctx, engine, path, &reference, original.as_deref(), no_split, token).await;
-            if run.cancelled || token.is_cancelled() {
-                self.log_decision(ctx, path, Category::Cancelled, &attempts, &[format!("during {engine}")]);
-                self.restore(path, original.as_deref());
-                self.finish_file(ctx, path, FileStatus::Skipped, RunCounter::Skipped, None).await;
-                return FileOutcome::other("cancelled");
-            }
-            self.engine_completed(ctx, path, engine, &run.result).await;
-            match content {
-                Some(c) => {
-                    let shift = run.result.offset_ms.unwrap_or(0);
-                    self.log(format!("{engine} aligned (shift {shift}ms): {name}"));
-                    attempts.push(Attempt::ok(engine, shift));
-                    alignments.push((engine.clone(), c, shift));
-                }
-                None => {
-                    if run.result.shift_too_large {
-                        mismatch_reports += 1;
-                    }
-                    attempts.push(Attempt::failed(engine, &run.result));
-                    self.log(format!("{engine} could not align: {}", run.result.message))
-                }
-            }
+        let mut pass = match self.run_chain(ctx, path, &reference, original.as_deref(), no_split, token, true).await {
+            Ok(p) => p,
+            Err(cancelled) => return cancelled,
+        };
+        let mut outcome = decide_outcome(&pass.data(), threshold, pass.mismatch_reports);
+        let mut retried = false;
+        if via_embedded && outcome != Outcome::Keep {
+            // The embedded track may itself be off (a different cut, a
+            // mislabeled commentary): never strike or delete on its word alone.
+            self.log(format!(
+                "No fit against the embedded track ({}) — retrying against audio: {name}",
+                if outcome == Outcome::Failed { "engines failed" } else { "not fitting" }
+            ));
+            via_embedded = false;
+            retried = true;
+            pass = match self.run_chain(ctx, path, &video, original.as_deref(), no_split, token, false).await {
+                Ok(p) => p,
+                Err(cancelled) => return cancelled,
+            };
+            outcome = decide_outcome(&pass.data(), threshold, pass.mismatch_reports);
         }
+        self.record_engine_health(ctx, path, &pass.results).await;
 
-        let data: Vec<Alignment> =
-            alignments.iter().map(|(e, _, s)| Alignment { engine: e.clone(), shift_ms: *s }).collect();
+        let data = pass.data();
+        let attempts = pass.attempts;
+        let mut alignments = pass.alignments;
         let disagreement = if alignments.len() == 2 { (alignments[0].2 - alignments[1].2).abs() } else { 0 };
         let sync_info = (mode, anchor.as_deref());
         let mut extra = Vec::new();
         if let Some(a) = anchor.as_deref() {
             extra.push(format!("via anchor {}", name_of(a)));
         }
+        if via_embedded {
+            extra.push("via embedded track".to_string());
+        } else if retried {
+            extra.push("embedded track didn't fit, retried against audio".to_string());
+        }
         if ctx.run.dry_run {
             extra.push("dry run".to_string());
         }
 
-        match decide_outcome(&data, threshold, mismatch_reports) {
+        match outcome {
             Outcome::Failed => {
                 // Every engine errored, timed out or was skipped: that says
                 // nothing about fit, so no strike and never a delete.
@@ -833,7 +907,12 @@ impl Processor {
                         data[0].engine, data[1].engine
                     ));
                 }
-                self.commit_sync(ctx, path, &engine, &content, shift, original.as_deref(), mode).await;
+                let via = match mode {
+                    SyncMode::Follower => ", via anchor",
+                    _ if via_embedded => ", via embedded track",
+                    _ => "",
+                };
+                self.commit_sync(ctx, path, &engine, &content, shift, original.as_deref(), via).await;
                 let category = if data.len() == 1 { Category::SyncedSingleEngine } else { Category::Synced };
                 extra.insert(0, format!("kept {engine}"));
                 self.log_decision(ctx, path, category, &attempts, &extra);
@@ -845,6 +924,85 @@ impl Processor {
                 }
             }
         }
+    }
+
+    /// Both engines align the ORIGINAL against `reference` independently;
+    /// the caller compares their results. `Err` is the finished file outcome
+    /// when the file was cancelled mid-pass.
+    #[allow(clippy::too_many_arguments)]
+    async fn run_chain(
+        &self,
+        ctx: &RunCtx,
+        path: &Path,
+        reference: &Path,
+        original: Option<&[u8]>,
+        no_split: bool,
+        token: &CancellationToken,
+        count: bool,
+    ) -> Result<ChainPass, FileOutcome> {
+        let name = name_of(path);
+        let s = &ctx.settings;
+        let mut pass =
+            ChainPass { alignments: Vec::new(), mismatch_reports: 0, results: Vec::new(), attempts: Vec::new() };
+        for engine in [&s.default_engine, &s.fallback_engine] {
+            if ctx.run.is_cancelled(path) || token.is_cancelled() {
+                self.restore(path, original);
+                return Err(self.skipped(ctx, path, "cancelled").await);
+            }
+            if self.db.is_engine_skipped(&ps(path), engine).await.unwrap_or(false) {
+                self.log(format!("⊘ Skipping {engine} (3+ consecutive failures): {name}"));
+                let r = EngineResult {
+                    success: false,
+                    skipped: true,
+                    message: "Skipped — 3+ consecutive failures".into(),
+                    ..Default::default()
+                };
+                self.engine_completed(ctx, path, engine, &r, count).await;
+                pass.attempts.push(Attempt::failed(engine, &r));
+                pass.results.push((engine.clone(), r));
+                continue;
+            }
+            self.restore(path, original);
+            self.log(format!("Starting {engine} for: {name}"));
+            self.mark(
+                ctx,
+                path,
+                FileUpdate {
+                    status: Some(FileStatus::Processing),
+                    current_engine: Some(Some(engine.as_str())),
+                    ..Default::default()
+                },
+            )
+            .await;
+
+            let (run, content) = self.align(ctx, engine, path, reference, original, no_split, token).await;
+            if run.cancelled || token.is_cancelled() {
+                self.log_decision(ctx, path, Category::Cancelled, &pass.attempts, &[format!("during {engine}")]);
+                self.restore(path, original);
+                self.finish_file(ctx, path, FileStatus::Skipped, RunCounter::Skipped, None).await;
+                return Err(FileOutcome::other("cancelled"));
+            }
+            self.engine_completed(ctx, path, engine, &run.result, count).await;
+            match content {
+                Some(c) => {
+                    let shift = run.result.offset_ms.unwrap_or(0);
+                    self.log(format!("{engine} aligned (shift {shift}ms): {name}"));
+                    pass.attempts.push(Attempt::ok(engine, shift));
+                    pass.alignments.push((engine.clone(), c, shift));
+                }
+                None => {
+                    // A too-large shift is the only evidence besides
+                    // disagreement that the subtitle doesn't fit.
+                    if run.result.shift_too_large {
+                        pass.mismatch_reports += 1;
+                    }
+                    pass.attempts.push(Attempt::failed(engine, &run.result));
+                    self.log(format!("{engine} could not align: {}", run.result.message))
+                }
+            }
+            pass.results.push((engine.clone(), run.result));
+        }
+        Ok(pass)
     }
 
     fn restore(&self, path: &Path, original: Option<&[u8]>) {
@@ -914,7 +1072,7 @@ impl Processor {
         content: &[u8],
         shift: i64,
         original: Option<&[u8]>,
-        mode: SyncMode,
+        via: &str,
     ) {
         let name = name_of(path);
         if ctx.run.dry_run {
@@ -929,10 +1087,7 @@ impl Processor {
                 if let Ok(m) = std::fs::metadata(path) {
                     let _ = self.db.upsert_sync_cache(&[(ps(path), mtime_ms(&m), m.len() as i64)]).await;
                 }
-                self.log(format!(
-                    "✓ Synced ({engine}{}, shift {shift}ms): {name}",
-                    if mode == SyncMode::Follower { ", via anchor" } else { "" }
-                ));
+                self.log(format!("✓ Synced ({engine}{via}, shift {shift}ms): {name}"));
                 let _ = self.db.reset_not_fitting_strikes(&ps(path)).await;
             }
             Err(e) => self.log(format!("Failed to write synced subtitle {name}: {e}")),
