@@ -1,0 +1,42 @@
+name: Branch cleanup
+
+# Deletes a PR's branch once the PR is closed (merged or not). Run it by hand
+# from the Actions tab to delete every branch that has only closed PRs.
+# Never touches the default branch, branches without a PR, or tags.
+on:
+  pull_request:
+    types: [closed]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  pull-requests: read
+
+jobs:
+  cleanup:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Delete closed PR branches
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+          DEFAULT: ${{ github.event.repository.default_branch }}
+          SINGLE: ${{ github.event.pull_request.head.repo.full_name == github.repository && github.event.pull_request.head.ref || '' }}
+        run: |
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            BRANCHES="$SINGLE"
+          else
+            BRANCHES=$(gh api --paginate "repos/$REPO/branches" --jq '.[].name')
+          fi
+          for b in $BRANCHES; do
+            [ "$b" = "$DEFAULT" ] && continue
+            OWNER=${REPO%%/*}
+            OPEN=$(gh api "repos/$REPO/pulls?state=open&head=$OWNER:$b" --jq 'length')
+            CLOSED=$(gh api "repos/$REPO/pulls?state=closed&head=$OWNER:$b" --jq 'length')
+            if [ "$OPEN" = 0 ] && [ "$CLOSED" -gt 0 ]; then
+              echo "Deleting $b"
+              gh api -X DELETE "repos/$REPO/git/refs/heads/$b" || echo "Could not delete $b"
+            else
+              echo "Keeping $b (open PRs: $OPEN, closed PRs: $CLOSED)"
+            fi
+          done
