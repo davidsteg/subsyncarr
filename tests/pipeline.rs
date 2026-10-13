@@ -253,6 +253,22 @@ async fn full_pipeline() {
     assert_eq!(code, 400);
     let (_, queue) = api("GET", "/api/quality/review", None).await;
     assert_eq!(queue["total"], 0, "{queue}");
+
+    // Fresh scan: synced files are reprocessed, the parked forced sub stays parked.
+    let (code, res) = api("POST", "/api/run/start", Some(serde_json::json!({ "fresh": true }))).await;
+    assert_eq!(code, 200, "{res}");
+    wait_idle(&st.processor).await;
+    let fresh = st.db.get_run(res["runId"].as_str().unwrap()).await.unwrap().unwrap();
+    assert_eq!(fresh.total_files, 4, "good, intro, quoted and broken");
+
+    // With resetFailures the park is lifted as well.
+    let (code, res) =
+        api("POST", "/api/run/start", Some(serde_json::json!({ "fresh": true, "resetFailures": true }))).await;
+    assert_eq!(code, 200, "{res}");
+    wait_idle(&st.processor).await;
+    let reset = st.db.get_run(res["runId"].as_str().unwrap()).await.unwrap().unwrap();
+    assert_eq!(reset.total_files, 5, "the forced sub is back in");
+    assert!(st.runlogs.read(&reset.id).contains("cleared 1 strike(s)"), "{}", st.runlogs.read(&reset.id));
 }
 
 fn walk(dir: &Path) -> Vec<PathBuf> {

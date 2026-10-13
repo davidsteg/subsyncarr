@@ -1,4 +1,4 @@
-import { api, errorText } from './api';
+import { api, errorText, type StartRunBody } from './api';
 import { live } from './live.svelte';
 import { href, router } from './router.svelte';
 import type { ConfigInfo, ThemeSetting, VersionInfo } from './types';
@@ -127,16 +127,28 @@ export const mediaDrawer = new MediaDrawerStore();
 
 /* ---------------- Run actions shared by pages ---------------- */
 
-export async function startRun(opts: { paths?: string[]; dryRun?: boolean } = {}) {
-  const body: { paths?: string[]; dryRun?: boolean } = {};
+export async function startRun(opts: StartRunBody = {}) {
+  const body: StartRunBody = {};
   if (opts.paths && opts.paths.length) body.paths = opts.paths;
   if (opts.dryRun) body.dryRun = true;
+  if (opts.fresh) {
+    body.fresh = true;
+    if (opts.resetFailures) body.resetFailures = true;
+  }
   const prev = { run: live.currentRun, running: live.isRunning, dry: live.dryRun };
   live.markStarting(!!opts.dryRun);
   router.go(href('run'));
   try {
     await api.startRun(body);
-    toasts.success(opts.dryRun ? 'Dry run started' : body.paths ? 'Scan of selected paths started' : 'Full run started');
+    toasts.success(
+      opts.dryRun
+        ? 'Dry run started'
+        : body.paths
+          ? 'Scan of selected paths started'
+          : body.fresh
+            ? 'Fresh scan started'
+            : 'Full run started',
+    );
   } catch (e) {
     live.currentRun = prev.run;
     live.isRunning = prev.running;

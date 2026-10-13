@@ -48,6 +48,14 @@ impl SyncCacheEntry {
 }
 
 /// Column updates for one file_results row. `None` = leave unchanged.
+/// Rows cleared by [`Db::reset_failure_state`].
+#[derive(Debug, Default, Clone, Copy)]
+pub struct FailureReset {
+    pub strikes: u64,
+    pub engine_skips: u64,
+    pub parked: u64,
+}
+
 #[derive(Default)]
 pub struct FileUpdate<'a> {
     pub status: Option<FileStatus>,
@@ -522,6 +530,38 @@ impl Db {
         }
         qb.build().execute(&self.pool).await?;
         Ok(())
+    }
+
+    /// Clear strikes, engine skips and parks for every path under `roots`
+    /// (a fresh scan that starts each file over).
+    pub async fn reset_failure_state(&self, roots: &[String]) -> sqlx::Result<FailureReset> {
+        let mut n = FailureReset::default();
+        let mut tx = self.pool.begin().await?;
+        for root in roots {
+            let root = root.trim_end_matches('/');
+            let under = "(file_path = ?1 OR substr(file_path, 1, length(?1) + 1) = ?1 || '/')";
+            n.strikes += sqlx::query(&format!("DELETE FROM not_fitting_tracking WHERE {under}"))
+                .bind(root)
+                .execute(&mut *tx)
+                .await?
+                .rows_affected();
+            n.engine_skips += sqlx::query(&format!(
+                "UPDATE engine_failure_tracking SET consecutive_failures = 0, is_skipped = 0, updated_at = ?2
+                 WHERE {under} AND (is_skipped = 1 OR consecutive_failures > 0)"
+            ))
+            .bind(root)
+            .bind(now_ms())
+            .execute(&mut *tx)
+            .await?
+            .rows_affected();
+            n.parked += sqlx::query(&format!("DELETE FROM parked_files WHERE {under}"))
+                .bind(root)
+                .execute(&mut *tx)
+                .await?
+                .rows_affected();
+        }
+        tx.commit().await?;
+        Ok(n)
     }
 
     pub async fn skipped_engines(&self, path: &str) -> sqlx::Result<Vec<String>> {
