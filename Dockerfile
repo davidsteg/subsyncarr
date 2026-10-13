@@ -1,89 +1,68 @@
-# === Build stage ===
-FROM node:22-bookworm AS builder
-
-WORKDIR /app
-
-# Install build dependencies
-RUN apt-get update && apt-get install -y \
-    python3 \
-    python3-pip \
-    python3-venv \
-    pipx \
-    build-essential \
-    && rm -rf /var/lib/apt/lists/*
-
-# Install Node.js dependencies
-COPY package*.json ./
-ENV HUSKY=0
-RUN npm install --ignore-scripts && npm rebuild better-sqlite3
-
-# Copy source and build
-COPY . .
-RUN mkdir -p /home/node/.local/bin/ && cp bin/* /home/node/.local/bin/ && chown -R node:node /home/node/.local
+# === Frontend ===
+FROM node:22-bookworm-slim AS web
+WORKDIR /web
+COPY web/package.json web/package-lock.json ./
+RUN npm ci
+COPY web/ ./
 RUN npm run build
 
-# Install Python tools as node user
-USER node
-ENV PATH="/home/node/.local/bin:$PATH"
+# === Backend (the UI is embedded into the binary) ===
+FROM rust:1-bookworm AS server
+WORKDIR /src
+# Cache dependency builds separately from the source.
+COPY Cargo.toml Cargo.lock ./
+RUN mkdir src && echo 'fn main() {}' > src/main.rs && touch src/lib.rs \
+    && mkdir -p web/dist && echo '<!doctype html>' > web/dist/index.html \
+    && cargo build --release && rm -rf src web
+COPY build.rs CHANGELOG.md ./
+COPY src ./src
+COPY --from=web /web/dist ./web/dist
+RUN touch src/main.rs src/lib.rs && cargo build --release
+
+# === Python sync engines, built against the runtime's own Python ===
+FROM debian:bookworm-slim AS engines
+ENV PIPX_HOME=/opt/pipx PIPX_BIN_DIR=/opt/pipx/bin
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    python3 python3-venv pipx build-essential python3-dev \
+    && rm -rf /var/lib/apt/lists/*
 RUN pipx install ffsubsync \
     && pipx inject ffsubsync 'setuptools<82' \
     && pipx install autosubsync \
     && pipx inject autosubsync 'setuptools<82' \
-    && find /home/node/.local/share/pipx -type f -name "*.pyc" -delete 2>/dev/null || true \
-    && find /home/node/.local/share/pipx -type d -name "__pycache__" -delete 2>/dev/null || true
+    && find /opt/pipx -type f -name "*.pyc" -delete \
+    && find /opt/pipx -type d -name "__pycache__" -prune -exec rm -rf {} +
 
-# === Runtime stage ===
-FROM node:22-slim
+# === Runtime ===
+FROM debian:bookworm-slim
 
-ENV PUID=1000
-ENV PGID=1000
-ENV CRON_SCHEDULE="0 0 * * *"
-ENV NODE_OPTIONS="--max-old-space-size=896"
-ENV PATH="/home/node/.local/bin:$PATH"
+ENV PUID=1000 \
+    PGID=1000 \
+    CRON_SCHEDULE="0 0 * * *" \
+    DB_PATH=/app/data/subsyncarr-plus.db \
+    PATH="/opt/pipx/bin:$PATH"
 
-# Install runtime dependencies and gosu
 RUN apt-get update && apt-get install -y --no-install-recommends \
     ffmpeg \
     python3 \
-    cron \
-    curl \
     ca-certificates \
+    curl \
     && dpkgArch="$(dpkg --print-architecture)" \
     && curl -fsSL "https://github.com/tianon/gosu/releases/download/1.17/gosu-$dpkgArch" -o /usr/local/bin/gosu \
     && chmod +x /usr/local/bin/gosu \
-    && curl -fsSL "https://github.com/kaegi/alass/releases/download/v2.0.0/alass-linux64" -o /usr/local/bin/alass \
-    && chmod +x /usr/local/bin/alass \
-    && apt-get purge -y curl \
-    && apt-get autoremove -y \
-    && rm -rf /var/lib/apt/lists/*
+    && rm -rf /var/lib/apt/lists/* \
+    && groupadd -g 1000 subsyncarr \
+    && useradd -m -u 1000 -g 1000 -s /bin/bash subsyncarr \
+    && mkdir -p /app/data && chown subsyncarr:subsyncarr /app/data
+
+COPY --chmod=755 bin/alass /usr/local/bin/alass
+COPY --from=engines /opt/pipx /opt/pipx
+COPY --from=server /src/target/release/subsyncarr /usr/local/bin/subsyncarr
+COPY --chmod=755 entrypoint.sh /entrypoint.sh
 
 WORKDIR /app
-
-# Copy built app from builder
-COPY --from=builder --chown=node:node /app/dist ./dist
-COPY --from=builder --chown=node:node /app/public ./public
-COPY --from=builder --chown=node:node /app/node_modules ./node_modules
-COPY --from=builder --chown=node:node /app/package.json ./package.json
-COPY --from=builder --chown=node:node /app/VERSION ./VERSION
-
-# Copy alass binary
-COPY --from=builder --chown=node:node /home/node/.local/bin/alass /home/node/.local/bin/alass
-
-# Copy Python tools from builder
-COPY --from=builder --chown=node:node /home/node/.local /home/node/.local
-
-# Create data directory
-RUN mkdir -p /app/data && chown node:node /app/data
-
-# Copy entrypoint + two-process supervisor
-COPY entrypoint.sh /entrypoint.sh
-COPY supervisor.sh /supervisor.sh
-RUN chmod +x /entrypoint.sh /supervisor.sh
-
 EXPOSE 3000
+HEALTHCHECK --interval=30s --timeout=5s --start-period=20s \
+    CMD curl -fsS http://127.0.0.1:3000/api/health || exit 1
 
-USER root
 ENTRYPOINT ["/entrypoint.sh"]
-# Two processes (API + worker) in one container. Revert to single-process with:
-#   CMD ["node", "dist/index-server.js"]
-CMD ["/supervisor.sh"]
+CMD ["subsyncarr"]

@@ -1,11 +1,14 @@
-# .dockerignore
-node_modules
-vendor
 .git
+target
+web/node_modules
+web/dist
+data
 test-srts
 *.log
+*.db
+*.db-shm
+*.db-wal
 CODEBASE_REFERENCE.md
 docker-compose.dev.yaml
-subsyncarr-plus.db
 builds
 testlogs

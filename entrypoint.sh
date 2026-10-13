@@ -1,16 +1,17 @@
 #!/bin/bash
+set -e
 
-# Adjust node user UID/GID at runtime if PUID/PGID are set
+# Run as PUID:PGID so synced subtitles keep the media library's ownership.
 PUID=${PUID:-1000}
 PGID=${PGID:-1000}
 
-if [ "$(id -u node)" != "$PUID" ] || [ "$(id -g node)" != "$PGID" ]; then
-  groupmod -o -g "$PGID" node
-  usermod -o -u "$PUID" node
-  chown -R node:node /home/node
+if [ "$(id -u subsyncarr)" != "$PUID" ] || [ "$(id -g subsyncarr)" != "$PGID" ]; then
+  groupmod -o -g "$PGID" subsyncarr
+  usermod -o -u "$PUID" subsyncarr
+  chown -R subsyncarr:subsyncarr /home/subsyncarr
 fi
 
-# Always fix ownership on /app/data — it's a mounted volume with unpredictable ownership
-chown -R node:node /app/data
+# /app/data is a mounted volume with unpredictable ownership.
+chown -R subsyncarr:subsyncarr /app/data
 
-exec gosu node "$@"
+exec gosu subsyncarr "$@"

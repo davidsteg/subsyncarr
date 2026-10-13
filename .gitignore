@@ -1,12 +1,10 @@
-# macOS
 .DS_Store
-
-/node_modules
-/build
-/dist
-/coverage
-.eslintcache
 .env
+
+/target
+/web/node_modules
+/web/dist
+
 /test-srts
 CODEBASE_REFERENCE.md
 docker-compose.dev.yaml
@@ -16,8 +14,7 @@ builds
 *.tar.gz
 testlogs
 
-# Data directory (runtime data)
-data/logs/
-*.db-shm
-*.db-waldata/
+# Runtime data
 data/
+*.db-shm
+*.db-wal

@@ -1,3 +1,30 @@
+## [2.0.0] — 2026-10-13
+
+### Changed
+
+- **Rewritten in Rust.** The Node.js worker and API reader are replaced by one Rust binary (axum, tokio, sqlx). It idles at about 15 MB of RAM instead of hundreds, and dashboard reads never wait on the engine.
+- **New web UI.** Svelte 5 + TypeScript, embedded in the binary. Includes a dashboard, a live run view with per-file progress and scan progress, history with per-status tabs, a library browser with per-file detail, server logs, settings and a changelog. Light, dark and system themes, and it works on a phone. Live updates are batched over one WebSocket.
+- **Faster scans.** The directory walk runs in parallel (`SCAN_CONCURRENCY`, default 32 threads). The sync cache is loaded into memory once per scan. Already-synced files are no longer re-read on every run.
+- **Faster database.** New indexes on run files (per-file updates were a full table scan), bulk inserts of pending files, and engine stats updated in SQL.
+- **Settings resolve in one place:** UI value, then environment variable, then default. `DEFAULT_ENGINE`/`FALLBACK_ENGINE` set from the UI are now honoured.
+- Container user is `subsyncarr` instead of `node`; `PUID`/`PGID` work as before. Added a Docker health check on `/api/health`.
+
+### Fixed
+
+These fixes are carried over from the 1.x sync audit:
+
+- Engine crashes and timeouts are now "failed" (no strike, file untouched) instead of counting towards deletion as "not fitting".
+- Forced subtitles (`forced`/`foreign` in the last tags) are never deleted. alass aligns them with `--no-split`, and after the strike threshold they are parked until the file changes.
+- A subtitle replaced on disk (detected by content hash) gets its strikes, engine skips and parking reset.
+- Engines run without a shell, so file names containing quotes, `$` or backticks are safe. A timeout or Skip kills the whole process group, including ffmpeg children.
+- Symlinked folders are followed, with loop protection. `EXCLUDE_PATHS` matches whole path components only, so `/media/TV` no longer excludes `/media/TV Shows`.
+- More video containers are recognised: mov, m4v, ts, m2ts, webm, wmv, mpg, mpeg.
+- A UTF-8 BOM no longer breaks offset calculation.
+
+### Removed
+
+- `SUBTITLE_FORMAT` / `SYNC_FORMAT=standard` (sidecar mode). Subsyncarr always syncs in place and logs a warning if they are set. `NODE_OPTIONS` is no longer used.
+
 ## [1.3.41] — 2026-08-18
 
 ### Added

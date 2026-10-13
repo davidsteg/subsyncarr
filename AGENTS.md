@@ -2,91 +2,75 @@
 
 ## Project
 
-Subsyncarr is an automated subtitle synchronization tool for Docker. It syncs `.srt` files in place against their matching video file using alass and ffsubsync engines. Fork of johnpc/subsyncarr.
+Subsyncarr is an automated subtitle synchronization tool for Docker. It syncs `.srt` files in place against their matching video file using the alass and ffsubsync engines (autosubsync optional). Fork of johnpc/subsyncarr.
 
 - **Repo:** davidsteg/subsyncarr
-- **Language:** TypeScript (Node.js)
-- **Build:** `npm run build` (tsc)
-- **Tests:** `npm test` (jest)
+- **Language:** Rust (backend, single binary), Svelte 5 + TypeScript (web UI in `web/`, embedded into the binary at compile time)
+- **Build:** `cd web && npm ci && npm run build`, then `cargo build --release`
+- **Tests:** `cargo test` (unit tests in each module, end-to-end pipeline in `tests/pipeline.rs` with a fake engine)
+- **Checks:** `cargo fmt --check`, `cargo clippy --all-targets -- -D warnings`, `cd web && npm run check`
 - **Docker:** `docker build -t davidsteg/subsyncarr:<version> .`
 - **Deploy:** `docker kill subsyncarr && docker rm subsyncarr && docker run ...` (no compose plugin)
 
 ## Architecture
 
-Two-process split (since v1.3.38):
-
-- **Worker** (`index-server.ts`): runs the sync engine, writes to DB and media files, serves the UI on localhost:3001. Sole writer.
-- **API reader** (`index-api.ts`): serves dashboard reads from a read-only SQLite connection (WAL), reverse-proxies control POSTs/WebSocket to the worker. Listens on port 3000.
-
-Both managed by `supervisor.sh` (CMD in Dockerfile).
+One process (since 2.0). axum serves the REST API, WebSocket and embedded UI on port 3000. The sync engine runs as tokio tasks in the same process. SQLite is accessed through sqlx (WAL, connection pool), so dashboard reads never block on the engine.
 
 ## Key Components
 
-- `src/processingEngine.ts` — main sync orchestration, concurrency, engine calls, agreement checks
-- `src/findAllSrtFiles.ts` — directory walk, sync-status detection, legacy header migration, orphan/corrupt cleanup
-- `src/helpers.ts` — SRT parsing, sync marker constants, `markSrtAsSynced()`, `stripLegacySyncHeader()`, `isSyncedSrt()`
-- `src/database.ts` — SQLite via better-sqlite3, migrations, sync cache (`synced_files` table), run history, settings
-- `src/coordinator.ts` — bridges HTTP API ↔ processing engine, manages run lifecycle
-- `src/server.ts` — Express + WebSocket server, REST API, static UI
-- `src/config.ts` — env var parsing (SCAN_PATHS, EXCLUDE_PATHS, CRON_SCHEDULE, etc.)
-- `src/engineRuntime.ts` — runtime config singleton (timeouts, concurrency from DB settings)
-- `src/decideOutcome.ts` — pure function: engine agreement/shift logic
-- `src/anchorPlanner.ts` — fast-path: groups subtitles by video, syncs anchor first, followers align sub-to-sub
-- `src/subtitleOffsetCalculator.ts` — calculates offset between original and synced subtitles
-- `src/stateManager.ts` — run state, log file management, DB lifecycle
+- `src/lib.rs` — wiring (`build`), background jobs (cron, retention cleanup, startup scan), `run()`
+- `src/processor.rs` — run lifecycle, concurrency, per-file pipeline, outcome handling (keep / not fitting / failed), parking of forced subs
+- `src/scanner.rs` — parallel directory walk (rayon), follows symlinks with loop protection, sync-status classification, orphan/corrupt cleanup, legacy header migration
+- `src/engines.rs` — spawning engines (argv, own process group, timeout/cancel kill), backup/restore, output validation
+- `src/decide.rs` — pure function: engine agreement → `Outcome`
+- `src/anchor.rs` — forced detection, grouping by video, anchor/follower planning
+- `src/video.rs` — video matching with a per-directory listing cache
+- `src/srt.rs` — byte-level SRT helpers, offset calculation, legacy header handling
+- `src/db/` — `Db` (all queries) and `migrations.rs` (versions 1–14 identical to 1.x, 15 matches 1.x PR #1, 16+ are 2.x)
+- `src/settings.rs` — UI-editable settings, resolved DB → env → default in one place
+- `src/config.rs` — env var parsing
+- `src/events.rs` — event bus, batches WebSocket updates every 100 ms
+- `src/server.rs` — REST + WebSocket handlers (contract in `docs/API.md`)
+- `src/logbuf.rs` / `src/runlog.rs` — server log ring buffer (tracing layer) and per-run log files
+- `web/src/` — Svelte UI: `pages/`, `lib/components/`, `lib/api.ts`, `lib/live.svelte.ts` (WebSocket store)
 
 ## Sync Status Detection
 
-Since v1.3.40, sync status is tracked **solely via the database** (`synced_files` table, keyed by path + mtime + size). No file header is written anymore.
+Tracked solely via the database (`synced_files`, keyed by path + mtime + size). Synced files carry no header.
 
-- `markSrtAsSynced()` writes clean SRT content (no header)
-- `isSyncedSrt()` still detects old `# synced:` headers for backward compatibility (legacy migration)
-- `stripLegacySyncHeader()` strips the old header line from existing files — runs during scan and on startup
-- `isSyncedSrtSync()` — synchronous version for bulk scanning
-- `isCorruptSyncedSrt()` — detects synced files with zero parseable cues (repair pass deletes them)
+- mtime is stored Node-style (`sec*1000 + nsec/1e6`, float) so 1.x cache rows still match.
+- A cached file is read once to verify it has cues and to strip a legacy `# synced:` header, then marked `cues_verified`.
+- `file_fingerprints` holds a content hash; a changed file resets engine skips, strikes and parking.
 
-**DB-loss risk:** if the DB is lost, all files will be re-synced. Accepted trade-off — simpler than sidecar markers.
+**DB-loss risk:** if the DB is lost, all files will be re-synced. Accepted trade-off.
 
 ## Engine Pipeline
 
-1. Scan: walk directories, check sync status via DB cache → header fallback
-2. For each unsynced file: try `DEFAULT_ENGINE`, then `FALLBACK_ENGINE`
-3. Agreement check: both engines must agree within `ENGINE_AGREEMENT_THRESHOLD_MS`
-4. If shift too large (>30s): restore backup, mark "not fitting" (strike system: 3 strikes → delete)
-5. If zero cues in output: reject, restore backup
-6. On success: write clean SRT, add to sync cache
+1. Scan: walk, skip parked files, check the sync cache, fall back to the legacy header.
+2. Group subtitles by video. With anchor alignment on, the largest non-forced subtitle is synced against the video and the others are aligned to it.
+3. Run `DEFAULT_ENGINE` and `FALLBACK_ENGINE`. Both must agree within `ENGINE_AGREEMENT_THRESHOLD_MS`.
+4. Shift > `MAX_SUBTITLE_SHIFT_MS` or disagreement → not fitting: restore, strike; at the threshold delete (forced: park instead).
+5. Both engines failed (crash/timeout) → failed: restore, no strike.
+6. Success: install output in place, add to sync cache.
 
 ## Environment Variables
 
-| Variable                 | Default                        | Description                                       |
-| ------------------------ | ------------------------------ | ------------------------------------------------- |
-| `SCAN_PATHS`             | `/scan_dir`                    | Comma-separated media paths to scan               |
-| `EXCLUDE_PATHS`          | (empty)                        | Comma-separated paths to skip                     |
-| `CRON_SCHEDULE`          | `0 0 * * *`                    | Cron schedule for automatic runs                  |
-| `DEFAULT_ENGINE`         | `ffsubsync`                    | Primary sync engine                               |
-| `FALLBACK_ENGINE`        | `alass`                        | Fallback if primary fails                         |
-| `SYNC_FORMAT`            | `overwrite`                    | `overwrite` (in-place) or `standard` (sidecar)    |
-| `DRY_RUN`                | `false`                        | No writes, just log what would happen             |
-| `DB_PATH`                | `/app/data/subsyncarr-plus.db` | SQLite database path                              |
-| `INCLUDE_ENGINES`        | `ffsubsync,autosubsync,alass`  | Which engines to enable                           |
-| `SYNC_TIMEOUT`           | (seconds)                      | Per-engine timeout                                |
-| `SYNC_ENGINE_TIMEOUT_MS` | 300000                         | Per-engine timeout in ms (overrides SYNC_TIMEOUT) |
+See the Configuration table in `README.md`.
 
 ## Release Workflow
 
-**Every commit is a release. No exceptions.** Every change — code, CSS, docs, config — gets a version bump + CHANGELOG entry + commit + tag push. The GitHub Action builds and publishes automatically.
+**Every commit to `master` is a release.** Every change gets a version bump + CHANGELOG entry + commit + tag push. The GitHub Action builds and publishes automatically.
 
-1. Edit code → `npm run build` → `npm test`
-2. Bump version in `CHANGELOG.md` (Keep-a-Changelog format, no "v" prefix)
+1. Edit code → `cargo fmt` → `cargo clippy --all-targets -- -D warnings` → `cargo test` (and `npm run check && npm run build` in `web/` for UI changes)
+2. Bump the version in `Cargo.toml`, `VERSION` and `CHANGELOG.md` (Keep-a-Changelog format, no "v" prefix)
 3. `git commit` → `git push origin master`
 4. `git tag <version>` → `git push origin <version>`
-5. GitHub Action (`.github/workflows/docker-publish.yml`) builds image, pushes to Docker Hub, creates GitHub Release
-6. No `gh` CLI needed — everything via git tag push
+5. GitHub Action (`.github/workflows/docker-publish.yml`) builds the image, pushes to Docker Hub, creates the GitHub Release
+6. `.github/workflows/ci.yml` runs checks and tests on every push and PR
 
 ## Conventions
 
-- Version: SemVer without "v" prefix (e.g. `1.3.40`, not `v1.3.40`)
+- Version: SemVer without "v" prefix (e.g. `2.0.0`)
 - Branch: `master` (not `main`)
-- Pre-commit hooks: prettier + eslint (husky) — must pass before commit
 - CHANGELOG: `## [version] — YYYY-MM-DD` format
 - No German in codebase — all English

@@ -1,352 +1,134 @@
 # Subsyncarr
 
-An automated subtitle synchronization tool that runs as a Docker container. It continuously monitors your media directories for video files with out-of-sync subtitles and automatically synchronizes them using three sync engines (ffsubsync, autosubsync, and alass).
+Subsyncarr keeps the subtitles in your media library in sync with their videos. It runs as a Docker container, scans your library on a schedule, and aligns each `.srt` in place with [alass](https://github.com/kaegi/alass), [ffsubsync](https://github.com/smacke/ffsubsync) and optionally [autosubsync](https://github.com/oseiskar/autosubsync).
 
-This is a fork of [johnpc/subsyncarr](https://github.com/johnpc/subsyncarr).
-
-**Docker Hub:** [mrorbitman/subsyncarr](https://hub.docker.com/r/mrorbitman/subsyncarr)
+This is a fork of [johnpc/subsyncarr](https://github.com/johnpc/subsyncarr). Since 2.0 it is a single Rust binary with an embedded Svelte web UI.
 
 ## Features
 
-### Core Functionality
+- **In-place sync.** Each subtitle is aligned against its video and overwritten. Already-synced files are tracked in SQLite (path, mtime and size), so files are left byte-for-byte clean for Plex, Jellyfin and ffprobe.
+- **Two-engine agreement check.** The default and fallback engines run independently. The result is kept only if they agree within `ENGINE_AGREEMENT_THRESHOLD_MS`.
+- **Three outcomes, not two.**
+  - **Synced:** the engines agree.
+  - **Not fitting:** the engines disagree, or the shift is larger than `MAX_SUBTITLE_SHIFT_MS`. The subtitle probably belongs to another release. This earns a strike, and after `NOT_FITTING_DELETE_THRESHOLD` consecutive strikes the subtitle is deleted.
+  - **Failed:** the engines crashed or timed out. No strike is recorded and the file is never touched.
+- **Forced subtitles are never deleted.** `*.forced.srt` and `*.foreign.srt` are aligned with a single global offset (`alass --no-split`). When they don't fit they are restored and parked until the file changes.
+- **Fast path for multi-language releases.** The largest subtitle of a video is synced against the audio. The other languages are aligned to it subtitle-to-subtitle, which takes milliseconds instead of minutes.
+- **Change detection.** A content hash per file means that replacing a subtitle (for example via Bazarr) clears its strikes, engine skips and parking.
+- **Engine safety.** Engines are started without a shell, so odd file names are safe. Each runs in its own process group, so a timeout or Skip also kills ffmpeg children.
+- **Live web UI.** Dashboard, live run view with per-file progress, run history, library browser, server logs, settings and changelog. Light and dark themes, and it works on a phone.
+- **Low footprint.** One process with no runtime dependencies besides the engines, using about 15 MB of RAM when idle.
 
-- **Automated Subtitle Synchronization** - Syncs subtitles for your entire media library or specific folders.
-- **Multiple Sync Engines** - Uses ffsubsync, autosubsync, and alass for maximum compatibility and success rate
-- **Scheduled Processing** - Runs on a configurable cron schedule (default: daily at midnight) and on container startup
-- **Parallel Processing** - Configure concurrent subtitle processing for faster library syncing
-- **Skip Already Synced Files** - Avoids re-processing files that already have synchronized subtitles or where an engine repeatedly fails.
-- **Two-Engine Agreement Check** - Runs both engines independently and keeps the subtitle only when they agree on the alignment (within a configurable threshold). Subtitles both engines fail to agree on are treated as not matching the video and **deleted**.
-- **Processing History** - View past runs with detailed statistics, results, and logs
-- **Configuration Dashboard** - View current settings, monitored paths, and schedule status
-- **Configurable Timeouts** - Set per-engine timeout limits to prevent hung processes
-- **Log Management** - Configurable retention policies with automatic trimming and deletion
+> **Note:** Subsyncarr overwrites `.srt` files in place and deletes subtitles that repeatedly fail to fit their video. Keep a backup of subtitles you can't re-download, and run with `DRY_RUN=true` (or the **Dry run** button) first to see what would happen.
 
-> **Note:** This tool syncs subtitles **in place** (overwriting the original `.srt`) and **deletes** subtitles that consistently fail to align across multiple runs (see [Not-Fitting Delete Threshold](#not-fitting-delete-threshold) below). It also deletes its own leftover temp/retry files (`*.alass-tmp.srt`, `*.ffsubsync-tmp.srt`, `*.subsyncarr_retry.srt`) found during a scan — these are only ever created internally and orphaned copies (e.g. from a killed/restarted process) are safe to remove. Keep a backup of subtitles you can't easily re-download, and use `DRY_RUN=true` first to preview what would be changed or deleted.
-
-## Quick Start
-
-### Using Docker Compose (Recommended)
-
-1. **Create a docker-compose.yaml file** with the following content:
+## Quick start
 
 ```yaml
-name: subsyncarr
-
 services:
   subsyncarr:
-    image: mrorbitman/subsyncarr:latest
+    image: davidsteg/subsyncarr:latest
     container_name: subsyncarr
-    user: '1000:10'
     ports:
-      - '3000:3000' # Web UI
+      - "3000:3000"
     volumes:
-      # Mount your media directories
-      - /path/to/movies:/movies
-      - /path/to/tv:/tv
-      - /path/to/anime:/anime
-      - ./data:/app/data # Persist database across restarts
-    restart: unless-stopped
-    deploy:
-      resources:
-        limits:
-          memory: 768M # Hard limit
-        reservations:
-          memory: 128M # Minimum guaranteed memory
+      - /path/to/media:/media
+      - ./data:/app/data
     environment:
-      - TZ=Etc/UTC # Replace with your own timezone
       - PUID=1000
-      - PGID=10
-      - CRON_SCHEDULE=0 0 * * * # Runs every day at midnight by default
-      - SCAN_PATHS=/movies,/tv # Comma-separated paths to scan
-      - EXCLUDE_PATHS=/movies/temp,/tv/downloads # Optional: exclude directories
-      - MAX_CONCURRENT_SYNC_TASKS=1 # Number of parallel processing tasks
-      - INCLUDE_ENGINES=ffsubsync,autosubsync,alass # Engines to use
+      - PGID=1000
+      - TZ=Europe/Berlin
+      - SCAN_PATHS=/media
+      - CRON_SCHEDULE=0 0 * * *
+    restart: unless-stopped
 ```
 
-2. **Update the configuration:**
-
-   - Replace `/path/to/movies`, `/path/to/tv`, etc. with your actual media paths
-   - Update `TZ` to your timezone (e.g., `America/New_York`, `Europe/London`)
-   - Update `PUID` and `PGID` to match your user (run `id` command to find these)
-   - Adjust `SCAN_PATHS` to match your mounted volumes
-
-3. **Start the container:**
+Then open `http://<host>:3000`.
 
 ```bash
-docker compose up -d
-```
-
-4. **Access the Web UI:**
-
-Open your browser to [http://localhost:3000](http://localhost:3000) or whatever port you've mapped to inside docker.
-
-### Using Docker Run
-
-```bash
-docker run -d \
-  --name subsyncarr \
-  --user 1000:10 \
-  -p 3000:3000 \
-  -v /path/to/movies:/movies \
-  -v /path/to/tv:/tv \
-  -v ./data:/app/data \
-  -e TZ=Etc/UTC \
-  -e PUID=1000 \
-  -e PGID=10 \
-  -e CRON_SCHEDULE="0 0 * * *" \
-  -e SCAN_PATHS=/movies,/tv \
-  -e MAX_CONCURRENT_SYNC_TASKS=1 \
-  mrorbitman/subsyncarr:latest
+docker run -d --name subsyncarr -p 3000:3000 \
+  -v /path/to/media:/media -v ./data:/app/data \
+  -e PUID=1000 -e PGID=1000 -e SCAN_PATHS=/media \
+  davidsteg/subsyncarr:latest
 ```
 
 ## Configuration
 
-### Core Configuration
+Settings marked with ✎ can also be changed in the web UI. A value saved there takes precedence over the environment variable.
 
-| Variable                        | Default                       | Description                                                                                                                                                                                                                                                |
-| ------------------------------- | ----------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `SCAN_PATHS`                    | `/scan_dir`                   | Comma-separated directories to scan for SRT files (must be mounted as volumes)                                                                                                                                                                             |
-| `EXCLUDE_PATHS`                 | _(none)_                      | Comma-separated directories to exclude from scanning                                                                                                                                                                                                       |
-| `CRON_SCHEDULE`                 | `0 0 * * *`                   | Cron expression for sync schedule (daily at midnight), or `disabled` to turn off                                                                                                                                                                           |
-| `MAX_CONCURRENT_SYNC_TASKS`     | `1`                           | Number of subtitle files to process in parallel (higher = faster but more CPU)                                                                                                                                                                             |
-| `INCLUDE_ENGINES`               | `ffsubsync,autosubsync,alass` | Which sync engines to use (comma-separated)                                                                                                                                                                                                                |
-| `DEFAULT_ENGINE`                | `alass`                       | Primary engine; its alignment is kept when both engines agree                                                                                                                                                                                              |
-| `FALLBACK_ENGINE`               | `ffsubsync`                   | Second engine run for the agreement check                                                                                                                                                                                                                  |
-| `ENGINE_AGREEMENT_THRESHOLD_MS` | `5000`                        | Max ms the two engines' alignments may differ and still count as a match. Beyond this, the subtitle is judged not fitting the video for this run                                                                                                           |
-| `NOT_FITTING_DELETE_THRESHOLD`  | `3`                           | Consecutive runs a subtitle must fail to fit before it's actually deleted — see [Not-Fitting Delete Threshold](#not-fitting-delete-threshold)                                                                                                              |
-| `DRY_RUN`                       | `false`                       | Default dry-run mode: engines run normally but nothing is written or deleted. Can also be set per-run from the UI (Dry Run button / checkbox) or toggled persistently in Settings — a UI choice for a given run always takes precedence over this variable |
-| `SYNC_TIMEOUT`                  | _(none)_                      | Timeout in seconds per sync operation (overrides SYNC_ENGINE_TIMEOUT_MS)                                                                                                                                                                                   |
-| `SYNC_ENGINE_TIMEOUT_MS`        | `300000`                      | Timeout for each sync engine in milliseconds (5 min default)                                                                                                                                                                                               |
-| `ALASS_TIMEOUT_MS`              | _(none)_                      | Override timeout for alass only (takes precedence over SYNC_ENGINE_TIMEOUT_MS)                                                                                                                                                                             |
-| `FFSUBSYNC_TIMEOUT_MS`          | _(none)_                      | Override timeout for ffsubsync only (takes precedence over SYNC_ENGINE_TIMEOUT_MS)                                                                                                                                                                         |
-| `AUTOSUBSYNC_TIMEOUT_MS`        | _(none)_                      | Override timeout for autosubsync only (takes precedence over SYNC_ENGINE_TIMEOUT_MS)                                                                                                                                                                       |
-| `NODE_OPTIONS`                  | `--max-old-space-size=512`    | Node.js options, used here to set memory limit (in MB)                                                                                                                                                                                                     |
-| `WEB_PORT`                      | `3000`                        | Port for the web UI                                                                                                                                                                                                                                        |
-| `WEB_HOST`                      | `127.0.0.1`                   | Host to bind the web UI to (`0.0.0.0` to expose externally)                                                                                                                                                                                                |
-| `TZ`                            | _(system)_                    | Timezone for logging and cron scheduling (e.g., `America/New_York`)                                                                                                                                                                                        |
-| `PUID`                          | `1000`                        | User ID for file permissions (run `id -u` to find yours)                                                                                                                                                                                                   |
-| `PGID`                          | `1000`                        | Group ID for file permissions (run `id -g` to find yours)                                                                                                                                                                                                  |
+| Variable | Default | Description |
+| --- | --- | --- |
+| `SCAN_PATHS` | `/scan_dir` | Comma-separated directories to scan. Must be mounted. |
+| `EXCLUDE_PATHS` | | Comma-separated directories to skip, matched by whole path component. |
+| `CRON_SCHEDULE` | `0 0 * * *` | When to run automatically, or `disabled`. |
+| `STARTUP_SCAN` | `true` | Run once when the container starts. |
+| `INCLUDE_ENGINES` | `ffsubsync,autosubsync,alass` | Engines to use. |
+| `DEFAULT_ENGINE` ✎ | `alass` | Primary engine. Its alignment is kept when both agree. |
+| `FALLBACK_ENGINE` ✎ | `ffsubsync` | Second engine for the agreement check. |
+| `ENGINE_AGREEMENT_THRESHOLD_MS` ✎ | `5000` | Maximum disagreement between the two engines. |
+| `MAX_SUBTITLE_SHIFT_MS` ✎ | `30000` | Larger shifts mean the subtitle doesn't belong to this video. |
+| `NOT_FITTING_DELETE_THRESHOLD` ✎ | `3` | Consecutive not-fitting runs before a subtitle is deleted. |
+| `MAX_CONCURRENT_SYNC_TASKS` ✎ | `1` | Videos processed in parallel. Each engine decodes audio, so watch memory. |
+| `ANCHOR_ALIGNMENT` ✎ | `true` | Use the multi-language fast path. |
+| `DRY_RUN` ✎ | `false` | Run engines but write and delete nothing. |
+| `SYNC_ENGINE_TIMEOUT_MS` ✎ | `300000` | Per-engine timeout. `SYNC_TIMEOUT` (seconds) is also accepted. |
+| `ALASS_TIMEOUT_MS`, `FFSUBSYNC_TIMEOUT_MS`, `AUTOSUBSYNC_TIMEOUT_MS` ✎ | | Per-engine overrides. |
+| `SCAN_CONCURRENCY` | `32` | Threads used to walk the library. Lower it on spinning disks. |
+| `WEB_HOST` / `WEB_PORT` | `0.0.0.0` / `3000` | Where the UI listens. |
+| `DB_PATH` | `/app/data/subsyncarr-plus.db` | SQLite database. Run logs go to `logs/` next to it. |
+| `SERVER_LOG_BUFFER_SIZE` | `5000` | Lines kept for the Server logs page and `/api/logs`. |
+| `RETENTION_KEEP_RUNS_DAYS` | `30` | Delete runs older than this. |
+| `RETENTION_TRIM_LOGS_DAYS` | `7` | Trim stored logs of older runs. |
+| `RETENTION_CLEANUP_INTERVAL_HOURS` | `24` | How often cleanup and `VACUUM` run. |
+| `LOG_LEVEL` | `subsyncarr=info` | `tracing` filter for container logs, for example `subsyncarr=debug`. |
+| `ALASS_BIN`, `FFSUBSYNC_BIN`, `AUTOSUBSYNC_BIN` | name on `PATH` | Engine executables. |
+| `PUID` / `PGID` | `1000` | User and group that own the written files. |
+| `TZ` | | Time zone for the schedule and the UI. |
 
-### Database & Log Configuration
+`SUBTITLE_FORMAT`, `SYNC_FORMAT=standard` and `NODE_OPTIONS` from 1.x are no longer used. Subsyncarr always syncs in place and logs a warning if they are set.
 
-| Variable                           | Default                   | Description                                                            |
-| ---------------------------------- | ------------------------- | ---------------------------------------------------------------------- |
-| `DB_PATH`                          | `/app/data/subsyncarr.db` | SQLite database location                                               |
-| `LOG_BUFFER_SIZE`                  | `1000`                    | Ring buffer size for in-memory logs                                    |
-| `SERVER_LOG_BUFFER_SIZE`           | `5000`                    | Ring buffer size for the global server log (see `GET /api/logs` below) |
-| `RETENTION_KEEP_RUNS_DAYS`         | `30`                      | Keep complete runs for N days                                          |
-| `RETENTION_TRIM_LOGS_DAYS`         | `7`                       | Trim logs after N days (keeps summary only)                            |
-| `RETENTION_MAX_LOG_SIZE`           | `10000`                   | Max size for trimmed logs in bytes                                     |
-| `RETENTION_CLEANUP_INTERVAL_HOURS` | `24`                      | How often to run cleanup (in hours)                                    |
+### File naming
 
-### Timeout Configuration
-
-The `SYNC_ENGINE_TIMEOUT_MS` environment variable controls how long each sync engine can run before being terminated. This prevents hung processes from blocking the queue. The default is 5 minutes (300000ms).
-
-You can also set per-engine timeouts that take precedence over the general timeout:
-
-| Variable                 | Description                                    |
-| ------------------------ | ---------------------------------------------- |
-| `ALASS_TIMEOUT_MS`       | Timeout for alass only (in milliseconds)       |
-| `FFSUBSYNC_TIMEOUT_MS`   | Timeout for ffsubsync only (in milliseconds)   |
-| `AUTOSUBSYNC_TIMEOUT_MS` | Timeout for autosubsync only (in milliseconds) |
-
-Example configuration:
-
-```yaml
-environment:
-  - SYNC_ENGINE_TIMEOUT_MS=600000 # 10 minutes default for all engines
-  - ALASS_TIMEOUT_MS=300000 # 5 minutes for alass (overrides default)
-  - FFSUBSYNC_TIMEOUT_MS=1800000 # 30 minutes for ffsubsync (overrides default)
-```
-
-### Directory Structure
-
-Your media directory should be organized with video files and their corresponding subtitle files using matching names:
+Subtitles are matched to the video in the same folder by name. Language and flag tags are removed one at a time from the end:
 
 ```txt
-/movies
-├── Movie Title (2024).mkv
-├── Movie Title (2024).srt          # Will be synchronized
-├── Movie Title (2024).ffsubsync.srt # Generated output
-└── Another Movie.mp4
-    └── Another Movie.srt
-
-/tv
-├── Show Name/
-│   ├── Season 01/
-│   │   ├── Show.S01E01.mkv
-│   │   └── Show.S01E01.srt
+Movie (2024).mkv
+Movie (2024).en.srt            → Movie (2024).mkv
+Movie (2024).de.forced.srt     → Movie (2024).mkv (forced: never deleted)
+Show/S01E01.mkv
+Show/S01E01.en.sdh.srt         → S01E01.mkv
 ```
 
-The app follows standard naming conventions compatible with Plex, Jellyfin, Emby, and Bazarr.
+Supported video extensions: mkv, mp4, avi, mov, m4v, ts, m2ts, webm, wmv, mpg, mpeg.
 
-## Web UI
+## Upgrading from 1.x
 
-Subsyncarr Plus includes a comprehensive web-based monitoring interface accessible at `http://localhost:3000` after starting the container.
+The 2.0 image reads the existing `subsyncarr-plus.db` and migrates it in place. History, the sync cache, engine skips and strikes are all kept, so nothing is re-synced. Mount the same `/app/data` volume and keep the same environment variables. The container now runs as a user named `subsyncarr` instead of `node`. `PUID` and `PGID` still decide ownership.
 
-### UI Features
+## API
 
-**Real-time Monitoring:**
+The web UI uses a JSON API that you can also script against. Endpoints and WebSocket messages are documented in [docs/API.md](docs/API.md). Examples:
 
-- Live progress bars showing current processing status
-- File-by-file status updates via WebSocket
-- Engine-level detail (see which sync engine is running)
-- Current and queued files display
-
-**Manual Control:**
-
-- **Start Full Run** - Process all configured directories immediately
-- **Scan Specific Path** - Process a custom directory on demand
-- **Dry Run** - Run a full scan (or a specific path, via the checkbox in the Scan Specific Path dialog) with both engines executing normally, but without writing or deleting any files. A "DRY RUN" badge marks the run while it's active.
-- **Stop Processing** - Cancel all remaining files in current run
-- **Skip File** - Cancel processing for individual files
-
-**File Management:**
-
-- View completed and skipped files
-- Clear processed files from the UI
-- Track file status (pending, processing, completed, skipped, error)
-- See matched video files for each subtitle
-
-**Processing History:**
-
-- Sortable run history table with timestamps
-- Per-run statistics (total, completed, skipped, failed counts)
-- Engine-level results summary with notation:
-  - **F** = ffsubsync result
-  - **Au** = autosubsync result
-  - **Al** = alass result
-- Duration tracking for each run
-- View detailed logs for any past run with copy-to-clipboard functionality
-
-**Configuration Dashboard:**
-
-- Display of monitored paths and excluded paths
-- Schedule status with next run time
-- Human-readable cron schedule translation
-- Media stats: total/synced/skipped/pending file counts and per-engine sync rates (deduplicated by file, so a file tracked by multiple engines counts once)
-- Language distribution chart, grouped by detected subtitle language
-
-**Folders:**
-
-- Per-folder sync progress with drill-down navigation, showing synced/pending counts for each directory in your library
-
-### Database Persistence
-
-Processing history is stored in SQLite and persists across container restarts. Ensure the data volume is mounted:
-
-```yaml
-volumes:
-  - ./data:/app/data # Database and logs stored here
+```bash
+curl -X POST localhost:3000/api/run/start -H 'content-type: application/json' -d '{"paths":["/media/Movies/Alien (1979)"]}'
+curl "localhost:3000/api/logs?level=error&format=text"
 ```
-
-## Advanced Features
-
-### Auto-Skip on Repeated Failures
-
-The app intelligently tracks failures for each file/engine combination. After 3 consecutive failures, that engine will be automatically skipped for that specific file, preventing wasted processing time. You can reset skip status via the API endpoint `/api/skip-status/reset`.
-
-### Not-Fitting Delete Threshold
-
-When both sync engines disagree on a subtitle's alignment (or neither can align it at all), the subtitle doesn't just get deleted on the spot — that would risk deleting a good subtitle over a one-off transient failure (a video still being transferred, a network hiccup, an engine crash unrelated to actual fit). Instead, each file accumulates a "not-fitting" strike per run; the subtitle is only deleted once it fails to fit on `NOT_FITTING_DELETE_THRESHOLD` (default 3) **consecutive runs**. If a file fits on any run before reaching the threshold, its strike count resets to zero.
-
-Configurable from Settings ("Not-Fitting Delete Threshold") or the `NOT_FITTING_DELETE_THRESHOLD` environment variable. `DRY_RUN` mode never records strikes or deletes files, so it's safe to preview.
-
-### Memory Management
-
-Optimized for low-memory environments with:
-
-- Configurable memory limits (768MB default, 128MB minimum)
-- SQLite optimizations for low RAM usage
-- File-based logging with buffering to reduce memory pressure
-- Automatic database vacuuming and cleanup
-- Ring buffer for in-memory logs
-
-### Log Retention & Cleanup
-
-Automatic cleanup keeps your database size manageable:
-
-- Complete runs retained for 30 days (configurable)
-- Logs trimmed after 7 days, keeping only summaries
-- Runs beyond retention period are automatically deleted
-- Cleanup runs every 24 hours (configurable)
 
 ## Troubleshooting
 
-### View Container Logs
+- **Nothing is processed.** Check the Dashboard. If it says `SCAN_PATHS` is not configured, set it to your mounted media directory.
+- **Permission denied writing subtitles.** Set `PUID`/`PGID` to the owner of your media files (`id -u`, `id -g`).
+- **Container killed for memory.** Lower `MAX_CONCURRENT_SYNC_TASKS`. ffsubsync decodes audio with ffmpeg and can use several hundred MB per file.
+- **An engine is always skipped for a file.** After 3 failures an engine is skipped for that file. Replace the subtitle, or reset it from the Library page or via `POST /api/skip-status/reset`.
+
+## Development
 
 ```bash
-docker logs -f subsyncarr
+cd web && npm ci && npm run build && cd ..   # builds web/dist, embedded at compile time
+cargo test
+cargo run                                    # SCAN_PATHS=... DB_PATH=./data/dev.db
+cd web && npm run dev                        # UI with hot reload, proxies /api and /ws to :3000
 ```
-
-### Check Web UI Logs
-
-Detailed processing logs are available in the Web UI under "Processing History" - click on any run to view full logs.
-
-### Remote Log API
-
-`GET /api/logs` returns everything the server has logged (startup, route access, scheduled cleanup, errors) — not just one run's processing output — without needing to pull raw container/stdout logs by hand. Kept in an in-memory ring buffer (`SERVER_LOG_BUFFER_SIZE`, default 5000 entries); resets on restart.
-
-Query params (all optional):
-
-| Param    | Description                                                                                                  |
-| -------- | ------------------------------------------------------------------------------------------------------------ |
-| `limit`  | Max entries to return (default 500, max 5000)                                                                |
-| `level`  | `all` (default), `log`, `warn`, or `error`                                                                   |
-| `search` | Case-insensitive substring filter                                                                            |
-| `since`  | Only entries with `seq` greater than this — use the previous response's `latestSeq` to fetch just what's new |
-| `format` | `text` for a plain-text dump (one line per entry); omit for JSON                                             |
-
-```bash
-curl "http://localhost:3000/api/logs?limit=200&level=error"
-curl "http://localhost:3000/api/logs?format=text" # plain text, easy to paste/grep
-```
-
-### Permission Issues
-
-If you encounter permission errors, ensure `PUID` and `PGID` match your host user:
-
-```bash
-id -u  # Get your user ID
-id -g  # Get your group ID
-```
-
-Then update your docker-compose.yaml with these values.
-
-### Memory Issues
-
-If the container is being killed due to OOM (Out Of Memory):
-
-1. Reduce `MAX_CONCURRENT_SYNC_TASKS` to 1
-2. Increase memory limit in `NODE_OPTIONS` (e.g., `--max-old-space-size=1024`)
-3. Increase memory limit in docker-compose.yaml
-4. Reduce `SYNC_ENGINE_TIMEOUT_MS` for faster timeouts
-5. Exclude large files or problematic directories with `EXCLUDE_PATHS`
-
-### Files Not Being Processed
-
-Check that:
-
-1. Your subtitle files are named to match video files (e.g., `movie.mkv` and `movie.srt`)
-2. `SCAN_PATHS` matches your mounted volumes
-3. Files haven't already been synced (check for `.ffsubsync.srt` files)
-4. Files aren't being auto-skipped due to repeated failures (check skip status in Web UI)
-
-## Docker Hub
-
-Pull the latest image:
-
-```bash
-docker pull mrorbitman/subsyncarr:latest
-```
-
-**Docker Hub Repository:** [mrorbitman/subsyncarr](https://hub.docker.com/r/mrorbitman/subsyncarr)
-
-## Contributing
-
-Issues and pull requests are welcome! Please report bugs or suggest features via GitHub Issues.
 
 ## License
 
-See LICENSE file for details.
+See [LICENSE](LICENSE).
