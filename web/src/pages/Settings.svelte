@@ -10,6 +10,7 @@
     agreement: number;
     notFitting: number;
     anchorAlignment: boolean;
+    embeddedReference: boolean;
     defaultEngine: EngineName;
     fallbackEngine: EngineName;
     timeoutAlass: number;
@@ -47,6 +48,7 @@
       agreement: s.engineAgreementThresholdMs ?? 5000,
       notFitting: s.notFittingDeleteThreshold ?? 3,
       anchorAlignment: !!s.anchorAlignment,
+      embeddedReference: s.embeddedSubtitleReference ?? true,
       defaultEngine: toEngine(s.defaultEngine, 'ffsubsync'),
       fallbackEngine: toEngine(s.fallbackEngine, 'alass'),
       timeoutAlass: secs(s.engineTimeouts?.alass),
@@ -102,6 +104,7 @@
       engine_agreement_threshold_ms: Math.round(f.agreement),
       not_fitting_delete_threshold: Math.round(f.notFitting),
       anchor_alignment: f.anchorAlignment,
+      embedded_subtitle_reference: f.embeddedReference,
       default_engine: f.defaultEngine,
       fallback_engine: f.fallbackEngine,
       engine_timeout_alass: Math.round(f.timeoutAlass * 1000),
@@ -192,6 +195,19 @@
             <span class="help">
               Fast path: when a video has several subtitles, sync one (the anchor) against the audio and align the others to it
               sub-to-sub. Much faster on multi-language libraries.
+            </span>
+          </div>
+          <div class="field">
+            <span class="label" id="l-embedded">Embedded subtitle tracks</span>
+            <label class="switch">
+              <input type="checkbox" bind:checked={form.embeddedReference} aria-labelledby="l-embedded" />
+              <span class="track"></span>
+              <span>{form.embeddedReference ? 'Enabled' : 'Disabled'}</span>
+            </label>
+            <span class="help">
+              When the video has a full-length text subtitle track (e.g. SRT or ASS in an MKV), sync against it instead of the
+              audio, falling back to the audio when it doesn't fit. Faster, and much more reliable for forced subtitles.
+              Needs alass or ffsubsync for both engines.
             </span>
           </div>
         </div>

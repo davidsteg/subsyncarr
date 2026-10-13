@@ -90,8 +90,8 @@ interface ScanProgress {
 | GET | `/api/skip-status` | `{ totalSkipped, skippedByEngine: Record<string, number> }` |
 | POST | `/api/skip-status/reset` | body `{ filePath, engine? }` → `{ success: true }` |
 | GET | `/api/media?path=<abs path>` (also `/api/media/<abs path>`) | `{ filePath, notFittingStrikes, failureTracking: [{ engine, consecutive_failures, last_failure_time, last_success_time, is_skipped }], syncHistory: [{ runId, runStartTime, runStatus, fileStatus, engines: Record<string, EngineResult>, syncMode, anchorPath, updatedAt }] }` |
-| GET | `/api/settings` | `{ maxSubtitleShiftMs, engineAgreementThresholdMs, notFittingDeleteThreshold, engineTimeouts: { alass, ffsubsync, autosubsync }, maxConcurrentTasks, defaultEngine, fallbackEngine, dryRun, anchorAlignment, cronSchedule, includeEngines, theme }` |
-| POST | `/api/settings` | body: any of `max_subtitle_shift_ms, engine_agreement_threshold_ms, not_fitting_delete_threshold, engine_timeout_alass, engine_timeout_ffsubsync, engine_timeout_autosubsync, max_concurrent_tasks, default_engine, fallback_engine, dry_run, anchor_alignment, theme` (string or number/bool values) → `{ success: true }` |
+| GET | `/api/settings` | `{ maxSubtitleShiftMs, engineAgreementThresholdMs, notFittingDeleteThreshold, engineTimeouts: { alass, ffsubsync, autosubsync }, maxConcurrentTasks, defaultEngine, fallbackEngine, dryRun, anchorAlignment, embeddedSubtitleReference, cronSchedule, includeEngines, theme }` |
+| POST | `/api/settings` | body: any of `max_subtitle_shift_ms, engine_agreement_threshold_ms, not_fitting_delete_threshold, engine_timeout_alass, engine_timeout_ffsubsync, engine_timeout_autosubsync, max_concurrent_tasks, default_engine, fallback_engine, dry_run, anchor_alignment, embedded_subtitle_reference, theme` (string or number/bool values) → `{ success: true }` |
 
 ## WebSocket `/ws`
 

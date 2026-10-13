@@ -5,6 +5,7 @@ pub mod changelog;
 pub mod config;
 pub mod db;
 pub mod decide;
+pub mod embedded;
 pub mod engines;
 pub mod events;
 pub mod logbuf;
