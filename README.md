@@ -16,6 +16,7 @@ This is a fork of [johnpc/subsyncarr](https://github.com/johnpc/subsyncarr). Sin
 - **Fast path for multi-language releases.** The largest subtitle of a video is synced against the audio. The other languages are aligned to it subtitle-to-subtitle, which takes milliseconds instead of minutes.
 - **Change detection.** A content hash per file means that replacing a subtitle (for example via Bazarr) clears its strikes, engine skips and parking.
 - **Engine safety.** Engines are started without a shell, so odd file names are safe. Each runs in its own process group, so a timeout or Skip also kills ffmpeg children.
+- **Integrations.** Sonarr, Radarr and Bazarr can trigger a sync of new files right away, run summaries go to Apprise or Discord, and Jellyfin or Plex refresh the folders that changed. All off by default.
 - **Live web UI.** Dashboard, live run view with per-file progress, run history, library browser, server logs, settings and changelog. Light and dark themes, and it works on a phone.
 - **Low footprint.** One process with no runtime dependencies besides the engines, using about 15 MB of RAM when idle.
 
@@ -101,6 +102,39 @@ Show/S01E01.en.sdh.srt         → S01E01.mkv
 ```
 
 Supported video extensions: mkv, mp4, avi, mov, m4v, ts, m2ts, webm, wmv, mpg, mpeg.
+
+## Integrations
+
+Everything here is set on the **Settings** page and is off until you turn it on.
+
+### Webhooks (Sonarr, Radarr, Bazarr)
+
+Turn on **Sync on webhook** and set a token. The page then shows the URLs to paste:
+
+- **Sonarr / Radarr:** Settings → Connect → Webhook, method `POST`, URL `http://subsyncarr:3000/api/webhook/sonarr?token=<token>` (or `/radarr`), triggers *On Import* and *On Upgrade*. Subtitles next to the imported video are synced, and *Test* answers with a success.
+- **Bazarr:** Settings → Subtitles → Custom Post-Processing, command:
+
+  ```bash
+  curl -fsS -X POST -G "http://subsyncarr:3000/api/webhook/bazarr?token=<token>" --data-urlencode "path={{subtitles}}"
+  ```
+
+- **Anything else:** `POST /api/webhook` with `{"path": "/media/..."}` or `{"paths": [...]}`. A path can be a subtitle, a video (its subtitles are synced) or a folder.
+
+Calls are collected for 5 seconds and then synced as one run. If a run is already going, they wait for it. Paths must be inside `SCAN_PATHS` and outside `EXCLUDE_PATHS`. If the other app sees your library under a different path, add a path mapping such as `/tv=/media/tv`.
+
+### Notifications
+
+Set a URL and format:
+
+- **Apprise API** (`http://apprise:8000/notify/<key>`): reaches Telegram, ntfy, Gotify, Pushover, email and many more.
+- **Discord webhook** (`https://discord.com/api/webhooks/...`).
+- **Generic JSON:** posts `{ event, title, body, level, run, problems: [{ path, status }] }`.
+
+By default a message is sent when a run synced, failed or rejected something. You can also choose every run or failures only.
+
+### Media server refresh
+
+Pick Jellyfin (API key from Dashboard → API Keys) or Plex (`X-Plex-Token`). After a run that synced subtitles, only the changed folders are refreshed (more than 50 → a full library refresh). If the media server mounts the library elsewhere, add a path mapping such as `/media=/data`. Dry runs never trigger a refresh.
 
 ## Upgrading from 1.x
 

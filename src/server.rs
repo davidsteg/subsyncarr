@@ -5,9 +5,10 @@ use std::path::PathBuf;
 use std::sync::{Arc, Mutex, RwLock};
 use std::time::{Duration, Instant};
 
+use axum::body::Bytes;
 use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
 use axum::extract::{Path as AxPath, Query, State};
-use axum::http::{header, StatusCode};
+use axum::http::{header, HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use axum::{Json, Router};
@@ -20,6 +21,8 @@ use tracing::{error, info};
 use crate::config::Config;
 use crate::db::Db;
 use crate::events::EventBus;
+use crate::integrations::webhook::{self, TriggerQueue};
+use crate::integrations::{self, media, notify, PathMap};
 use crate::logbuf::{self, LogBuffer};
 use crate::models::FileStatus;
 use crate::processor::{Processor, RunError};
@@ -39,6 +42,7 @@ pub struct AppState {
     pub events: EventBus,
     pub logs: LogBuffer,
     pub runlogs: RunLogs,
+    pub webhooks: TriggerQueue,
     stats_cache: Mutex<Option<(Instant, u64, Value)>>,
 }
 
@@ -52,8 +56,19 @@ impl AppState {
         events: EventBus,
         logs: LogBuffer,
         runlogs: RunLogs,
+        webhooks: TriggerQueue,
     ) -> Arc<Self> {
-        Arc::new(AppState { db, cfg, settings, processor, events, logs, runlogs, stats_cache: Mutex::new(None) })
+        Arc::new(AppState {
+            db,
+            cfg,
+            settings,
+            processor,
+            events,
+            logs,
+            runlogs,
+            webhooks,
+            stats_cache: Mutex::new(None),
+        })
     }
 
     pub fn invalidate_stats(&self) {
@@ -109,6 +124,12 @@ pub fn router(state: Arc<AppState>) -> Router {
         .route("/api/media", get(media_query))
         .route("/api/media/{*path}", get(media_path))
         .route("/api/settings", get(get_settings).post(post_settings))
+        .route("/api/integrations/test", post(test_integration))
+        .route(
+            "/api/webhook",
+            post(|s: S, q: Query<WebhookQ>, h: HeaderMap, b: Bytes| webhook_in(s, AxPath("generic".into()), q, h, b)),
+        )
+        .route("/api/webhook/{source}", post(webhook_in))
         .route("/ws", get(ws_upgrade))
         .fallback(web::static_handler)
         .layer(CompressionLayer::new())
@@ -398,6 +419,152 @@ async fn post_settings(State(s): S, Json(body): Json<Value>) -> ApiResult {
     s.invalidate_stats();
     info!("Settings updated: {}", updates.iter().map(|(k, v)| format!("{k}={v}")).collect::<Vec<_>>().join(", "));
     Ok(Json(json!({ "success": true, "applied": updates.len() })))
+}
+
+// ----------------------------------------------------------- integrations
+
+#[derive(Deserialize)]
+struct WebhookQ {
+    token: Option<String>,
+    path: Option<String>,
+    apikey: Option<String>,
+}
+
+/// Token from `?token=`/`?apikey=`, `X-Api-Key`, `Authorization: Bearer`
+/// or the password of Basic auth (Sonarr/Radarr's username/password).
+fn webhook_token(q: &WebhookQ, h: &HeaderMap) -> Option<String> {
+    if let Some(t) = q.token.clone().or_else(|| q.apikey.clone()) {
+        return Some(t);
+    }
+    let header = |name: &str| h.get(name).and_then(|v| v.to_str().ok()).map(str::trim);
+    if let Some(k) = header("x-api-key") {
+        return Some(k.to_string());
+    }
+    let auth = header("authorization")?;
+    if let Some(t) = auth.strip_prefix("Bearer ") {
+        return Some(t.trim().to_string());
+    }
+    let b64 = auth.strip_prefix("Basic ")?;
+    let decoded = base64_decode(b64.trim())?;
+    let (_, pass) = decoded.split_once(':')?;
+    Some(pass.to_string())
+}
+
+fn base64_decode(s: &str) -> Option<String> {
+    const A: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let mut bits = 0u32;
+    let mut n = 0;
+    let mut out = Vec::new();
+    for c in s.bytes().filter(|&c| c != b'=') {
+        bits = (bits << 6) | A.iter().position(|&a| a == c)? as u32;
+        n += 6;
+        if n >= 8 {
+            n -= 8;
+            out.push((bits >> n) as u8);
+            bits &= (1 << n) - 1;
+        }
+    }
+    String::from_utf8(out).ok()
+}
+
+fn same(a: &str, b: &str) -> bool {
+    a.len() == b.len() && a.bytes().zip(b.bytes()).fold(0u8, |acc, (x, y)| acc | (x ^ y)) == 0
+}
+
+/// Body as JSON, or a form (`curl --data-urlencode path=…`) read as an object.
+fn webhook_body(h: &HeaderMap, body: &[u8]) -> Value {
+    if body.iter().all(u8::is_ascii_whitespace) {
+        return Value::Null;
+    }
+    let form = h
+        .get(header::CONTENT_TYPE)
+        .and_then(|v| v.to_str().ok())
+        .is_some_and(|ct| ct.starts_with("application/x-www-form-urlencoded"));
+    if !form {
+        if let Ok(v) = serde_json::from_slice(body) {
+            return v;
+        }
+    }
+    let map: serde_json::Map<String, Value> =
+        form_urlencoded::parse(body).map(|(k, v)| (k.into_owned(), Value::String(v.into_owned()))).collect();
+    Value::Object(map)
+}
+
+async fn webhook_in(
+    State(s): S,
+    AxPath(source): AxPath<String>,
+    Query(q): Query<WebhookQ>,
+    headers: HeaderMap,
+    body: Bytes,
+) -> ApiResult {
+    if !webhook::SOURCES.contains(&source.as_str()) {
+        return Err(not_found("Webhook source"));
+    }
+    let cfg = s.settings.read().unwrap().integrations.clone();
+    if !cfg.webhook_enabled {
+        return Err(ApiError(StatusCode::FORBIDDEN, "webhooks are disabled in Settings".into()));
+    }
+    if !cfg.webhook_token.is_empty() && !webhook_token(&q, &headers).is_some_and(|t| same(&t, &cfg.webhook_token)) {
+        return Err(ApiError(StatusCode::UNAUTHORIZED, "invalid or missing webhook token".into()));
+    }
+    let request = match q.path.as_deref().filter(|p| !p.trim().is_empty()) {
+        Some(p) => webhook::Request::Paths(vec![p.to_string()]),
+        None => webhook::parse(&webhook_body(&headers, &body)),
+    };
+    let raw = match request {
+        webhook::Request::Test => {
+            info!("Webhook test from {source}");
+            return Ok(Json(json!({ "ok": true, "message": "Subsyncarr received the test" })));
+        }
+        webhook::Request::Ignored(why) => return Ok(Json(json!({ "ok": true, "ignored": why }))),
+        webhook::Request::Paths(p) => p,
+    };
+    let map = PathMap::parse_lossy(&cfg.webhook_path_map);
+    let scan = s.cfg.scan.clone();
+    let (queued, errors) = tokio::task::spawn_blocking(move || {
+        let mut queued = Vec::new();
+        let mut errors = Vec::new();
+        for r in &raw {
+            match webhook::resolve(r, &map, &scan) {
+                Ok(p) => queued.extend(p),
+                Err(e) => errors.push(e),
+            }
+        }
+        (queued, errors)
+    })
+    .await
+    .map_err(|e| ApiError(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    for e in &errors {
+        info!("Webhook from {source}: {e}");
+    }
+    if queued.is_empty() && !errors.is_empty() {
+        return Err(ApiError(StatusCode::UNPROCESSABLE_ENTITY, errors.join("; ")));
+    }
+    info!("Webhook from {source}: queued {} path{} for sync", queued.len(), if queued.len() == 1 { "" } else { "s" });
+    let paths: Vec<String> = queued.iter().map(|p| p.to_string_lossy().into_owned()).collect();
+    s.webhooks.push(queued);
+    Ok(Json(json!({ "ok": true, "queued": paths, "errors": errors })))
+}
+
+#[derive(Deserialize)]
+struct TestBody {
+    target: String,
+}
+
+async fn test_integration(State(s): S, Json(b): Json<TestBody>) -> ApiResult {
+    let cfg = s.settings.read().unwrap().integrations.clone();
+    let client = integrations::http_client();
+    let result = match b.target.as_str() {
+        "notify" => {
+            notify::send(&client, &cfg, &notify::Message::test()).await.map(|()| "Test notification sent".into())
+        }
+        "media" => media::test(&client, &cfg).await,
+        _ => return Err(ApiError(StatusCode::BAD_REQUEST, "target must be notify or media".into())),
+    };
+    match result {
+        Ok(message) => Ok(Json(json!({ "ok": true, "message": message }))),
+        Err(e) => Err(ApiError(StatusCode::BAD_GATEWAY, format!("{e:#}"))),
+    }
 }
 
 // -------------------------------------------------------------- websocket

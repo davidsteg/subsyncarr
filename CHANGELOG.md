@@ -3,6 +3,10 @@
 ### Added
 
 - **Embedded subtitle tracks as sync reference.** When a video has a full-length text subtitle track (SRT, ASS, mov_text, WebVTT, e.g. in an MKV), subtitles are aligned against that track instead of the audio. It's faster and much more reliable for forced subtitles, whose few lines give audio alignment little to lock onto. Forced, commentary and "signs & songs" tracks and tracks under 50 lines are ignored, and bitmap tracks (PGS, VobSub) can't be used. If the subtitle doesn't fit against the track, it is retried against the audio before any strike, so a bad embedded track can never get a subtitle deleted. On by default; toggle it in Settings or with `EMBEDDED_SUBTITLE_REFERENCE`. Needs alass or ffsubsync for both engines.
+- **Webhooks.** Sonarr, Radarr and Bazarr can trigger an immediate sync of the files they just imported or downloaded (`POST /api/webhook/{sonarr,radarr,bazarr}`), instead of waiting for the next scheduled scan. Calls are collected for a few seconds and run as one small run, queued behind a run already in progress. Optional token and path mapping. Paths outside `SCAN_PATHS` or inside `EXCLUDE_PATHS` are refused.
+- **Notifications.** A summary after each run, with failed and not-fitting files listed by name, sent to an Apprise API endpoint, a Discord webhook or any URL accepting JSON. Choose whether to notify on every run, on runs that changed something, or only on failures.
+- **Media server refresh.** After a run, Jellyfin or Plex is asked to refresh just the folders that got synced subtitles, with optional path mapping.
+- Webhooks, notifications and the media server refresh are configured on the Settings page, with test buttons, and are off by default.
 
 ## [2.0.1] — 2026-10-13
 

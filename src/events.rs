@@ -26,6 +26,8 @@ pub enum Event {
 pub struct EventBus {
     tx: mpsc::UnboundedSender<Event>,
     out: broadcast::Sender<Arc<str>>,
+    /// Completed runs, for in-process listeners (notifications, media refresh).
+    runs: broadcast::Sender<Run>,
     /// Bumped whenever a run finishes, so caches of aggregate stats know to refresh.
     generation: Arc<AtomicU64>,
 }
@@ -34,13 +36,17 @@ impl EventBus {
     pub fn new(db: Db) -> Self {
         let (tx, rx) = mpsc::unbounded_channel();
         let (out, _) = broadcast::channel(256);
+        let (runs, _) = broadcast::channel(16);
         tokio::spawn(batcher(rx, out.clone(), db));
-        EventBus { tx, out, generation: Arc::new(AtomicU64::new(0)) }
+        EventBus { tx, out, runs, generation: Arc::new(AtomicU64::new(0)) }
     }
 
     pub fn send(&self, e: Event) {
         if matches!(e, Event::RunCompleted(_) | Event::RunCancelled(_)) {
             self.generation.fetch_add(1, Ordering::Relaxed);
+        }
+        if let Event::RunCompleted(r) = &e {
+            let _ = self.runs.send(r.clone());
         }
         let _ = self.tx.send(e);
     }
@@ -51,6 +57,10 @@ impl EventBus {
 
     pub fn subscribe(&self) -> broadcast::Receiver<Arc<str>> {
         self.out.subscribe()
+    }
+
+    pub fn subscribe_runs(&self) -> broadcast::Receiver<Run> {
+        self.runs.subscribe()
     }
 
     pub fn client_count(&self) -> usize {
