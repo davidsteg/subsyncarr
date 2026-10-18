@@ -1,30 +1,48 @@
-# Subsyncarr
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="docs/images/banner-dark.png">
+    <img src="docs/images/banner-light.png" alt="Subsyncarr" width="560">
+  </picture>
+</p>
 
-Subsyncarr keeps the subtitles in your media library in sync with their videos. It runs as a Docker container, scans your library on a schedule, and aligns each `.srt` in place with [alass](https://github.com/kaegi/alass), [ffsubsync](https://github.com/smacke/ffsubsync) and optionally [autosubsync](https://github.com/oseiskar/autosubsync).
+<p align="center">
+  <a href="https://github.com/davidsteg/subsyncarr/releases/latest"><img src="https://img.shields.io/github/v/release/davidsteg/subsyncarr?color=4f5bd5&label=release" alt="Latest release"></a>
+  <a href="https://hub.docker.com/r/davidsteg/subsyncarr"><img src="https://img.shields.io/docker/pulls/davidsteg/subsyncarr?color=4f5bd5&logo=docker&logoColor=white" alt="Docker pulls"></a>
+  <a href="https://hub.docker.com/r/davidsteg/subsyncarr"><img src="https://img.shields.io/docker/image-size/davidsteg/subsyncarr/latest?color=4f5bd5&label=image" alt="Image size"></a>
+  <a href="https://github.com/davidsteg/subsyncarr/actions/workflows/ci.yml"><img src="https://img.shields.io/github/actions/workflow/status/davidsteg/subsyncarr/ci.yml?branch=master&label=CI" alt="CI"></a>
+  <a href="LICENSE"><img src="https://img.shields.io/github/license/davidsteg/subsyncarr?color=4f5bd5" alt="License"></a>
+</p>
 
-This is a fork of [johnpc/subsyncarr](https://github.com/johnpc/subsyncarr). Since 2.0 it is a single Rust binary with an embedded Svelte web UI.
+<p align="center">
+  <b>Subsyncarr keeps the subtitles in your media library in sync with their videos.</b><br>
+  It runs as a Docker container, scans your library on a schedule, and aligns every <code>.srt</code> in place<br>
+  with <a href="https://github.com/kaegi/alass">alass</a>, <a href="https://github.com/smacke/ffsubsync">ffsubsync</a> and optionally <a href="https://github.com/oseiskar/autosubsync">autosubsync</a>.
+</p>
 
-## Features
+<p align="center">
+  <a href="#quick-start">Quick start</a> ·
+  <a href="#features">Features</a> ·
+  <a href="#screenshots">Screenshots</a> ·
+  <a href="#configuration">Configuration</a> ·
+  <a href="#integrations">Integrations</a> ·
+  <a href="docs/API.md">API</a>
+</p>
 
-- **In-place sync.** Each subtitle is aligned against its video and overwritten. Already-synced files are tracked in SQLite (path, mtime and size), so files are left byte-for-byte clean for Plex, Jellyfin and ffprobe.
-- **Two-engine agreement check.** The default and fallback engines run independently. The result is kept only if they agree within `ENGINE_AGREEMENT_THRESHOLD_MS`.
-- **Clear outcomes.**
-  - **Synced:** the engines agree.
-  - **Already in sync:** ffsubsync runs first. When it finds a shift under 250 ms, the other engine is skipped. When the engines disagree but ffsubsync finds a shift under 1 s, the result is the same. The subtitle is left untouched and gets no strike.
-  - **Not fitting:** both engines want a shift of 1 s or more and disagree, or both reject a shift larger than `MAX_SUBTITLE_SHIFT_MS`. The subtitle probably belongs to another release. This earns a strike, and after `NOT_FITTING_DELETE_THRESHOLD` consecutive strikes the subtitle is deleted. When only one engine wants a large shift, the subtitle is left unchanged without a strike. This also applies when one engine aligns it and the other rejects the shift as too large. Strikes count only when the run completes, so a stopped run or a restart never adds any.
-  - **Failed:** the engines crashed or timed out. No strike is recorded and the file is never touched.
-- **Forced subtitles are never deleted.** `*.forced.srt` and `*.foreign.srt` are aligned with a single global offset (`alass --no-split`). When they don't fit they are restored and parked until the file changes.
-- **Fast path for multi-language releases.** The largest subtitle of a video is synced against the audio. The other languages are aligned to it subtitle-to-subtitle, which takes milliseconds instead of minutes.
-- **Change detection.** A content hash per file means that replacing a subtitle (for example via Bazarr) clears its strikes, engine skips and parking.
-- **Engine safety.** Engines are started without a shell, so odd file names are safe. Each runs in its own process group, so a timeout or Skip also kills ffmpeg children.
-- **Integrations.** Sonarr, Radarr and Bazarr can trigger a sync of new files right away, run summaries go to Apprise or Discord, and Jellyfin or Plex refresh the folders that changed. All off by default.
-- **Sync confidence.** Every kept sync gets a 0–100 score from engine agreement, how many engines aligned, offset spread and split points, cue count, shift size and framerate correction. Syncs scoring below 50 are flagged for review on the Library page.
-- **Manual fixes from the library.** Open any subtitle in the Library to re-sync it on demand or shift every cue by a fixed offset. Each change is written in place, kept by later scans, and can be undone (the last 10 changes per file).
-- **Statistics.** Outcome trends, engine agreement and offset distributions, engine timings and failure rates, strikes and deletions over time, confidence scores, breakdowns by language, forced, movie or episode and folder, and subtitles without a video.
-- **Live web UI.** Dashboard, live run view with per-file progress, run history, library browser, statistics, server logs, settings and changelog. Light and dark themes, and it works on a phone.
-- **Low footprint.** One process with no runtime dependencies besides the engines, using about 15 MB of RAM when idle.
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="docs/screenshots/dashboard-dark.png">
+    <img src="docs/screenshots/dashboard.png" alt="Subsyncarr dashboard" width="900">
+  </picture>
+</p>
 
-> **Note:** Subsyncarr overwrites `.srt` files in place and deletes subtitles that repeatedly fail to fit their video. Keep a backup of subtitles you can't re-download, and run with `DRY_RUN=true` (or the **Dry run** button) first to see what would happen.
+## Why Subsyncarr
+
+- **It only keeps a sync when two engines agree.** Each subtitle is aligned by two independent engines, and the result is written only if they agree. Subtitles that already fit are left untouched.
+- **It cleans up subtitles that don't belong.** A subtitle that keeps failing to fit its video is probably from another release. After a few strikes it is deleted, so Bazarr can fetch a better one. Forced subtitles are never deleted.
+- **It is fast on real libraries.** Multi-language releases sync the largest subtitle against the audio and align the others to it in milliseconds. On a library that is mostly in sync, ffsubsync running first saves up to half the engine time.
+- **You can see everything it does.** A live web UI shows every run, every file and every engine decision, with a statistics page for sync quality over time.
+
+This is a fork of [johnpc/subsyncarr](https://github.com/johnpc/subsyncarr). Since 2.0 it is a single Rust binary with an embedded Svelte web UI, using about 15 MB of RAM when idle.
 
 ## Quick start
 
@@ -47,7 +65,7 @@ services:
     restart: unless-stopped
 ```
 
-Then open `http://<host>:3000`.
+Or with plain Docker:
 
 ```bash
 docker run -d --name subsyncarr -p 3000:3000 \
@@ -55,6 +73,83 @@ docker run -d --name subsyncarr -p 3000:3000 \
   -e PUID=1000 -e PGID=1000 -e SCAN_PATHS=/media \
   davidsteg/subsyncarr:latest
 ```
+
+Then open `http://<host>:3000`. The image is built for `linux/amd64`.
+
+> [!WARNING]
+> Subsyncarr overwrites `.srt` files in place and deletes subtitles that repeatedly fail to fit their video. Keep a backup of subtitles you can't re-download, and run with `DRY_RUN=true` (or the **Dry run** button) first to see what would happen.
+
+## How it works
+
+```mermaid
+flowchart LR
+    A[Scan library] --> B{Already synced?<br/>path + mtime + size}
+    B -- yes --> Z[Skip]
+    B -- no --> C[Group subtitles by video]
+    C --> D[Largest subtitle:<br/>ffsubsync, then alass<br/>against the audio]
+    C --> E[Other languages:<br/>aligned to the largest one]
+    D --> F{Engines agree?}
+    E --> F
+    F -- yes --> G[Write in place ✓]
+    F -- "shift under 1 s" --> H[Already in sync,<br/>left untouched]
+    F -- "both disagree or<br/>both reject" --> I[Not fitting: strike<br/>delete at threshold]
+    F -- crashed / timed out --> J[Failed: no strike,<br/>file untouched]
+```
+
+Every subtitle ends up in one of these outcomes:
+
+| Outcome | When | What happens |
+| --- | --- | --- |
+| **Synced** | The engines agree within `ENGINE_AGREEMENT_THRESHOLD_MS`. | The aligned subtitle is written in place and cached as synced. |
+| **Already in sync** | ffsubsync finds a shift under 250 ms (the other engine is skipped), or the engines disagree but ffsubsync's shift is under 1 s. | Left untouched, cached as synced, no strike. |
+| **Not fitting** | Both engines want a shift of 1 s or more and disagree, or both reject a shift larger than `MAX_SUBTITLE_SHIFT_MS`. | Restored and given a strike. After `NOT_FITTING_DELETE_THRESHOLD` consecutive strikes it is deleted (forced subtitles are parked instead). |
+| **Not fitting, unconfirmed** | Only one engine wants a large shift, including when one aligns it and the other rejects the shift as too large. | Left unchanged without a strike and retried next run. |
+| **Failed** | The engines crashed or timed out. | No strike, and the file is never touched. |
+
+Strikes count only when a run completes, so a stopped run or a restart never adds any.
+
+## Features
+
+**Syncing**
+
+- **In-place sync.** Each subtitle is aligned against its video and overwritten. Already-synced files are tracked in SQLite (path, mtime and size), so files stay byte-for-byte clean for Plex, Jellyfin and ffprobe.
+- **Embedded subtitles as a reference.** When the video has a full-length text subtitle track, it is used as the sync reference instead of the audio, with a fallback to the audio when it doesn't fit.
+- **Forced subtitles are never deleted.** `*.forced.srt` and `*.foreign.srt` are aligned with a single global offset (`alass --no-split`). When they don't fit they are restored and parked until the file changes.
+- **Fast path for multi-language releases.** The largest subtitle of a video is synced against the audio. The other languages are aligned to it subtitle-to-subtitle, which takes milliseconds instead of minutes.
+- **Change detection.** A content hash per file means that replacing a subtitle (for example via Bazarr) clears its strikes, engine skips and parking.
+- **Engine safety.** Engines are started without a shell, so odd file names are safe. Each runs in its own process group, so a timeout or Skip also kills ffmpeg children.
+
+**Web UI**
+
+- **Live view.** Dashboard, live run view with per-file progress, run history with full logs, server logs, settings and changelog. Light and dark themes, and it works on a phone.
+- **Sync confidence.** Every kept sync gets a 0–100 score from engine agreement, how many engines aligned, offset spread and split points, cue count, shift size and framerate correction. Syncs scoring below 50 are flagged for review on the Library page.
+- **Manual fixes from the library.** Open any subtitle in the Library to re-sync it on demand or shift every cue by a fixed offset. Each change is written in place, kept by later scans, and can be undone (the last 10 changes per file).
+- **Statistics.** Outcome trends, engine agreement and offset distributions, engine timings and failure rates, strikes and deletions over time, confidence scores, breakdowns by language, forced, movie or episode and folder, and subtitles without a video.
+
+**Integrations**
+
+- **Sonarr, Radarr and Bazarr** can trigger a sync of new files right away through webhooks.
+- **Notifications** with run summaries go to Apprise (Telegram, ntfy, Gotify, Pushover, email and more), Discord or any JSON endpoint.
+- **Jellyfin and Plex** refresh only the folders that changed.
+
+All integrations are off by default.
+
+## Screenshots
+
+<table>
+  <tr>
+    <td width="50%"><a href="docs/screenshots/live-run.png"><img src="docs/screenshots/live-run.png" alt="Live run"></a><p align="center"><b>Live run</b><br>Per-file progress and engine results as they happen.</p></td>
+    <td width="50%"><a href="docs/screenshots/run-detail.png"><img src="docs/screenshots/run-detail.png" alt="Run detail"></a><p align="center"><b>Run detail</b><br>Every subtitle's outcome, shifts and confidence.</p></td>
+  </tr>
+  <tr>
+    <td width="50%"><a href="docs/screenshots/library.png"><img src="docs/screenshots/library.png" alt="Library"></a><p align="center"><b>Library</b><br>Per-file confidence, engine status, re-sync, offset and undo.</p></td>
+    <td width="50%"><a href="docs/screenshots/statistics.png"><img src="docs/screenshots/statistics.png" alt="Statistics"></a><p align="center"><b>Statistics</b><br>Sync quality, engine agreement and timings over time.</p></td>
+  </tr>
+  <tr>
+    <td width="50%"><a href="docs/screenshots/history.png"><img src="docs/screenshots/history.png" alt="History"></a><p align="center"><b>History</b><br>Every run with its outcomes and duration.</p></td>
+    <td width="50%"><a href="docs/screenshots/settings.png"><img src="docs/screenshots/settings.png" alt="Settings"></a><p align="center"><b>Settings</b><br>Engines, thresholds and integrations, editable live.</p></td>
+  </tr>
+</table>
 
 ## Configuration
 
@@ -177,4 +272,4 @@ cd web && npm run dev                        # UI with hot reload, proxies /api 
 
 ## License
 
-See [LICENSE](LICENSE).
+MIT, see [LICENSE](LICENSE). Subsyncarr builds on [alass](https://github.com/kaegi/alass), [ffsubsync](https://github.com/smacke/ffsubsync) and [autosubsync](https://github.com/oseiskar/autosubsync), and started as a fork of [johnpc/subsyncarr](https://github.com/johnpc/subsyncarr).
