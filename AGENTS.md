@@ -54,9 +54,9 @@ Tracked solely via the database (`synced_files`, keyed by path + mtime + size). 
 1. Scan: walk, skip parked files, check the sync cache, fall back to the legacy header.
 2. Group subtitles by video. With anchor alignment on, the largest non-forced subtitle is synced against the video and the others are aligned to it.
    With `EMBEDDED_SUBTITLE_REFERENCE` on, "against the video" means against the video's largest full-length embedded text track (≥ 50 cues, extracted once per video per run to a temp dir) when it has one; if that pass doesn't keep the subtitle, it is re-run against the audio before any strike.
-3. Run `DEFAULT_ENGINE` and `FALLBACK_ENGINE`. Both must agree within `ENGINE_AGREEMENT_THRESHOLD_MS`.
+3. Run `DEFAULT_ENGINE` and `FALLBACK_ENGINE`, ffsubsync first when it is in the chain. Both must agree within `ENGINE_AGREEMENT_THRESHOLD_MS`. If ffsubsync's shift is < 250 ms (`decide::NEGLIGIBLE_SHIFT_MS`), the other engine is skipped and the file counts as already in sync.
 4. Disagreement with ffsubsync's shift < 1 s (`decide::IN_SYNC_MS`) → already in sync: restore, add to sync cache, no strike.
-   Both engines want ≥ 1 s and disagree, or both reject a shift > `MAX_SUBTITLE_SHIFT_MS` → not fitting: restore, strike; at the threshold delete (forced: park instead). Only one engine wants a large shift → restore, no strike.
+   Both engines want ≥ 1 s and disagree, or both reject a shift > `MAX_SUBTITLE_SHIFT_MS` → not fitting: restore, strike; at the threshold delete (forced: park instead). Only one engine wants a large shift → restore, no strike. That includes one engine aligning while the other rejects a shift > `MAX_SUBTITLE_SHIFT_MS`; a single engine's output is only installed when the other one crashed or timed out.
    Strikes are collected during the run and recorded when it completes; a stopped or interrupted run records none, and a file whose content changed meanwhile gets none.
 5. Both engines failed (crash/timeout) → failed: restore, no strike.
 6. Success: install output in place, add to sync cache.

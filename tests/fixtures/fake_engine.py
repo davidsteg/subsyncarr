@@ -28,6 +28,10 @@ elif "onesided" in name:
     shift = 0 if engine == "alass" else 20000
 elif "insync" in name:
     shift = 20000 if engine == "alass" else 300
+elif "settled" in name:
+    shift = 100
+elif "nearlimit" in name:
+    shift = 28000 if engine == "alass" else 60000
 elif "wrong" in name:
     shift = 60000
 elif "intro" in name:

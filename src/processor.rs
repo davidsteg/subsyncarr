@@ -18,7 +18,7 @@ use tracing::{error, info};
 use crate::anchor::{self, VideoGroup};
 use crate::config::{Config, ScanConfig};
 use crate::db::{Db, EngineRunRecord, FileUpdate, OutcomeRecord, RunCounter};
-use crate::decide::{decide_outcome, Alignment, Outcome, IN_SYNC_MS};
+use crate::decide::{decide_outcome, Alignment, Outcome, IN_SYNC_MS, NEGLIGIBLE_SHIFT_MS};
 use crate::embedded;
 use crate::engines::{self, sidecar_path, EngineRun};
 use crate::events::{Event, EventBus};
@@ -1123,14 +1123,10 @@ impl Processor {
                 FileOutcome::other("failed")
             }
             Outcome::InSync => {
-                let (a, b) = (&alignments[0], &alignments[1]);
+                let shifts: Vec<String> = alignments.iter().map(|(e, _, s)| format!("{e} {s}ms")).collect();
                 self.log(format!(
-                    "✓ {} sees a shift under {IN_SYNC_MS}ms ({} {}ms vs {} {}ms) — already in sync, leaving it unchanged: {name}",
-                    if a.0 == "ffsubsync" { &a.0 } else { &b.0 },
-                    a.0,
-                    a.2,
-                    b.0,
-                    b.2
+                    "✓ ffsubsync sees a shift under {IN_SYNC_MS}ms ({}) — already in sync, leaving it unchanged: {name}",
+                    shifts.join(" vs ")
                 ));
                 self.restore(path, original.as_deref());
                 if !ctx.run.dry_run {
@@ -1148,6 +1144,11 @@ impl Processor {
             Outcome::NotFitting | Outcome::Unconfirmed => {
                 if alignments.is_empty() {
                     self.log(format!("✗ No engine could sync: {name}"));
+                } else if alignments.len() == 1 {
+                    self.log(format!(
+                        "Only {} aligned ({}ms), the other engine wants a shift beyond the limit — subtitle doesn't fit: {name}",
+                        alignments[0].0, alignments[0].2
+                    ));
                 } else {
                     self.log(format!(
                         "{} vs {} disagree by {disagreement}ms (threshold: {threshold}ms) — subtitle doesn't fit: {name}",
@@ -1247,10 +1248,34 @@ impl Processor {
             results: Vec::new(),
             attempts: Vec::new(),
         };
-        for engine in [&s.default_engine, &s.fallback_engine] {
+        // ffsubsync goes first: when it finds the subtitle already in sync,
+        // the other engine (usually the slower alass, which tends to wander
+        // off on such files) isn't run at all. Results are reported in the
+        // configured order either way.
+        let swapped = s.fallback_engine == "ffsubsync" && s.default_engine != "ffsubsync";
+        let chain =
+            if swapped { [&s.fallback_engine, &s.default_engine] } else { [&s.default_engine, &s.fallback_engine] };
+        for (i, engine) in chain.into_iter().enumerate() {
             if ctx.run.is_cancelled(path) || token.is_cancelled() {
                 self.restore(path, original);
                 return Err(self.skipped(ctx, path, "cancelled").await);
+            }
+            let settled = match pass.alignments.first() {
+                Some((first, _, shift)) => i == 1 && first == "ffsubsync" && shift.abs() < NEGLIGIBLE_SHIFT_MS,
+                None => false,
+            };
+            if settled {
+                self.log(format!("⊘ Skipping {engine}: ffsubsync finds it already in sync: {name}"));
+                let r = EngineResult {
+                    success: false,
+                    skipped: true,
+                    message: "Skipped — ffsubsync finds it already in sync".into(),
+                    ..Default::default()
+                };
+                self.engine_completed(ctx, path, engine, &r, count).await;
+                self.record_engine_run(ctx, engine, reference_kind, &r).await;
+                pass.attempts.push(Attempt::failed(engine, &r));
+                continue;
             }
             if self.db.is_engine_skipped(&ps(path), engine).await.unwrap_or(false) {
                 self.log(format!("⊘ Skipping {engine} (3+ consecutive failures): {name}"));
@@ -1307,6 +1332,13 @@ impl Processor {
                 }
             }
             pass.results.push((engine.clone(), run.result));
+        }
+        if swapped {
+            // Back to the configured order: the default engine's output is
+            // the one kept when both agree.
+            pass.alignments.reverse();
+            pass.results.reverse();
+            pass.attempts.reverse();
         }
         Ok(pass)
     }

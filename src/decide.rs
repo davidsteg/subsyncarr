@@ -6,7 +6,12 @@
 //!   (no strike: a delete needs both engines to say so)
 //! - 0 alignments, engines only errored / timed out / were skipped → failed
 //!   (no strike: a crash says nothing about whether the subtitle fits)
-//! - 1 alignment: only one engine produced output → keep (a delete needs both)
+//! - 1 alignment from ffsubsync under [`NEGLIGIBLE_SHIFT_MS`] → already in
+//!   sync (the second engine is skipped, see `processor::run_chain`)
+//! - 1 alignment, the other engine rejected a too-large shift: ffsubsync under
+//!   [`IN_SYNC_MS`] → already in sync, otherwise → unconfirmed (one engine's
+//!   word is not enough to rewrite a subtitle the other says doesn't fit)
+//! - 1 alignment, the other engine only errored → keep
 //! - 2 alignments within threshold: engines agree → keep
 //! - 2 alignments beyond threshold, ffsubsync shift under [`IN_SYNC_MS`] →
 //!   already in sync (left untouched, no strike)
@@ -16,6 +21,10 @@
 
 /// ffsubsync finding less than this shift means the subtitle already fits.
 pub const IN_SYNC_MS: i64 = 1000;
+
+/// ffsubsync finding less than this shift settles the file on its own: the
+/// second engine isn't run, and nothing is rewritten.
+pub const NEGLIGIBLE_SHIFT_MS: i64 = 250;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Outcome {
@@ -42,7 +51,18 @@ pub fn decide_outcome(alignments: &[Alignment], agreement_threshold_ms: i64, mis
         [] if mismatch_reports >= 2 => Outcome::NotFitting,
         [] if mismatch_reports == 1 => Outcome::Unconfirmed,
         [] => Outcome::Failed,
-        [_] => Outcome::Keep,
+        [a] => {
+            let ffsubsync_within = |ms: i64| a.engine == "ffsubsync" && a.shift_ms.abs() < ms;
+            if ffsubsync_within(NEGLIGIBLE_SHIFT_MS) {
+                Outcome::InSync
+            } else if mismatch_reports == 0 {
+                Outcome::Keep
+            } else if ffsubsync_within(IN_SYNC_MS) {
+                Outcome::InSync
+            } else {
+                Outcome::Unconfirmed
+            }
+        }
         [a, b, ..] => {
             if (a.shift_ms - b.shift_ms).abs() <= agreement_threshold_ms {
                 Outcome::Keep
@@ -88,6 +108,23 @@ mod tests {
     #[test]
     fn single_is_keep() {
         assert_eq!(decide_outcome(&[al("alass", 99_999)], 5000, 0), Outcome::Keep);
+        assert_eq!(decide_outcome(&[al("ffsubsync", 600)], 5000, 0), Outcome::Keep);
+    }
+
+    #[test]
+    fn single_ffsubsync_negligible_is_in_sync() {
+        assert_eq!(decide_outcome(&[al("ffsubsync", 0)], 5000, 0), Outcome::InSync);
+        assert_eq!(decide_outcome(&[al("ffsubsync", -249)], 5000, 0), Outcome::InSync);
+        assert_eq!(decide_outcome(&[al("alass", 0)], 5000, 0), Outcome::Keep);
+    }
+
+    #[test]
+    fn single_with_other_rejected_is_not_kept() {
+        // The production pattern: one engine lands near the 30 s limit, the
+        // other wants even more. Never rewrite on that alone.
+        assert_eq!(decide_outcome(&[al("alass", 28_000)], 5000, 1), Outcome::Unconfirmed);
+        assert_eq!(decide_outcome(&[al("ffsubsync", 27_500)], 5000, 1), Outcome::Unconfirmed);
+        assert_eq!(decide_outcome(&[al("ffsubsync", 600)], 5000, 1), Outcome::InSync);
     }
 
     #[test]
