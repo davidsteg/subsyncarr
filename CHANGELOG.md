@@ -1,3 +1,15 @@
+## [2.3.1] — 2026-10-18
+
+Safer single-engine syncs, ffsubsync first
+
+### Fixed
+
+- **No more rewrites on one engine's word when the other says the subtitle doesn't fit.** When one engine aligned a subtitle and the other rejected the shift as larger than `MAX_SUBTITLE_SHIFT_MS`, the one result was installed anyway. These were most of the weak syncs in Review, typically forced subtitles with about 10 lines shifted close to the 30 s limit. Such a subtitle is now left unchanged without a strike (not fitting, unconfirmed) and retried next run. If ffsubsync is the one that aligned and finds a shift under 1 s, the subtitle counts as already in sync. A single engine's result is still installed when the other engine crashed or timed out.
+
+### Changed
+
+- **ffsubsync runs first.** When it is in the engine chain, ffsubsync now runs before the other engine. If it finds a shift under 250 ms, the subtitle is already in sync: the other engine (usually alass, which tends to propose large shifts on such files) is skipped and nothing is rewritten. On a library that is mostly in sync, this saves up to half the engine time. Run logs and statistics still list the engines in the configured order, and when both agree the default engine's output is kept as before.
+
 ## [2.3.0] — 2026-10-13
 
 Statistics page: sync quality over time
