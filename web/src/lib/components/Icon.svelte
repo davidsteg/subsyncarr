@@ -32,7 +32,7 @@
     target: 'M12 21a9 9 0 1 0 0-18 9 9 0 0 0 0 18zM12 16a4 4 0 1 0 0-8 4 4 0 0 0 0 8zM12 12h.01',
     clock: 'M12 21a9 9 0 1 0 0-18 9 9 0 0 0 0 18zM12 7v5l3 2',
     pin: 'M12 21s-7-6.2-7-11.5a7 7 0 0 1 14 0C19 14.8 12 21 12 21zM12 12a2.5 2.5 0 1 0 0-5 2.5 2.5 0 0 0 0 5z',
-    logo: 'M4 7h9M4 12h6M4 17h11M17 5l3 3-3 3M14 14l3 3 3-3',
+    logo: 'M6 7v3M9 5.25v6.5M12 4v9M15 5.75v5.5M18 7v3M5 17h14M8.5 20.5h7',
   } as const;
 
   export type IconName = keyof typeof PATHS;

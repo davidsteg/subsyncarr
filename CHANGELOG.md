@@ -1,3 +1,12 @@
+## [2.3.2] — 2026-10-18
+
+New logo and README
+
+### Changed
+
+- **New logo.** An audio waveform over two subtitle lines, used as the favicon and in the sidebar.
+- **README** rewritten with screenshots of the web UI, a diagram of the sync pipeline and a table of outcomes.
+
 ## [2.3.1] — 2026-10-18
 
 Safer single-engine syncs, ffsubsync first
